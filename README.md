@@ -1,10 +1,21 @@
 # Secretaria personal por WhatsApp
 
+[![Pruebas](https://github.com/gguillex/Secretaria/actions/workflows/pruebas.yml/badge.svg)](https://github.com/gguillex/Secretaria/actions/workflows/pruebas.yml)
+[![Licencia: MIT](https://img.shields.io/badge/licencia-MIT-blue.svg)](LICENSE)
+![n8n 2.41.6](https://img.shields.io/badge/n8n-2.41.6-EA4B71)
+![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933)
+![Gemini](https://img.shields.io/badge/IA-Gemini-4285F4)
+![Supabase](https://img.shields.io/badge/BD-Supabase-3ECF8E)
+
 Un contacto de WhatsApp al que le mandas texto, notas de voz, fotos y documentos, y que lo entiende y lo guarda donde corresponde:
 las citas en Google Calendar, los archivos en Google Drive y las tareas, listas y notas en una base de datos que puedes consultar desde
 el propio chat. Te avisa de lo que se acerca, te manda un resumen cada mañana y vigila que todo siga funcionando.
 
 Pensado para **una sola persona**: tú. Corre en un servidor pequeño propio, con n8n, Gemini y Supabase.
+
+**Índice:** [Qué hace](#qué-hace) · [Ejemplos](#ejemplos) · [Cómo está hecha](#cómo-está-hecha) · [Qué necesitas](#qué-necesitas) ·
+[Instalación](#instalación) · [Estructura](#estructura-del-repositorio) · [Desarrollo](#desarrollo) · [Seguridad](#seguridad) ·
+[Límites](#límites-conocidos) · [Licencia](#licencia)
 
 ## Qué hace
 
@@ -22,6 +33,20 @@ Pensado para **una sola persona**: tú. Corre en un servidor pequeño propio, co
 - **Resumen diario** a las 7:00 (con los proyectos en viñetas) y recordatorio de archivos sin clasificar.
 - **Errores honestos:** si un mensaje no se puede procesar, el aviso dice cuál era (sus primeras líneas).
 - **Vigilancia:** refleja lo que cambias a mano en Calendar y Drive, y te avisa (por WhatsApp y por correo) si algo se atasca o se cae.
+
+## Ejemplos
+
+| Le escribes | Qué hace |
+|---|---|
+| «dentista el jueves a las 10» | Crea la cita en Google Calendar (una hora, sin solapes) y te avisa por WhatsApp 30 minutos antes. |
+| «recuérdame en 20 minutos sacar la ropa» | Pone una alarma: aviso a la hora, sin pasar por el calendario. |
+| «compra: leche, huevos y pan» | Lo añade a la lista de la compra. |
+| «para el proyecto Mudanza: llamar al casero» | Crea la tarea dentro del proyecto (si el proyecto se parece a otro, pregunta). |
+| «qué tengo hoy» · «qué alarmas tengo» | Te lo lista al momento, sin llamar al modelo. |
+| «ponla como alarma mañana a las 9» (sobre una tarea) | La convierte en alarma y confirma solo lo que de verdad quedó guardado. |
+| Una foto, y luego le respondes «guárdala en Fotos/Viajes» | La sube a `Entrada/` de Drive y la mueve a esa carpeta. |
+| Una nota de voz | Te dice «🎙️ Entendí: …» y la trata como si la hubieras escrito. |
+| «borra todo» | Pregunta qué sección y, antes de borrar, te enseña la lista y pide confirmación. |
 
 ## Cómo está hecha
 
@@ -42,6 +67,14 @@ WhatsApp ──► Meta Cloud API ──► Tailscale Funnel ──► n8n (Dock
 
 El modelo nunca escribe SQL ni URLs: devuelve valores de listas cerradas que el código valida, y las respuestas las redacta el código.
 Detalle y motivos: [`docs/arquitectura.md`](docs/arquitectura.md).
+
+## Qué necesitas
+
+- Un servidor pequeño con Linux (el manual usa un **Hetzner CAX11**, unos 7 €/mes) y un ordenador desde el que entrar por SSH.
+- Cuentas gratuitas en **GitHub**, **Netlify**, **Tailscale**, **Supabase** y **Healthchecks.io** (opcional).
+- Una cuenta de **Google** (Calendar, Drive, Google Cloud y la API de Gemini, de prepago) y una de **Facebook** para Meta for Developers.
+- Un número de **WhatsApp** propio desde el que escribirle. Meta da gratis el número de la secretaria.
+- Unas horas para seguir el manual la primera vez.
 
 ## Instalación
 
@@ -77,7 +110,8 @@ docker-compose.yml n8n con versión fijada, registros rotados y la clave de cifr
 
 ## Desarrollo
 
-Solo hace falta Node.js (18 o superior); las pruebas no usan red ni gastan nada.
+Solo hace falta Node.js 20 o superior, sin dependencias que instalar. Las pruebas no usan red ni gastan nada, y GitHub Actions las
+pasa en cada cambio con Node 20, 22 y 24, comprobando además que los flujos de `flujos/` están al día con su código.
 
 ```
 npm test          # todas las baterías de pruebas
@@ -96,6 +130,15 @@ Después, en el servidor: `git pull`, `bash herramientas/servidor/importar-flujo
 
 > **Nunca ejecutes `docker compose down -v`:** borra el volumen con todos los flujos y credenciales de n8n. La carpeta del proyecto
 > debe llamarse `Secretaria` (el volumen se llama `secretaria_n8n_data` por ella).
+
+## Límites conocidos
+
+- **Ventana de 24 horas de WhatsApp:** sin plantillas aprobadas por Meta, solo puede escribirte si tú le escribiste en las últimas
+  24 horas. Si un día no le dices nada, el resumen y los avisos de ese día esperan.
+- **El modelo puede equivocarse al clasificar:** el código valida la forma, no la intención. Cada respuesta dice qué se ha guardado,
+  para corregirlo («no, era el jueves»).
+- **Sin copia automática de Supabase:** los datos que solo viven ahí (tareas, notas, memoria) no tienen copia salvo que la hagas tú.
+- Más detalle en [`docs/arquitectura.md`](docs/arquitectura.md#límites-conocidos).
 
 ## Licencia
 

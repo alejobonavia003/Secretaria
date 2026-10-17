@@ -1,0 +1,29 @@
+name: Pruebas
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Baterías de pruebas
+        run: npm test
+      - name: Los flujos de flujos/ están al día con su código
+        run: |
+          npm run generar
+          git diff --exit-code -- flujos/ || (echo "::error::Hay flujos sin regenerar: ejecuta npm run generar y sube flujos/" && exit 1)
