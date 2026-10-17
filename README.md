@@ -96,3 +96,8 @@ Después, en el servidor: `git pull`, `bash herramientas/servidor/importar-flujo
 
 > **Nunca ejecutes `docker compose down -v`:** borra el volumen con todos los flujos y credenciales de n8n. La carpeta del proyecto
 > debe llamarse `Secretaria` (el volumen se llama `secretaria_n8n_data` por ella).
+
+## Licencia
+
+[MIT](LICENSE): puedes usarlo, copiarlo y modificarlo libremente, manteniendo el aviso de copyright. Se ofrece tal cual, sin garantías:
+cada persona que lo monte es responsable de sus claves, sus datos y el coste de los servicios que use.
