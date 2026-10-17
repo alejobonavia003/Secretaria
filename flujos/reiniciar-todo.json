@@ -1,0 +1,494 @@
+{
+  "id": "secretariaReinic",
+  "name": "Secretaria · Reiniciar todo",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "7e5e7e00-0001-4000-8000-000000000001",
+      "name": "Disparador manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Configuración\" del flujo \"Secretaria · Reiniciar todo\": lo que se toca a mano está aquí.\n// Este flujo SOLO se lanza a mano (Disparador manual). No lo publiques con ningún disparador automático.\n\n// Los identificadores (no son secretos) se leen del .env del servidor, así se ponen UNA vez para todos los flujos.\n// Si una variable no está en el .env, vale lo que esté escrito aquí abajo.\nconst delEntorno = (clave, porDefecto) => {\n  try {\n    return String($env[clave] ?? '').trim() || porDefecto;\n  } catch (e) {\n    return porDefecto;\n  }\n};\n\n// === Valores fáciles de cambiar ===\n// ID del calendario \"Secretaria\" (Google Calendar > Configuración del calendario > Integrar el calendario > ID). Termina en @group.calendar.google.com.\n// Se borran TODOS sus eventos (el calendario en sí se queda).\nconst CALENDAR_ID = delEntorno('GOOGLE_CALENDAR_ID', 'TU-CALENDARIO@group.calendar.google.com');\n// ID de la carpeta \"Secretaria\" de Drive (el mismo CARPETA_RAIZ_ID del flujo \"Sincronizar Drive\"). Solo se toca lo que cuelga de ella.\nconst CARPETA_RAIZ_ID = delEntorno('DRIVE_CARPETA_RAIZ_ID', 'TU-CARPETA-RAIZ');\n// Carpetas de la raíz que se conservan (vaciadas por dentro). Todo lo demás de la raíz va a la papelera de Drive.\nconst CONSERVAR = ['Entrada', 'Notas'];\n// SEGURO: mientras esto esté vacío el flujo solo ENSAYA (lista lo que borraría y no toca nada). Para borrar de verdad, escribe exactamente\n// BORRAR TODO, ejecuta una vez, y vuelve a dejarlo vacío.\nconst CONFIRMAR = '';\n// ==================================\n\nif (!/^[^@\\s/]+@[^@\\s/]+$/.test(CALENDAR_ID) || CALENDAR_ID.includes('TU-CALENDARIO')) {\n  throw new Error('Configuración: pon el ID del calendario \"Secretaria\" en CALENDAR_ID (termina en @group.calendar.google.com). Va en el .env del servidor (GOOGLE_CALENDAR_ID=…, y después docker compose up -d)');\n}\nif (!/^[A-Za-z0-9_-]{10,}$/.test(CARPETA_RAIZ_ID) || CARPETA_RAIZ_ID.includes('TU-CARPETA')) {\n  throw new Error('Configuración: pon el ID de la carpeta \"Secretaria\" de Drive en CARPETA_RAIZ_ID (solo letras, números, guion y guion bajo). Va en el .env del servidor (DRIVE_CARPETA_RAIZ_ID=…, y después docker compose up -d)');\n}\nif (!Array.isArray(CONSERVAR) || CONSERVAR.some((n) => typeof n !== 'string' || n.trim() === '')) {\n  throw new Error('Configuración: CONSERVAR debe ser una lista de nombres de carpeta');\n}\n\nreturn [\n  {\n    json: {\n      config: {\n        calendar_id: CALENDAR_ID,\n        carpeta_raiz_id: CARPETA_RAIZ_ID,\n        conservar: CONSERVAR.map((n) => n.trim()),\n        real: CONFIRMAR === 'BORRAR TODO',\n      },\n    },\n  },\n];\n"
+      },
+      "id": "7e5e7e00-0002-4000-8000-000000000002",
+      "name": "Configuración",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ 'https://www.googleapis.com/drive/v3/files?pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=' + encodeURIComponent('nextPageToken,files(id,name,mimeType)') + '&q=' + encodeURIComponent(\"'\" + $('Configuración').first().json.config.carpeta_raiz_id + \"' in parents and trashed=false\") }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api"
+      },
+      "id": "7e5e7e00-0003-4000-8000-000000000003",
+      "name": "Leer raíz de Drive",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": null,
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Planificar raíz\": lee lo que cuelga de la carpeta raíz de Drive y decide dos cosas:\n//   - qué hijos de la raíz van a la papelera (todo lo que no sea una de las carpetas que se conservan);\n//   - qué carpetas conservadas hay que VACIAR: una salida por cada una, con la URL para listar su contenido.\n// Nunca borra nada: solo prepara. Las carpetas conservadas se identifican por nombre (sin distinguir mayúsculas ni tildes) y por ser carpetas.\n\nconst config = $('Configuración').first().json.config;\nconst respuesta = $input.first().json;\nconst hijos = Array.isArray(respuesta?.files) ? respuesta.files : [];\n\nconst sinAcentos = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();\nconst CARPETA = 'application/vnd.google-apps.folder';\nconst conservar = new Set(config.conservar.map(sinAcentos));\nconst esId = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{10,}$/.test(v);\n\nconst validos = hijos.filter((f) => f && esId(f.id));\nconst conservadas = validos.filter((f) => f.mimeType === CARPETA && conservar.has(sinAcentos(f.name)));\nconst paraPapelera = validos.filter((f) => !conservadas.includes(f));\n\nconst urlHijos = (idCarpeta) =>\n  'https://www.googleapis.com/drive/v3/files?pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=' +\n  encodeURIComponent('nextPageToken,files(id,name,mimeType)') +\n  '&q=' +\n  encodeURIComponent(`'${idCarpeta}' in parents and trashed=false`);\n\nconst comunes = { raiz_incompleta: Boolean(respuesta?.nextPageToken), conservadas_encontradas: conservadas.map((f) => f.name) };\n\n// Una salida por carpeta conservada. Sin ninguna, una salida inocua (listar de nuevo la raíz) para que el flujo siga.\nif (conservadas.length === 0) {\n  return [{ json: { ...comunes, para_papelera: paraPapelera.map((f) => ({ id: f.id, nombre: f.name })), inocua: true, url: urlHijos(config.carpeta_raiz_id), carpeta: null } }];\n}\nreturn conservadas.map((f, i) => ({\n  json: {\n    ...comunes,\n    // La lista de la raíz viaja solo en la primera salida (para no repetirla)\n    para_papelera: i === 0 ? paraPapelera.map((x) => ({ id: x.id, nombre: x.name })) : [],\n    inocua: false,\n    url: urlHijos(f.id),\n    carpeta: f.name,\n  },\n}));\n"
+      },
+      "id": "7e5e7e00-0004-4000-8000-000000000004",
+      "name": "Planificar raíz",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api"
+      },
+      "id": "7e5e7e00-0005-4000-8000-000000000005",
+      "name": "Leer contenido de las carpetas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": null,
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent($('Configuración').first().json.config.calendar_id) + '/events?maxResults=2500&showDeleted=false&fields=' + encodeURIComponent('nextPageToken,items(id,summary)') }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api"
+      },
+      "id": "7e5e7e00-0006-4000-8000-000000000006",
+      "name": "Leer eventos de Calendar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": null,
+          "name": "Google Calendar"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Reunir y decidir\": junta todo lo que habría que borrar y lo reparte.\n//   - Drive: los hijos de la raíz que no se conservan y el contenido de las carpetas conservadas (a la papelera, no definitivo).\n//   - Calendar: todos los eventos del calendario \"Secretaria\".\n// Con CONFIRMAR vacío (modo ensayo) devuelve UN item con el informe y no se borra nada. Con \"BORRAR TODO\" devuelve una operación por item.\n// Si alguna lista venía paginada se avisa (hay más de lo que se ve): se borra lo visto y se vuelve a ejecutar.\n\nconst config = $('Configuración').first().json.config;\nconst plan = $('Planificar raíz').all().map((i) => i.json);\nconst hijos = $('Leer contenido de las carpetas').all().map((i) => i.json);\nconst eventosResp = $('Leer eventos de Calendar').first().json;\n\nconst MAX_OPERACIONES = 3000;\nconst ops = [];\nconst vistos = new Set();\nconst anadir = (op) => {\n  const clave = `${op.tipo}:${op.id}`;\n  if (vistos.has(clave) || typeof op.id !== 'string' || op.id === '') return;\n  vistos.add(clave);\n  ops.push(op);\n};\n\nlet incompleto = Boolean(plan[0]?.raiz_incompleta);\nfor (const p of plan) for (const f of p.para_papelera ?? []) anadir({ tipo: 'drive', id: f.id, nombre: f.nombre, donde: 'raíz' });\n\nplan.forEach((p, i) => {\n  if (p.inocua) return;\n  const r = hijos[i] ?? {};\n  if (r.nextPageToken) incompleto = true;\n  for (const f of Array.isArray(r.files) ? r.files : []) anadir({ tipo: 'drive', id: f.id, nombre: f.name, donde: p.carpeta });\n});\n\nif (eventosResp?.nextPageToken) incompleto = true;\nfor (const e of Array.isArray(eventosResp?.items) ? eventosResp.items : []) {\n  anadir({ tipo: 'calendar', id: e.id, nombre: e.summary || '(sin título)', donde: 'calendario' });\n}\n\nif (ops.length > MAX_OPERACIONES) {\n  throw new Error(`Reunir y decidir: ${ops.length} operaciones (máximo ${MAX_OPERACIONES} de una vez). Bórralas a mano o divide el trabajo.`);\n}\n\nconst cuenta = (t) => ops.filter((o) => o.tipo === t).length;\nconst informe = {\n  drive_a_la_papelera: cuenta('drive'),\n  eventos_de_calendar: cuenta('calendar'),\n  carpetas_conservadas: plan.filter((p) => !p.inocua).map((p) => p.carpeta),\n  incompleto,\n  nota: incompleto ? 'Alguna lista venía paginada (hay más de lo que se ve): tras borrar, vuelve a ejecutar el flujo hasta que salgan 0.' : null,\n};\n\nif (!config.real) {\n  return [{ json: { modo: 'ensayo', ...informe, ejemplos: ops.slice(0, 30).map((o) => `${o.tipo === 'drive' ? 'Drive' : 'Calendar'} · ${o.donde} · ${o.nombre}`) } }];\n}\nif (ops.length === 0) return [{ json: { modo: 'nada', ...informe } }];\nreturn ops.map((o) => ({ json: { modo: 'real', ...o, ...informe } }));\n"
+      },
+      "id": "7e5e7e00-0007-4000-8000-000000000007",
+      "name": "Reunir y decidir",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1b2c3d4-0008-4000-8000-000000000001",
+              "leftValue": "={{ $json.modo }}",
+              "rightValue": "real",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7e5e7e00-0008-4000-8000-000000000008",
+      "name": "¿Borrar de verdad?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1b2c3d4-0009-4000-8000-000000000001",
+              "leftValue": "={{ $json.tipo }}",
+              "rightValue": "drive",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7e5e7e00-0009-4000-8000-000000000009",
+      "name": "¿Es de Drive?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1920,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1000
+            }
+          }
+        },
+        "method": "PATCH",
+        "url": "={{ 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent($json.id) + '?supportsAllDrives=true' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ trashed: true }) }}"
+      },
+      "id": "7e5e7e00-0010-4000-8000-000000000010",
+      "name": "Mandar a la papelera de Drive",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2160,
+        -240
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": null,
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1000
+            }
+          }
+        },
+        "method": "DELETE",
+        "url": "={{ 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent($('Configuración').first().json.config.calendar_id) + '/events/' + encodeURIComponent($json.id) }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api"
+      },
+      "id": "7e5e7e00-0011-4000-8000-000000000011",
+      "name": "Borrar evento de Calendar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2160,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": null,
+          "name": "Google Calendar"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Resumen\": deja el resultado en la ejecución. Puede ejecutarse más de una vez (una por rama); la última tiene el recuento completo.\n//   Drive: 200 = a la papelera. Calendar: 2xx = borrado; 404/410 = ya no existía (el mismo resultado). Otro estado = fallo (se ve aquí).\n\nconst lee = (nombre) => {\n  try {\n    return $(nombre).all().map((i) => i.json);\n  } catch (e) {\n    return [];\n  }\n};\nconst reunido = lee('Reunir y decidir');\nconst primero = reunido[0] ?? {};\n\nif (primero.modo === 'ensayo' || primero.modo === 'nada') {\n  return [{ json: { ...primero, aviso: primero.modo === 'ensayo' ? 'ENSAYO: no se ha borrado nada. Para borrar de verdad escribe BORRAR TODO en CONFIRMAR (nodo Configuración) y ejecuta de nuevo.' : 'No había nada que borrar.' } }];\n}\n\nconst operaciones = reunido.filter((r) => r.modo === 'real');\nconst drive = operaciones.filter((o) => o.tipo === 'drive');\nconst calendar = operaciones.filter((o) => o.tipo === 'calendar');\nconst respDrive = lee('Mandar a la papelera de Drive');\nconst respCalendar = lee('Borrar evento de Calendar');\n\nconst bien = (tipo, r) => {\n  const s = r?.statusCode;\n  return tipo === 'drive' ? s >= 200 && s < 300 : (s >= 200 && s < 300) || s === 404 || s === 410;\n};\nconst fallos = [];\ndrive.forEach((o, i) => bien('drive', respDrive[i]) || fallos.push(`Drive · ${o.nombre}: ${respDrive[i]?.statusCode ?? 'sin respuesta'}`));\ncalendar.forEach((o, i) => bien('calendar', respCalendar[i]) || fallos.push(`Calendar · ${o.nombre}: ${respCalendar[i]?.statusCode ?? 'sin respuesta'}`));\n\nreturn [\n  {\n    json: {\n      modo: 'real',\n      drive_a_la_papelera: drive.length - fallos.filter((f) => f.startsWith('Drive')).length,\n      eventos_borrados: calendar.length - fallos.filter((f) => f.startsWith('Calendar')).length,\n      fallos: fallos.slice(0, 50),\n      incompleto: Boolean(primero.incompleto),\n      nota: primero.incompleto ? primero.nota : fallos.length > 0 ? 'Hubo fallos: vuelve a ejecutar el flujo (lo ya borrado no se repite).' : 'Hecho. Ahora ejecuta el SQL de vaciar la base de datos si aún no lo has hecho.',\n    },\n  },\n];\n"
+      },
+      "id": "7e5e7e00-0012-4000-8000-000000000012",
+      "name": "Resumen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ① Configuración y lectura de Drive\n**Se lanza solo a mano.** En *Configuración* pon el ID del calendario y el de la carpeta raíz. **CONFIRMAR vacío = ENSAYO** (lista lo que borraría, no toca nada).\n*Leer raíz de Drive* y *Planificar raíz* deciden qué cuelga de la raíz y qué carpetas se conservan (`Entrada`, `Notas`).",
+        "height": 280,
+        "width": 720,
+        "color": 4
+      },
+      "id": "7e5e7e00-0101-4000-8000-000000000101",
+      "name": "Nota 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -580
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ② Lo que se borraría\n*Leer contenido de las carpetas* lista lo de dentro de las carpetas conservadas; *Leer eventos de Calendar*, todos los eventos del calendario. *Reunir y decidir* lo junta y, en ensayo, devuelve solo el informe.",
+        "height": 280,
+        "width": 720,
+        "color": 5
+      },
+      "id": "7e5e7e00-0102-4000-8000-000000000102",
+      "name": "Nota 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        920,
+        -580
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ③ Borrado\nSolo con `BORRAR TODO`. Drive: **a la papelera** (se recupera unos 30 días), nunca definitivo. Calendar: se borran los eventos (el calendario se queda). De 5 en 5 por segundo. *Resumen* cuenta lo hecho y los fallos.",
+        "height": 280,
+        "width": 720,
+        "color": 6
+      },
+      "id": "7e5e7e00-0103-4000-8000-000000000103",
+      "name": "Nota 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1640,
+        -580
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Antes de ejecutar\n1. Credenciales: **Google Drive OAuth2** en *Leer raíz de Drive*, *Leer contenido de las carpetas* y *Mandar a la papelera de Drive*; **Google Calendar OAuth2** en *Leer eventos de Calendar* y *Borrar evento de Calendar*.\n2. Identificadores: `GOOGLE_CALENDAR_ID` y `DRIVE_CARPETA_RAIZ_ID` en el `.env` del servidor (no hace falta tocar **Configuración**).\n3. **Orden**: antes de nada **desactiva «Vigilar Drive» y «Vigilar Calendar»** (si no, avisarían de que has «borrado» todo); primero vacía la base de datos con el SQL (`supabase/consultas/vaciar-datos.sql`); después ejecuta este flujo EN ENSAYO, revisa el *Resumen*, y solo entonces escribe `BORRAR TODO` y ejecútalo.\n4. Deja `CONFIRMAR` vacío al terminar. No lo publiques. Después vuelve a activar «Vigilar Drive» y «Vigilar Calendar».",
+        "height": 300,
+        "width": 960,
+        "color": 2
+      },
+      "id": "7e5e7e00-0104-4000-8000-000000000104",
+      "name": "Nota 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Disparador manual": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuración": {
+      "main": [
+        [
+          {
+            "node": "Leer raíz de Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer raíz de Drive": {
+      "main": [
+        [
+          {
+            "node": "Planificar raíz",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Planificar raíz": {
+      "main": [
+        [
+          {
+            "node": "Leer contenido de las carpetas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer contenido de las carpetas": {
+      "main": [
+        [
+          {
+            "node": "Leer eventos de Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer eventos de Calendar": {
+      "main": [
+        [
+          {
+            "node": "Reunir y decidir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reunir y decidir": {
+      "main": [
+        [
+          {
+            "node": "¿Borrar de verdad?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Borrar de verdad?": {
+      "main": [
+        [
+          {
+            "node": "¿Es de Drive?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Es de Drive?": {
+      "main": [
+        [
+          {
+            "node": "Mandar a la papelera de Drive",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Borrar evento de Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mandar a la papelera de Drive": {
+      "main": [
+        [
+          {
+            "node": "Resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Borrar evento de Calendar": {
+      "main": [
+        [
+          {
+            "node": "Resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid",
+    "errorWorkflow": "secretariaAvisoF"
+  }
+}

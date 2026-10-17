@@ -1,0 +1,318 @@
+{
+  "id": "secretariaResume",
+  "name": "Secretaria · Resumen diario",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 7,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "5ec7e7a3-0001-4000-8000-000000000001",
+      "name": "Cada día a las 7:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        -120
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "5ec7e7a3-0002-4000-8000-000000000002",
+      "name": "Disparador manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Configuración\" del flujo \"Secretaria · Resumen diario\": lo que se toca a mano está aquí.\n// Los demás nodos leen estos valores con $('Configuración').first().json.config\n// Los SECRETOS no están aquí: el número de destino se lee del entorno de n8n (WHATSAPP_NUMERO_PERMITIDO, definido en el .env)\n// y el token de envío va en una credencial de n8n (Header Auth), no aquí.\n\n// Los identificadores (no son secretos) se leen del .env del servidor, así se ponen UNA vez para todos los flujos.\n// Si una variable no está en el .env, vale lo que esté escrito aquí abajo.\nconst delEntorno = (clave, porDefecto) => {\n  try {\n    return String($env[clave] ?? '').trim() || porDefecto;\n  } catch (e) {\n    return porDefecto;\n  }\n};\n\n// === Valores fáciles de cambiar ===\n// Project URL de Supabase (Integrations > Data API), sin /rest/v1 al final. No es un secreto.\nconst SUPABASE_URL = delEntorno('SUPABASE_URL', 'https://TU-PROYECTO.supabase.co');\n// Identificador del número de WhatsApp desde el que se envía (WhatsApp > API Setup > Phone number ID). No es un secreto.\nconst PHONE_NUMBER_ID = delEntorno('WHATSAPP_PHONE_NUMBER_ID', 'TU-PHONE-NUMBER-ID');\n// Versión de la API Graph de Meta (la misma que en el flujo \"Secretaria · WhatsApp\")\nconst GRAPH_VERSION = 'v26.0';\n// Horas desde el último mensaje tuyo durante las que se envía el resumen completo como texto libre. Meta admite 24 h:\n// se deja margen para no chocar con el límite por un desfase de minutos. Pasado ese plazo NO se envía nada (no se usan plantillas).\nconst VENTANA_HORAS = 23;\n// ==================================\n\nif (!/^https:\\/\\/[a-z0-9-]+\\.supabase\\.co\\/?$/i.test(SUPABASE_URL) || SUPABASE_URL.includes('TU-PROYECTO')) {\n  throw new Error('Configuración: pon tu Project URL de Supabase en SUPABASE_URL (https://<ref>.supabase.co, sin /rest/v1). Va en el .env del servidor (SUPABASE_URL=…, y después docker compose up -d)');\n}\nif (!/^\\d{8,20}$/.test(PHONE_NUMBER_ID)) {\n  throw new Error('Configuración: pon el Phone number ID de WhatsApp en PHONE_NUMBER_ID (solo dígitos). Va en el .env del servidor (WHATSAPP_PHONE_NUMBER_ID=…, y después docker compose up -d)');\n}\nif (!/^v\\d+\\.\\d+$/.test(GRAPH_VERSION)) {\n  throw new Error('Configuración: GRAPH_VERSION debe tener la forma v26.0');\n}\nif (!Number.isFinite(VENTANA_HORAS) || VENTANA_HORAS < 1 || VENTANA_HORAS > 24) {\n  throw new Error('Configuración: VENTANA_HORAS debe estar entre 1 y 24');\n}\n\nreturn [\n  {\n    json: {\n      config: {\n        supabase_url: SUPABASE_URL.replace(/\\/+$/, ''),\n        phone_number_id: PHONE_NUMBER_ID,\n        graph_version: GRAPH_VERSION,\n        ventana_horas: VENTANA_HORAS,\n      },\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a3-0003-4000-8000-000000000003",
+      "name": "Configuración",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/items?select=id,tipo,titulo,contenido,lista,estado,fecha_inicio,fecha_fin,fecha_limite,recordar_en,proyecto&estado=eq.pendiente&order=created_at.desc&limit=200",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "5ec7e7a3-0004-4000-8000-000000000004",
+      "name": "Leer pendientes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/archivos?select=id,nombre,drive_url,created_at&estado=eq.pendiente&eliminado_at=is.null&order=created_at.asc&limit=100",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "5ec7e7a3-0005-4000-8000-000000000005",
+      "name": "Leer archivos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/mensajes?select=created_at&wa_message_id=like.wamid.*&order=created_at.desc&limit=1",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "5ec7e7a3-0006-4000-8000-000000000006",
+      "name": "Leer último mensaje",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Redactar resumen\": convierte lo pendiente en UN mensaje de WhatsApp y construye el cuerpo exacto de la petición a Meta.\n//\n// - Si el último mensaje tuyo es de hace menos de VENTANA_HORAS, la ventana de 24 h de Meta sigue abierta: se envía el resumen\n//   completo como texto libre.\n// - Si no, NO se envía nada (sin plantillas; Meta solo admite plantillas fuera de la ventana). Ese día\n//   no hay resumen; «qué tengo pendiente» devuelve lo mismo cuando quieras.\n// - Con la ventana abierta se envía siempre, aunque no haya nada (\"No tienes nada pendiente\").\n// - Se redacta con código, nunca con el modelo: formato idéntico cada día y sin coste.\n//\n// Las funciones de formato de la lista (limpiar, dia, hora, bloqueArchivos, formatearLista…) son copia de las de\n// herramientas/flujo/resultado.js; probar-resumen.js comprueba que dan el mismo texto que ellas.\n\nconst config = $('Configuración').first().json.config;\nconst LIMITE_MENSAJE = 3800; // WhatsApp admite 4096 caracteres por mensaje; margen para no rozarlo\nconst ZONA = 'Europe/Madrid';\n\n// Los caracteres de formato de WhatsApp en un título romperían la negrita o la cursiva\nconst limpiar = (s) => String(s ?? '').replace(/[*_~`]/g, '').replace(/\\s+/g, ' ').trim();\n\nconst fmtDia = new Intl.DateTimeFormat('es-ES', { timeZone: ZONA, weekday: 'short', day: 'numeric', month: 'short' });\nconst fmtDiaLargo = new Intl.DateTimeFormat('es-ES', { timeZone: ZONA, weekday: 'long', day: 'numeric', month: 'short' });\nconst fmtHora = new Intl.DateTimeFormat('es-ES', { timeZone: ZONA, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });\nconst fmtClave = new Intl.DateTimeFormat('en-CA', { timeZone: ZONA, year: 'numeric', month: '2-digit', day: '2-digit' });\n\nfunction dia(iso) {\n  const p = Object.fromEntries(fmtDia.formatToParts(new Date(iso)).map((x) => [x.type, x.value]));\n  return `${p.weekday} ${p.day} ${p.month}`.replace(/\\./g, '');\n}\nfunction diaLargo(fecha) {\n  const p = Object.fromEntries(fmtDiaLargo.formatToParts(fecha).map((x) => [x.type, x.value]));\n  return `${p.weekday} ${p.day} ${p.month}`.replace(/\\./g, '');\n}\nconst hora = (iso) => fmtHora.format(new Date(iso));\n// Día natural en Madrid, \"2026-10-12\": sirve para comparar \"es hoy\" sin líos de zona horaria\nconst claveDia = (iso) => fmtClave.format(new Date(iso));\n\nconst minuscula1 = (s) => (s.length > 1 && s[0] === s[0].toUpperCase() && s[1] === s[1].toLowerCase() ? s[0].toLowerCase() + s.slice(1) : s);\nconst mayuscula1 = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);\n\nconst porFecha = (campo) => (a, b) => {\n  if (!a[campo] && !b[campo]) return 0;\n  if (!a[campo]) return 1;\n  if (!b[campo]) return -1;\n  return new Date(a[campo]) - new Date(b[campo]);\n};\n\nfunction agrupar(filas, clave) {\n  const mapa = new Map();\n  for (const f of filas) {\n    const k = clave(f);\n    if (!mapa.has(k)) mapa.set(k, []);\n    mapa.get(k).push(f);\n  }\n  return mapa;\n}\n\nconst MAX_ARCHIVOS_LISTA = 15;\nfunction bloqueArchivos(archivos) {\n  if (!archivos.length) return null;\n  const enlace = (f) => (typeof f.drive_url === 'string' && f.drive_url ? `\\n  ${f.drive_url}` : '');\n  const lineas = archivos.slice(0, MAX_ARCHIVOS_LISTA).map((f) => `• ${limpiar(f.nombre)} (recibido ${dia(f.created_at)}, ${hora(f.created_at)})${enlace(f)}`);\n  if (archivos.length > MAX_ARCHIVOS_LISTA) lineas.push(`… y ${archivos.length - MAX_ARCHIVOS_LISTA} más`);\n  return `*Archivos sin clasificar*\\n${lineas.join('\\n')}`;\n}\n\n// Bloques de texto (uno por sección) de lo pendiente que no es de hoy. Sin \"No tienes nada pendiente\": eso lo decide quien llama.\nfunction bloquesDeLista(rows, archivos) {\n  // Alarma = tarea con hora de aviso y sin fecha límite: sección propia (igual que en «qué tengo pendiente»)\n  const esAlarma = (r) => r.tipo === 'tarea' && r.recordar_en && !r.fecha_limite;\n  const alarmas = rows.filter(esAlarma).sort(porFecha('recordar_en'));\n  const sinAlarmas = rows.filter((r) => !esAlarma(r));\n  // Las tareas y notas de un proyecto van aparte de lo cotidiano, como en «qué tengo pendiente»\n  const deProyecto = sinAlarmas.filter((r) => r.proyecto && (r.tipo === 'tarea' || r.tipo === 'nota'));\n  const cotidiano = sinAlarmas.filter((r) => !deProyecto.includes(r));\n  const resto = cotidiano;\n  const tareas = resto.filter((r) => r.tipo === 'tarea').sort(porFecha('fecha_limite'));\n  const eventos = resto.filter((r) => r.tipo === 'evento').sort(porFecha('fecha_inicio'));\n  const notas = resto.filter((r) => r.tipo === 'nota');\n  const listas = resto.filter((r) => r.tipo === 'lista');\n  const bloques = [];\n\n  if (alarmas.length) {\n    bloques.push(`*Alarmas*\\n${alarmas.map((r) => `• 🔔 ${limpiar(r.titulo)}, ${dia(r.recordar_en)}, ${hora(r.recordar_en)}`).join('\\n')}`);\n  }\n  if (tareas.length) {\n    bloques.push(`*Tareas*\\n${tareas.map((r) => `• ${limpiar(r.titulo)}${r.fecha_limite ? ` (${dia(r.fecha_limite)})` : ''}`).join('\\n')}`);\n  }\n  if (deProyecto.length) {\n    // Cada proyecto con su título y una viñeta por tarea o nota (nada de todo junto y con punto y coma), igual que en «qué tengo pendiente»\n    const grupos = agrupar(deProyecto, (r) => limpiar(r.proyecto));\n    const partes = [...grupos.keys()].sort((a, b) => a.localeCompare(b, 'es')).map((nombre) => {\n      const lineas = grupos.get(nombre).slice().sort(porFecha('fecha_limite')).map((r) => `• ${r.tipo === 'nota' ? '📝 ' : ''}${limpiar(r.titulo)}${r.fecha_limite ? ` (${dia(r.fecha_limite)})` : ''}`);\n      return `📁 *${nombre}*\\n${lineas.join('\\n')}`;\n    });\n    bloques.push(`*Proyectos*\\n${partes.join('\\n')}`);\n  }\n  if (eventos.length) {\n    const lineas = eventos.map((r) => {\n      const cuando = r.fecha_inicio ? `, ${dia(r.fecha_inicio)}, ${hora(r.fecha_inicio)}` : '';\n      return `• ${limpiar(r.titulo)}${cuando}${r.proyecto ? ` [${limpiar(r.proyecto)}]` : ''}`;\n    });\n    bloques.push(`*Citas*\\n${lineas.join('\\n')}`);\n  }\n  if (notas.length) {\n    bloques.push(`*Pensamientos*\\n${notas.map((r) => `• ${limpiar(r.titulo)}`).join('\\n')}`);\n  }\n  if (listas.length) {\n    const grupos = agrupar(listas, (r) => limpiar(r.lista) || 'sin nombre');\n    for (const nombre of [...grupos.keys()].sort((a, b) => a.localeCompare(b, 'es'))) {\n      const elementos = grupos.get(nombre).map((r) => limpiar(r.titulo));\n      bloques.push(`*Lista de ${nombre}*\\n• ${mayuscula1(elementos.map(minuscula1).join(', '))}`);\n    }\n  }\n  const deArchivos = bloqueArchivos(archivos);\n  if (deArchivos) bloques.push(deArchivos);\n  return bloques;\n}\n\n// --- Pegamento con n8n ---\nconst filasDe = (nombre, validar) => $(nombre).all().map((x) => x.json).filter((r) => r && validar(r));\nconst itemsLeidos = filasDe('Leer pendientes', (r) => typeof r.tipo === 'string' && typeof r.titulo === 'string');\nconst archivos = filasDe('Leer archivos', (r) => typeof r.nombre === 'string' && typeof r.created_at === 'string');\nconst ultimo = filasDe('Leer último mensaje', (r) => typeof r.created_at === 'string').map((r) => new Date(r.created_at)).filter((d) => !Number.isNaN(d.getTime()))[0];\n\nconst para = String($env.WHATSAPP_NUMERO_PERMITIDO ?? '').replace(/\\D/g, '');\nif (!para) throw new Error('Redactar resumen: falta WHATSAPP_NUMERO_PERMITIDO en el entorno de n8n');\n\nconst ahora = new Date();\nconst hoyClave = claveDia(ahora.toISOString());\n\n// Eventos ya terminados: no cuentan (como en la consulta normal)\nconst rows = itemsLeidos.filter((r) => !(r.tipo === 'evento' && new Date(r.fecha_fin ?? r.fecha_inicio ?? '9999-12-31') < ahora));\n\nconst hoyEventos = rows.filter((r) => r.tipo === 'evento' && r.fecha_inicio && claveDia(r.fecha_inicio) === hoyClave).sort(porFecha('fecha_inicio'));\nconst hoyTareas = rows.filter((r) => r.tipo === 'tarea' && r.fecha_limite && claveDia(r.fecha_limite) === hoyClave).sort(porFecha('fecha_limite'));\nconst atrasadas = rows.filter((r) => r.tipo === 'tarea' && r.fecha_limite && claveDia(r.fecha_limite) < hoyClave).sort(porFecha('fecha_limite'));\nconst yaMostrados = new Set([...hoyEventos, ...hoyTareas, ...atrasadas]);\nconst resto = rows.filter((r) => !yaMostrados.has(r));\n\n// --- Texto completo ---\nconst cabecera = `Buenos días. Esto es lo que tienes (${diaLargo(ahora)}):`;\nconst bloques = [];\nif (hoyEventos.length || hoyTareas.length) {\n  bloques.push(`*Hoy*\\n${[...hoyEventos.map((r) => `• ${limpiar(r.titulo)}, ${hora(r.fecha_inicio)}`), ...hoyTareas.map((r) => `• ${limpiar(r.titulo)} (entrega hoy)`)].join('\\n')}`);\n}\nif (atrasadas.length) {\n  bloques.push(`*Atrasado*\\n${atrasadas.map((r) => `• ${limpiar(r.titulo)} (era ${dia(r.fecha_limite)})`).join('\\n')}`);\n}\nbloques.push(...bloquesDeLista(resto, archivos));\n\nlet texto;\nif (bloques.length === 0) {\n  texto = 'Buenos días. No tienes nada pendiente.';\n} else {\n  // Un solo mensaje: si no cabe, se corta por secciones y se avisa\n  const AVISO = '… Hay más: escríbeme «qué tengo pendiente».';\n  let cuerpo = cabecera;\n  let omitidos = 0;\n  for (const b of bloques) {\n    if (omitidos === 0 && `${cuerpo}\\n\\n${b}`.length <= LIMITE_MENSAJE - AVISO.length - 2) cuerpo = `${cuerpo}\\n\\n${b}`;\n    else omitidos += 1;\n  }\n  if (omitidos > 0 && cuerpo === cabecera) cuerpo = `${cabecera}\\n\\n${bloques[0].slice(0, LIMITE_MENSAJE - AVISO.length - cabecera.length - 10).trimEnd()}`;\n  texto = omitidos > 0 ? `${cuerpo}\\n\\n${AVISO}` : cuerpo;\n}\n\n// --- Ventana de 24 h: solo texto libre ---\nconst ventanaMs = config.ventana_horas * 3600 * 1000;\nconst ventanaAbierta = Boolean(ultimo) && ahora.getTime() - ultimo.getTime() < ventanaMs;\n// Con la ventana cerrada Meta solo admitiría una plantilla, y no se usan: ese día no se manda el resumen (no es un fallo)\nif (!ventanaAbierta) return [];\n\nconst base = { messaging_product: 'whatsapp', recipient_type: 'individual', to: para };\nreturn [{ json: { modo: 'texto', cuerpo: { ...base, type: 'text', text: { preview_url: false, body: texto } }, texto_completo: texto } }];\n"
+      },
+      "id": "5ec7e7a3-0007-4000-8000-000000000007",
+      "name": "Redactar resumen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $('Configuración').first().json.config.graph_version }}/{{ $('Configuración').first().json.config.phone_number_id }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "5ec7e7a3-0008-4000-8000-000000000008",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "WhatsApp token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## ① Disparo y configuración\nSe ejecuta **cada día a las 7:00** (zona Europe/Madrid del flujo) o a mano (Disparador manual).\n**Configuración**: URL de Supabase, Phone number ID y la ventana de 24 h.",
+        "height": 220,
+        "width": 480,
+        "color": 4
+      },
+      "id": "5ec7e7a3-0101-4000-8000-000000000101",
+      "name": "Nota 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ② Lecturas\nLee los items pendientes, los archivos sin clasificar (los que esperan en `Entrada`) y la fecha de tu último mensaje. Si una lectura falla, el flujo se detiene con error: no se envía un resumen vacío por un fallo.",
+        "height": 220,
+        "width": 720,
+        "color": 5
+      },
+      "id": "5ec7e7a3-0102-4000-8000-000000000102",
+      "name": "Nota 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        440,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ③ Mensaje y envío\n**Redactar resumen** manda el resumen completo como texto libre si escribiste hace menos de 23 h, aunque no haya nada (Meta solo admite plantillas fuera de la ventana de 24 h y no se usan: ese día no se manda). «Qué tengo pendiente» devuelve lo mismo cuando quieras.",
+        "height": 220,
+        "width": 480,
+        "color": 6
+      },
+      "id": "5ec7e7a3-0103-4000-8000-000000000103",
+      "name": "Nota 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1160,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Antes de publicar\n1. Credencial **Supabase API** en las tres lecturas y la **Header Auth de WhatsApp** (la misma del flujo de WhatsApp) en *Enviar WhatsApp*.\n2. Identificadores: `SUPABASE_URL` y `WHATSAPP_PHONE_NUMBER_ID` en el `.env` del servidor (no hace falta tocar **Configuración**).\n3. Pruébalo con *Disparador manual* y publica el flujo.",
+        "height": 300,
+        "width": 720,
+        "color": 2
+      },
+      "id": "5ec7e7a3-0104-4000-8000-000000000104",
+      "name": "Nota 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Cada día a las 7:00": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Disparador manual": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuración": {
+      "main": [
+        [
+          {
+            "node": "Leer pendientes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer pendientes": {
+      "main": [
+        [
+          {
+            "node": "Leer archivos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer archivos": {
+      "main": [
+        [
+          {
+            "node": "Leer último mensaje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer último mensaje": {
+      "main": [
+        [
+          {
+            "node": "Redactar resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redactar resumen": {
+      "main": [
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid",
+    "errorWorkflow": "secretariaAvisoF"
+  }
+}

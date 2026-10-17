@@ -1,0 +1,176 @@
+{
+  "id": "secretariaAvisoF",
+  "name": "Secretaria · Aviso de fallos",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "5ec7e7a4-0001-4000-8000-000000000001",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Configuración\" del flujo \"Secretaria · Aviso de fallos\": lo que se toca a mano está aquí.\n// Los demás nodos leen estos valores con $('Configuración').first().json.config\n// Los SECRETOS no están aquí: el número de destino se lee del entorno de n8n (WHATSAPP_NUMERO_PERMITIDO, definido en el .env)\n// y el token de envío va en una credencial de n8n (Header Auth), no aquí.\n\n// Los identificadores (no son secretos) se leen del .env del servidor, así se ponen UNA vez para todos los flujos.\n// Si una variable no está en el .env, vale lo que esté escrito aquí abajo.\nconst delEntorno = (clave, porDefecto) => {\n  try {\n    return String($env[clave] ?? '').trim() || porDefecto;\n  } catch (e) {\n    return porDefecto;\n  }\n};\n\n// === Valores fáciles de cambiar ===\n// Identificador del número de WhatsApp desde el que se envía (WhatsApp > API Setup > Phone number ID). No es un secreto.\nconst PHONE_NUMBER_ID = delEntorno('WHATSAPP_PHONE_NUMBER_ID', 'TU-PHONE-NUMBER-ID');\n// Versión de la API Graph de Meta (la misma que en el flujo \"Secretaria · WhatsApp\")\nconst GRAPH_VERSION = 'v26.0';\n// Un fallo que se repite cada minuto (Calendar o Drive caídos) no debe mandarte un mensaje por minuto:\n// como mucho un aviso por flujo cada ENFRIAMIENTO_MIN minutos y MAX_AVISOS_DIA en total al día.\nconst ENFRIAMIENTO_MIN = 60;\nconst MAX_AVISOS_DIA = 10;\n// ==================================\n\nif (!/^\\d{8,20}$/.test(PHONE_NUMBER_ID)) {\n  throw new Error('Configuración: pon el Phone number ID de WhatsApp en PHONE_NUMBER_ID (solo dígitos). Va en el .env del servidor (WHATSAPP_PHONE_NUMBER_ID=…, y después docker compose up -d)');\n}\nif (!/^v\\d+\\.\\d+$/.test(GRAPH_VERSION)) {\n  throw new Error('Configuración: GRAPH_VERSION debe tener la forma v26.0');\n}\nif (!Number.isFinite(ENFRIAMIENTO_MIN) || ENFRIAMIENTO_MIN < 1 || ENFRIAMIENTO_MIN > 1440) {\n  throw new Error('Configuración: ENFRIAMIENTO_MIN debe estar entre 1 y 1440');\n}\nif (!Number.isInteger(MAX_AVISOS_DIA) || MAX_AVISOS_DIA < 1 || MAX_AVISOS_DIA > 100) {\n  throw new Error('Configuración: MAX_AVISOS_DIA debe estar entre 1 y 100');\n}\n\nreturn [\n  {\n    json: {\n      config: {\n        phone_number_id: PHONE_NUMBER_ID,\n        graph_version: GRAPH_VERSION,\n        enfriamiento_min: ENFRIAMIENTO_MIN,\n        max_avisos_dia: MAX_AVISOS_DIA,\n      },\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a4-0002-4000-8000-000000000002",
+      "name": "Configuración",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Redactar aviso\": convierte el fallo de otro flujo (lo que entrega el Error Trigger) en UN aviso corto de WhatsApp.\n//\n// - Un fallo que se repite cada minuto (Calendar o Drive) no manda un mensaje por minuto: como mucho un aviso por flujo cada\n//   ENFRIAMIENTO_MIN minutos y MAX_AVISOS_DIA al día. Lo que se calló se cuenta en el siguiente aviso (\"se repitió N veces\").\n//   El estado se guarda en el almacén del propio flujo ($getWorkflowStaticData), que solo persiste en ejecuciones de producción.\n// - El mensaje de un error puede arrastrar una URL o un token: se quitan las cadenas largas sin espacios y se recorta.\n// - Devuelve el cuerpo del mensaje de texto libre. No hay plantilla de reserva (sin plantillas): si la\n//   ventana de 24 h de Meta está cerrada, Meta lo rechaza y el fallo solo se ve en n8n (la ejecución de este flujo queda en rojo).\n//\n// Formato del Error Trigger (documentación de n8n): { execution: { id, url, error: { message, stack }, lastNodeExecuted, mode },\n// workflow: { id, name } }. Si falla el disparador del propio flujo: { trigger: { error: { message, node, … }, mode }, workflow }.\n\nconst config = $('Configuración').first().json.config;\n// El fallo se lee del propio Error Trigger y NO de la entrada de este nodo: entre los dos va \"Configuración\", que sustituye los datos por\n// su configuración (caso real: el aviso llegaba sin el flujo ni la causa porque se leía la configuración como si fuera el fallo).\nconst datos = $('Error Trigger').first().json ?? {};\nconst ZONA = 'Europe/Madrid';\n\nconst textoLimpio = (v) => String(v ?? '').replace(/\\s+/g, ' ').trim();\n// Cadenas largas sin espacios (tokens, ids, URL con parámetros): no deben viajar por WhatsApp\nconst sinSecretos = (s) => s.replace(/[A-Za-z0-9_\\-+=\\/.:?&%]{32,}/g, '…');\nconst recortar = (s, n) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);\n\nconst para = String($env.WHATSAPP_NUMERO_PERMITIDO ?? '').replace(/\\D/g, '');\nif (!para) throw new Error('Redactar aviso: falta WHATSAPP_NUMERO_PERMITIDO en el entorno de n8n');\n\nconst flujo = recortar(sinSecretos(textoLimpio(datos.workflow?.name)) || 'un flujo', 60);\nconst exe = datos.execution ?? {};\nconst errTrigger = datos.trigger?.error ?? {};\nconst mensaje = recortar(sinSecretos(textoLimpio(exe.error?.message ?? errTrigger.message ?? errTrigger.cause?.message)) || 'sin detalle', 220);\nconst nodoBruto = exe.lastNodeExecuted ?? (typeof errTrigger.node === 'string' ? errTrigger.node : errTrigger.node?.name);\nconst nodo = recortar(sinSecretos(textoLimpio(nodoBruto)), 60);\nconst idEjecucion = /^[A-Za-z0-9_-]{1,40}$/.test(String(exe.id ?? '')) ? String(exe.id) : '';\n\n// --- Límites: enfriamiento por flujo y tope diario ---\nconst estado = $getWorkflowStaticData('global');\nestado.ultimos = estado.ultimos && typeof estado.ultimos === 'object' ? estado.ultimos : {};\nconst ahora = Date.now();\nconst hoy = new Intl.DateTimeFormat('en-CA', { timeZone: ZONA, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ahora));\nif (!estado.dia || estado.dia.fecha !== hoy) estado.dia = { fecha: hoy, enviados: 0 };\n\nconst previo = estado.ultimos[flujo];\nif (previo && ahora - previo.t < config.enfriamiento_min * 60000) {\n  previo.repetidos = (previo.repetidos ?? 0) + 1;\n  return []; // el mismo flujo ya avisó hace poco\n}\nif (estado.dia.enviados >= config.max_avisos_dia) return []; // tope diario alcanzado\n\nconst repetidos = previo?.repetidos ?? 0;\nestado.ultimos[flujo] = { t: ahora, repetidos: 0 };\nestado.dia.enviados += 1;\n\nconst partes = [`⚠️ Fallo en «${flujo}»${nodo ? ` (nodo «${nodo}»)` : ''}: ${mensaje}.`];\nif (idEjecucion) partes.push(`Ejecución ${idEjecucion}.`);\nif (repetidos > 0) partes.push(`Se repitió ${repetidos} ${repetidos === 1 ? 'vez' : 'veces'} desde el último aviso.`);\nconst texto = recortar(partes.join(' ').replace(/\\.\\./g, '.'), 900);\n\nconst base = { messaging_product: 'whatsapp', recipient_type: 'individual', to: para };\nreturn [\n  {\n    json: {\n      texto,\n      cuerpo_texto: { ...base, type: 'text', text: { preview_url: false, body: texto } },\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a4-0003-4000-8000-000000000003",
+      "name": "Redactar aviso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $('Configuración').first().json.config.graph_version }}/{{ $('Configuración').first().json.config.phone_number_id }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo_texto) }}"
+      },
+      "id": "5ec7e7a4-0004-4000-8000-000000000004",
+      "name": "Enviar texto",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "WhatsApp token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## ① Disparo y configuración\nSe ejecuta **solo** cuando otro flujo falla: hay que elegir este flujo como **Error workflow** en los ajustes de cada flujo vigilado (todos menos este y «Reiniciar todo»).\n**Configuración**: Phone number ID, enfriamiento y tope diario.",
+        "height": 220,
+        "width": 480,
+        "color": 4
+      },
+      "id": "5ec7e7a4-0101-4000-8000-000000000101",
+      "name": "Nota 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ② Aviso\n**Redactar aviso** arma un mensaje corto con el flujo, el nodo y el error (sin cadenas largas que parezcan claves). Límite: un aviso por flujo cada 60 min y 10 al día; lo que se calla se cuenta en el siguiente.",
+        "height": 220,
+        "width": 480,
+        "color": 5
+      },
+      "id": "5ec7e7a4-0102-4000-8000-000000000102",
+      "name": "Nota 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        440,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ③ Envío\nSolo **texto libre** (sin plantillas). Si Meta lo rechaza (ventana de 24 h cerrada: llevas más de un día sin escribir a la secretaria) o el envío falla, este flujo queda en rojo: solo se ve en n8n.",
+        "height": 220,
+        "width": 480,
+        "color": 6
+      },
+      "id": "5ec7e7a4-0103-4000-8000-000000000103",
+      "name": "Nota 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        920,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Antes de publicar\n1. Credencial **Header Auth de WhatsApp** (la misma del flujo de WhatsApp) en *Enviar texto*.\n2. Identificadores: `WHATSAPP_PHONE_NUMBER_ID` en el `.env` del servidor (no hace falta tocar **Configuración**).\n3. Publica este flujo y elígelo como **Error workflow** en los ajustes de los demás (Options > Settings).",
+        "height": 300,
+        "width": 720,
+        "color": 2
+      },
+      "id": "5ec7e7a4-0104-4000-8000-000000000104",
+      "name": "Nota 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuración": {
+      "main": [
+        [
+          {
+            "node": "Redactar aviso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redactar aviso": {
+      "main": [
+        [
+          {
+            "node": "Enviar texto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid"
+  }
+}

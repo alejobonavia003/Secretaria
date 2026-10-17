@@ -1,0 +1,4 @@
+# Netlify publica solo la carpeta "paginas" (la página principal y la política de privacidad).
+# El resto del repositorio (flujos, documentación) no sale en la web.
+[build]
+  publish = "paginas"

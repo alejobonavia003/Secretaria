@@ -1,0 +1,364 @@
+{
+  "lote-1": [
+    {
+      "id": 15,
+      "obtenido": {
+        "intencion": "guardar",
+        "items": [
+          {
+            "tipo": "nota",
+            "titulo": "Formato de la reunión: online",
+            "contenido": "La jefa ha dicho que la reunión será online.",
+            "fecha_inicio": null,
+            "fecha_fin": null,
+            "fecha_limite": null,
+            "lista": null,
+            "etiquetas": [
+              "reunión",
+              "coche"
+            ],
+            "confianza": 0.92
+          }
+        ],
+        "consulta": null,
+        "correccion": null,
+        "pregunta": null,
+        "respuesta_usuario": "Anotado: la reunión será online."
+      }
+    },
+    {
+      "id": 19,
+      "obtenido": {
+        "intencion": "guardar",
+        "items": [
+          {
+            "tipo": "tarea",
+            "titulo": "Quedar con Pablo",
+            "contenido": null,
+            "fecha_inicio": null,
+            "fecha_fin": null,
+            "fecha_limite": null,
+            "lista": null,
+            "etiquetas": [],
+            "confianza": 0.9
+          }
+        ],
+        "consulta": null,
+        "correccion": null,
+        "pregunta": null,
+        "respuesta_usuario": "Apuntado como tarea: quedar con Pablo."
+      }
+    },
+    {
+      "id": 31,
+      "obtenido": {
+        "intencion": "guardar",
+        "items": [
+          {
+            "tipo": "nota",
+            "titulo": "Cadena de custodia en seguridad",
+            "contenido": "El seguridad debe incluir la cadena de custodia",
+            "fecha_inicio": null,
+            "fecha_fin": null,
+            "fecha_limite": null,
+            "lista": null,
+            "etiquetas": [
+              "seguridad",
+              "seguridad"
+            ],
+            "confianza": 0.95
+          }
+        ],
+        "consulta": null,
+        "correccion": null,
+        "pregunta": null,
+        "respuesta_usuario": "Guardado: el informe debe incluir las facturas."
+      }
+    },
+    {
+      "id": 36,
+      "obtenido": {
+        "intencion": "guardar",
+        "items": [
+          {
+            "tipo": "nota",
+            "titulo": "GPR: Gestión de Proyectos",
+            "contenido": "GPR es Gestión de Proyectos",
+            "fecha_inicio": null,
+            "fecha_fin": null,
+            "fecha_limite": null,
+            "lista": null,
+            "etiquetas": [
+              "acrónimo",
+              "trabajo"
+            ],
+            "confianza": 0.95
+          }
+        ],
+        "consulta": null,
+        "correccion": null,
+        "pregunta": null,
+        "respuesta_usuario": "Anotado: GPR corresponde a Gestión de Proyectos."
+      }
+    },
+    {
+      "id": 37,
+      "obtenido": {
+        "intencion": "guardar",
+        "items": [
+          {
+            "tipo": "tarea",
+            "titulo": "Entregar lo de GPR",
+            "contenido": null,
+            "fecha_inicio": null,
+            "fecha_fin": null,
+            "fecha_limite": "2026-10-12T23:59:00+02:00",
+            "lista": null,
+            "etiquetas": [
+              "trabajo",
+              "entrega"
+            ],
+            "confianza": 0.95
+          }
+        ],
+        "consulta": null,
+        "correccion": null,
+        "pregunta": null,
+        "respuesta_usuario": "Anotada la tarea: entregar lo de GPR el próximo lunes 12 de octubre."
+      }
+    },
+    {
+      "id": 39,
+      "obtenido": {
+        "intencion": "aclarar",
+        "items": [],
+        "consulta": null,
+        "correccion": null,
+        "pregunta": "¿Quieres que anote alguna tarea sobre el contrato de alquiler o me envías el archivo a continuación?",
+        "respuesta_usuario": "¿Quieres que anote alguna tarea sobre el contrato de alquiler o me envías el archivo a continuación?"
+      }
+    },
+    {
+      "id": 40,
+      "obtenido": {
+        "intencion": "corregir",
+        "items": [],
+        "consulta": null,
+        "correccion": [
+          {
+            "item_id": "f1",
+            "cambios": {
+              "tipo": "nota",
+              "titulo": "Informe trimestral"
+            }
+          },
+          {
+            "item_id": "f2",
+            "cambios": {
+              "tipo": "nota",
+              "titulo": "Informe trimestral"
+            }
+          },
+          {
+            "item_id": "f3",
+            "cambios": {
+              "tipo": "nota",
+              "titulo": "Informe trimestral"
+            }
+          }
+        ],
+        "pregunta": null,
+        "respuesta_usuario": "Guardadas las 3 fotos como informe trimestral."
+      }
+    },
+    {
+      "id": 41,
+      "obtenido": {
+        "intencion": "corregir",
+        "items": [],
+        "consulta": null,
+        "correccion": {
+          "item_id": "n1",
+          "cambios": {
+            "contenido": "contrato.pdf"
+          }
+        },
+        "pregunta": null,
+        "respuesta_usuario": "Asociado el PDF 'contrato.pdf' a la nota 'Contrato de alquiler'."
+      }
+    },
+    {
+      "id": 42,
+      "obtenido": {
+        "intencion": "aclarar",
+        "items": [],
+        "consulta": null,
+        "correccion": null,
+        "pregunta": "¿Quieres consultar lo que tienes pendiente de este proyecto o necesitas guardar algo sobre él?",
+        "respuesta_usuario": "¿Quieres consultar lo que tienes pendiente de este proyecto o necesitas guardar algo sobre él?"
+      }
+    }
+  ],
+  "lote-2": [
+    {
+      "id": 17,
+      "obtenido": {
+        "intencion": "guardar",
+        "items": [
+          {
+            "tipo": "nota",
+            "titulo": "Contrato de junio",
+            "contenido": null,
+            "fecha_inicio": null,
+            "fecha_fin": null,
+            "fecha_limite": null,
+            "lista": null,
+            "etiquetas": [
+              "junio"
+            ],
+            "espera_archivo": false,
+            "confianza": 0.95
+          }
+        ],
+        "consulta": null,
+        "correccion": null,
+        "completar": null,
+        "memoria_nueva": null,
+        "pregunta": null,
+        "respuesta_usuario": "Guardado el contrato de junio."
+      }
+    },
+    {
+      "id": 19,
+      "obtenido": {
+        "intencion": "guardar",
+        "items": [
+          {
+            "tipo": "tarea",
+            "titulo": "Quedar con Pablo",
+            "contenido": null,
+            "fecha_inicio": null,
+            "fecha_fin": null,
+            "fecha_limite": null,
+            "lista": null,
+            "etiquetas": [],
+            "espera_archivo": false,
+            "confianza": 0.9
+          }
+        ],
+        "consulta": null,
+        "correccion": null,
+        "completar": null,
+        "memoria_nueva": null,
+        "pregunta": null,
+        "respuesta_usuario": "Apuntado como tarea: Quedar con Pablo."
+      }
+    },
+    {
+      "id": 44,
+      "obtenido": {
+        "intencion": "guardar",
+        "items": [
+          {
+            "tipo": "tarea",
+            "titulo": "Entregar el informe de Tuti",
+            "contenido": null,
+            "fecha_inicio": null,
+            "fecha_fin": null,
+            "fecha_limite": "2026-10-06T23:59:59+02:00",
+            "lista": null,
+            "etiquetas": [],
+            "espera_archivo": false,
+            "confianza": 0.95
+          }
+        ],
+        "consulta": null,
+        "correccion": null,
+        "completar": null,
+        "memoria_nueva": null,
+        "pregunta": null,
+        "respuesta_usuario": "Apuntada la tarea: entregar el informe de Tuti para el martes 6 de octubre."
+      }
+    }
+  ],
+  "lote-3": [
+    {
+      "id": 17,
+      "obtenido": {
+        "intencion": "guardar",
+        "items": [
+          {
+            "tipo": "nota",
+            "titulo": "Contrato de junio",
+            "contenido": null,
+            "fecha_inicio": null,
+            "fecha_fin": null,
+            "fecha_limite": null,
+            "lista": null,
+            "etiquetas": [
+              "junio"
+            ],
+            "espera_archivo": false,
+            "confianza": 0.95
+          }
+        ],
+        "consulta": null,
+        "correccion": null,
+        "completar": null,
+        "memoria_nueva": null,
+        "pregunta": null,
+        "respuesta_usuario": "Guardado el contrato de junio."
+      }
+    },
+    {
+      "id": 19,
+      "obtenido": {
+        "intencion": "guardar",
+        "items": [
+          {
+            "tipo": "tarea",
+            "titulo": "Quedar con Pablo",
+            "contenido": null,
+            "fecha_limite": null,
+            "lista": null,
+            "etiquetas": [],
+            "espera_archivo": false,
+            "confianza": 0.9
+          }
+        ],
+        "consulta": null,
+        "correccion": null,
+        "completar": null,
+        "memoria_nueva": null,
+        "pregunta": null,
+        "respuesta_usuario": "Guardado como tarea: Quedar con Pablo."
+      }
+    },
+    {
+      "id": 44,
+      "obtenido": {
+        "intencion": "guardar",
+        "items": [
+          {
+            "tipo": "tarea",
+            "titulo": "Entregar el informe de Tuti",
+            "contenido": null,
+            "fecha_inicio": null,
+            "fecha_fin": null,
+            "fecha_limite": "2026-10-06T23:59:59+02:00",
+            "lista": null,
+            "etiquetas": [],
+            "espera_archivo": false,
+            "confianza": 0.95
+          }
+        ],
+        "consulta": null,
+        "correccion": null,
+        "completar": null,
+        "memoria_nueva": null,
+        "pregunta": null,
+        "respuesta_usuario": "Apuntada la tarea: entregar el informe de Tuti para mañana martes 6 de octubre."
+      }
+    }
+  ]
+}

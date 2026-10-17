@@ -1,0 +1,478 @@
+{
+  "id": "secretariaCalend",
+  "name": "Secretaria · Sincronizar Calendar",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "5ec7e7a2-0001-4000-8000-000000000001",
+      "name": "Programación",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        -120
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "5ec7e7a2-0002-4000-8000-000000000002",
+      "name": "Disparador manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Configuración\" del flujo \"Sincronizar Calendar\": todo lo que se toca a mano está aquí.\n// Los demás nodos leen estos valores con $('Configuración').first().json.config\n// (Es otro flujo de n8n y por eso repite SUPABASE_URL: hay que ponerla en los dos.)\n\n// Los identificadores (no son secretos) se leen del .env del servidor, así se ponen UNA vez para todos los flujos.\n// Si una variable no está en el .env, vale lo que esté escrito aquí abajo.\nconst delEntorno = (clave, porDefecto) => {\n  try {\n    return String($env[clave] ?? '').trim() || porDefecto;\n  } catch (e) {\n    return porDefecto;\n  }\n};\n\n// === Valores fáciles de cambiar ===\n// Project URL de Supabase (Integrations > Data API), sin /rest/v1 al final. No es un secreto.\nconst SUPABASE_URL = delEntorno('SUPABASE_URL', 'https://TU-PROYECTO.supabase.co');\n// ID del calendario \"Secretaria\" (acaba en @group.calendar.google.com). No uses \"primary\": sería tu calendario principal.\nconst CALENDAR_ID = delEntorno('GOOGLE_CALENDAR_ID', 'TU-CALENDARIO@group.calendar.google.com');\n// Minutos antes del evento para el aviso del propio calendario (popup)\nconst AVISO_MIN = 30;\n// Duración de un evento que no indica fecha_fin\nconst DURACION_MIN = 60;\n// Máximo de eventos que se sincronizan en cada ejecución (cada minuto)\nconst LOTE = 20;\n// ==================================\n\nif (!/^https:\\/\\/[a-z0-9-]+\\.supabase\\.co\\/?$/i.test(SUPABASE_URL) || SUPABASE_URL.includes('TU-PROYECTO')) {\n  throw new Error('Configuración: pon tu Project URL de Supabase en SUPABASE_URL (https://<ref>.supabase.co, sin /rest/v1). Va en el .env del servidor (SUPABASE_URL=…, y después docker compose up -d)');\n}\nif (!/^[^@\\s/]+@[^@\\s/]+$/.test(CALENDAR_ID) || CALENDAR_ID.includes('TU-CALENDARIO')) {\n  throw new Error('Configuración: pon el ID del calendario \"Secretaria\" en CALENDAR_ID (termina en @group.calendar.google.com). Va en el .env del servidor (GOOGLE_CALENDAR_ID=…, y después docker compose up -d)');\n}\nfor (const [nombre, valor] of [['AVISO_MIN', AVISO_MIN], ['DURACION_MIN', DURACION_MIN], ['LOTE', LOTE]]) {\n  if (!Number.isInteger(valor) || valor <= 0) throw new Error(`Configuración: ${nombre} debe ser un entero positivo`);\n}\nif (AVISO_MIN > 40320) throw new Error('Configuración: AVISO_MIN no puede pasar de 40320 minutos (4 semanas), el máximo de Google');\n\nreturn [\n  {\n    json: {\n      config: {\n        supabase_url: SUPABASE_URL.replace(/\\/+$/, ''),\n        calendar_id: CALENDAR_ID,\n        aviso_min: AVISO_MIN,\n        duracion_min: DURACION_MIN,\n        lote: LOTE,\n        zona: 'Europe/Madrid',\n      },\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a2-0003-4000-8000-000000000003",
+      "name": "Configuración",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/items?select=id,tipo,titulo,contenido,estado,fecha_inicio,fecha_fin,calendar_event_id,updated_at&calendar_pendiente=eq.true&order=updated_at.asc&limit={{ $('Configuración').first().json.config.lote }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "5ec7e7a2-0004-4000-8000-000000000004",
+      "name": "Leer pendientes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Planificar sincronización\": prepara la petición a Google Calendar de cada evento pendiente.\n// Solo emite POST (crear) y PATCH (actualizar), siempre con cuerpo: el nodo HTTP de Google no admite\n// expresiones en \"Send Body\", así que no puede mezclar métodos con y sin cuerpo.\n// Si no hay nada que enviar no emite items y la rama no se ejecuta.\n\n// Funciones puras compartidas por los nodos del flujo \"Sincronizar Calendar\".\n// n8n no permite importar código entre nodos: el generador inserta este archivo en cada nodo que\n// lo necesita, en la línea que contiene solo el marcador COMUN (entre guiones bajos dobles y en un\n// comentario de bloque). No usa nada de n8n, así que se prueba sin red.\n\nconst HORAS_AVISO_URGENTE = 2;\n\n// Una fecha ISO con hora (la que devuelve PostgREST para un timestamptz)\nconst esFechaIso = (v) => typeof v === 'string' && /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}/.test(v) && !Number.isNaN(Date.parse(v));\n\n// Id de un evento de Google tal como lo guarda este sistema: solo caracteres seguros para ir en una URL\nconst esIdEvento = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{5,1024}$/.test(v);\n\n// Qué hacer con un item pendiente de sincronizar.\n// \"sincronizar\": crear o actualizar el evento en Calendar.\n// \"borrar\": el usuario canceló el item (estado archivado) y tiene un evento en Calendar: se borra ese evento. Es la ÚNICA\n//   excepción a que este sistema no borra eventos; un evento completado (\"hecho\") permanece como registro.\n//   También se borra el evento de un item PENDIENTE que ya no es una cita (el usuario la convirtió en alarma o en tarea: «ponla como alarma»,\n//   si no, la cita seguiría en su calendario aunque ya no lo sea.\n// \"omitir\": limpiar la marca sin tocar Calendar (si un evento se completa, el evento antiguo permanece allí como registro).\nfunction clasificar(item) {\n  if (item.estado === 'archivado' && esIdEvento(item.calendar_event_id)) return { accion: 'borrar', motivo: 'cancelado por el usuario' };\n  if (item.tipo !== 'evento' && item.estado === 'pendiente' && esIdEvento(item.calendar_event_id)) return { accion: 'borrar', motivo: 'ya no es una cita' };\n  if (item.tipo !== 'evento') return { accion: 'omitir', motivo: 'ya no es un evento' };\n  if (item.estado !== 'pendiente') return { accion: 'omitir', motivo: 'ya no está pendiente' };\n  if (!esFechaIso(item.fecha_inicio)) return { accion: 'omitir', motivo: 'no tiene una fecha de inicio válida' };\n  return { accion: 'sincronizar' };\n}\n\n// Identificador del evento en Google: los 32 caracteres hexadecimales del id del item.\n// Google acepta ids propios con las letras a-v y los dígitos 0-9 (de 5 a 1024 caracteres), únicos por calendario.\n// Así, repetir la creación de un mismo item no puede producir dos eventos distintos.\nfunction idEventoDe(itemId) {\n  const h = String(itemId).replace(/-/g, '').toLowerCase();\n  if (!/^[0-9a-f]{32}$/.test(h)) throw new Error(`El id del item no es un UUID: ${itemId}`);\n  return h;\n}\n\n// Día natural en Madrid (AAAA-MM-DD) de un instante\nconst diaMadrid = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid' }).format(new Date(ms));\n\n// Aviso urgente por WhatsApp: además del aviso del calendario, se avisa si el\n// evento es del mismo día en que se crea o se mueve, o si su aviso cae a menos de 2 horas de ese momento.\n// \"referencia\" es la hora del cambio (updated_at). Devuelve cuándo avisar, o null si no hace falta.\n// Si la hora del aviso ya ha pasado, se avisa en el acto (el aviso del iPhone llegaría tarde).\nfunction calcularAviso({ fecha_inicio, referencia, aviso_min }) {\n  const inicio = Date.parse(fecha_inicio);\n  const ref = Date.parse(referencia);\n  if (Number.isNaN(inicio) || Number.isNaN(ref)) return null;\n  if (inicio <= ref) return null; // ya ha empezado: no hay nada que avisar\n  const alarma = inicio - aviso_min * 60000;\n  const mismoDia = diaMadrid(inicio) === diaMadrid(ref);\n  const pocoMargen = alarma - ref < HORAS_AVISO_URGENTE * 3600000;\n  if (!mismoDia && !pocoMargen) return null;\n  return new Date(Math.max(alarma, ref)).toISOString();\n}\n\n// Cuerpo del evento para Google Calendar (sirve para crear y para actualizar)\nfunction cuerpoEvento(item, config) {\n  const inicioMs = Date.parse(item.fecha_inicio);\n  let finMs = esFechaIso(item.fecha_fin) ? Date.parse(item.fecha_fin) : NaN;\n  if (!(finMs > inicioMs)) finMs = inicioMs + config.duracion_min * 60000; // Google exige que el fin sea posterior\n  const descripcion = textoOnull(item.contenido) ?? '';\n  return {\n    summary: item.titulo,\n    // Siempre se envía (aunque esté vacía): en un PATCH es la única forma de borrar una descripción anterior\n    description: descripcion,\n    start: { dateTime: new Date(inicioMs).toISOString(), timeZone: config.zona },\n    end: { dateTime: new Date(finMs).toISOString(), timeZone: config.zona },\n    // Los avisos son un array: en un PATCH se sustituyen enteros, que es lo que se quiere\n    reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: config.aviso_min }] },\n    extendedProperties: { private: { item_id: item.id } },\n  };\n}\n\nfunction textoOnull(v) {\n  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null;\n}\n\n// --- Pegamento con n8n ---\nconst config = $('Configuración').first().json.config;\nconst API = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(config.calendar_id)}/events`;\n\nconst pendientes = $('Leer pendientes')\n  .all()\n  .map((i) => i.json)\n  .filter((r) => r && typeof r.id === 'string');\n\nreturn pendientes\n  .filter((it) => clasificar(it).accion === 'sincronizar')\n  .map((it) => {\n    // Si ya tiene evento en Calendar se actualiza; si no, se crea con un identificador derivado del item\n    const existe = typeof it.calendar_event_id === 'string' && it.calendar_event_id !== '';\n    const idEvento = existe ? it.calendar_event_id : idEventoDe(it.id);\n    const cuerpo = cuerpoEvento(it, config);\n    const comun = { item_id: it.id, updated_at: it.updated_at, id_evento: idEvento, fecha_inicio: it.fecha_inicio };\n    return {\n      json: existe\n        ? { accion: 'actualizar', metodo: 'PATCH', url: `${API}/${encodeURIComponent(idEvento)}`, cuerpo, ...comun }\n        : { accion: 'crear', metodo: 'POST', url: API, cuerpo: { id: idEvento, ...cuerpo }, ...comun },\n    };\n  });\n"
+      },
+      "id": "5ec7e7a2-0005-4000-8000-000000000005",
+      "name": "Planificar sincronización",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        },
+        "method": "={{ $json.metodo }}",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "5ec7e7a2-0006-4000-8000-000000000006",
+      "name": "Google Calendar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        -120
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": null,
+          "name": "Google Calendar"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Registrar\": convierte la respuesta de Google de cada evento en la actualización que hay que\n// hacer en Supabase. La respuesta llega completa (statusCode, body) porque el nodo de Google no falla ante errores HTTP.\n//\n// Cada escritura lleva una condición sobre updated_at (el valor que leyó \"Leer pendientes\"): si el item cambió\n// mientras se sincronizaba, esa actualización no afecta a ninguna fila y el item sigue pendiente.\n\n// Funciones puras compartidas por los nodos del flujo \"Sincronizar Calendar\".\n// n8n no permite importar código entre nodos: el generador inserta este archivo en cada nodo que\n// lo necesita, en la línea que contiene solo el marcador COMUN (entre guiones bajos dobles y en un\n// comentario de bloque). No usa nada de n8n, así que se prueba sin red.\n\nconst HORAS_AVISO_URGENTE = 2;\n\n// Una fecha ISO con hora (la que devuelve PostgREST para un timestamptz)\nconst esFechaIso = (v) => typeof v === 'string' && /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}/.test(v) && !Number.isNaN(Date.parse(v));\n\n// Id de un evento de Google tal como lo guarda este sistema: solo caracteres seguros para ir en una URL\nconst esIdEvento = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{5,1024}$/.test(v);\n\n// Qué hacer con un item pendiente de sincronizar.\n// \"sincronizar\": crear o actualizar el evento en Calendar.\n// \"borrar\": el usuario canceló el item (estado archivado) y tiene un evento en Calendar: se borra ese evento. Es la ÚNICA\n//   excepción a que este sistema no borra eventos; un evento completado (\"hecho\") permanece como registro.\n//   También se borra el evento de un item PENDIENTE que ya no es una cita (el usuario la convirtió en alarma o en tarea: «ponla como alarma»,\n//   si no, la cita seguiría en su calendario aunque ya no lo sea.\n// \"omitir\": limpiar la marca sin tocar Calendar (si un evento se completa, el evento antiguo permanece allí como registro).\nfunction clasificar(item) {\n  if (item.estado === 'archivado' && esIdEvento(item.calendar_event_id)) return { accion: 'borrar', motivo: 'cancelado por el usuario' };\n  if (item.tipo !== 'evento' && item.estado === 'pendiente' && esIdEvento(item.calendar_event_id)) return { accion: 'borrar', motivo: 'ya no es una cita' };\n  if (item.tipo !== 'evento') return { accion: 'omitir', motivo: 'ya no es un evento' };\n  if (item.estado !== 'pendiente') return { accion: 'omitir', motivo: 'ya no está pendiente' };\n  if (!esFechaIso(item.fecha_inicio)) return { accion: 'omitir', motivo: 'no tiene una fecha de inicio válida' };\n  return { accion: 'sincronizar' };\n}\n\n// Identificador del evento en Google: los 32 caracteres hexadecimales del id del item.\n// Google acepta ids propios con las letras a-v y los dígitos 0-9 (de 5 a 1024 caracteres), únicos por calendario.\n// Así, repetir la creación de un mismo item no puede producir dos eventos distintos.\nfunction idEventoDe(itemId) {\n  const h = String(itemId).replace(/-/g, '').toLowerCase();\n  if (!/^[0-9a-f]{32}$/.test(h)) throw new Error(`El id del item no es un UUID: ${itemId}`);\n  return h;\n}\n\n// Día natural en Madrid (AAAA-MM-DD) de un instante\nconst diaMadrid = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid' }).format(new Date(ms));\n\n// Aviso urgente por WhatsApp: además del aviso del calendario, se avisa si el\n// evento es del mismo día en que se crea o se mueve, o si su aviso cae a menos de 2 horas de ese momento.\n// \"referencia\" es la hora del cambio (updated_at). Devuelve cuándo avisar, o null si no hace falta.\n// Si la hora del aviso ya ha pasado, se avisa en el acto (el aviso del iPhone llegaría tarde).\nfunction calcularAviso({ fecha_inicio, referencia, aviso_min }) {\n  const inicio = Date.parse(fecha_inicio);\n  const ref = Date.parse(referencia);\n  if (Number.isNaN(inicio) || Number.isNaN(ref)) return null;\n  if (inicio <= ref) return null; // ya ha empezado: no hay nada que avisar\n  const alarma = inicio - aviso_min * 60000;\n  const mismoDia = diaMadrid(inicio) === diaMadrid(ref);\n  const pocoMargen = alarma - ref < HORAS_AVISO_URGENTE * 3600000;\n  if (!mismoDia && !pocoMargen) return null;\n  return new Date(Math.max(alarma, ref)).toISOString();\n}\n\n// Cuerpo del evento para Google Calendar (sirve para crear y para actualizar)\nfunction cuerpoEvento(item, config) {\n  const inicioMs = Date.parse(item.fecha_inicio);\n  let finMs = esFechaIso(item.fecha_fin) ? Date.parse(item.fecha_fin) : NaN;\n  if (!(finMs > inicioMs)) finMs = inicioMs + config.duracion_min * 60000; // Google exige que el fin sea posterior\n  const descripcion = textoOnull(item.contenido) ?? '';\n  return {\n    summary: item.titulo,\n    // Siempre se envía (aunque esté vacía): en un PATCH es la única forma de borrar una descripción anterior\n    description: descripcion,\n    start: { dateTime: new Date(inicioMs).toISOString(), timeZone: config.zona },\n    end: { dateTime: new Date(finMs).toISOString(), timeZone: config.zona },\n    // Los avisos son un array: en un PATCH se sustituyen enteros, que es lo que se quiere\n    reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: config.aviso_min }] },\n    extendedProperties: { private: { item_id: item.id } },\n  };\n}\n\nfunction textoOnull(v) {\n  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null;\n}\n\n// --- Pegamento con n8n ---\nconst config = $('Configuración').first().json.config;\nconst base = `${config.supabase_url}/rest/v1`;\nconst plan = $('Planificar sincronización').all().map((i) => i.json);\nconst respuestas = $input.all().map((i) => i.json);\n\nconst resumen = (cuerpo) => String(typeof cuerpo === 'string' ? cuerpo : JSON.stringify(cuerpo ?? '')).slice(0, 200);\n\nconst escrituras = [];\nconst fallos = [];\n\nrespuestas.forEach((r, i) => {\n  const p = plan[i];\n  const estado = r.statusCode;\n  const parche = (etiqueta, cuerpo) =>\n    escrituras.push({\n      json: {\n        etiqueta,\n        metodo: 'PATCH',\n        url: `${base}/items?id=eq.${encodeURIComponent(p.item_id)}&updated_at=eq.${encodeURIComponent(p.updated_at)}`,\n        cuerpo,\n        prefer: 'return=minimal',\n      },\n    });\n\n  if (estado >= 200 && estado < 300) {\n    const idEvento = typeof r.body?.id === 'string' ? r.body.id : p.id_evento;\n    const aviso = calcularAviso({ fecha_inicio: p.fecha_inicio, referencia: p.updated_at, aviso_min: config.aviso_min });\n    parche(`${p.accion}: ${p.item_id}`, { calendar_event_id: idEvento, calendar_pendiente: false, aviso_whatsapp_en: aviso, aviso_whatsapp_enviado_at: null });\n  } else if (p.accion === 'crear' && estado === 409) {\n    // El evento ya existía (una creación anterior funcionó pero no se pudo anotar): se anota su id y\n    // el item sigue pendiente, así que la próxima vez se actualiza con los datos actuales\n    parche(`ya existía: ${p.item_id}`, { calendar_event_id: p.id_evento });\n  } else if (p.accion === 'actualizar' && estado === 404) {\n    // El evento ya no está en Calendar (se borró allí): se olvida su id y el item sigue pendiente,\n    // así que la próxima vez se vuelve a crear\n    parche(`desaparecido de Calendar: ${p.item_id}`, { calendar_event_id: null });\n  } else {\n    const motivo = r.error ? String(r.error.message ?? r.error) : `HTTP ${estado} ${resumen(r.body)}`;\n    fallos.push(`${p.accion} ${p.item_id}: ${motivo}`);\n  }\n});\n\n// Un fallo aislado se reintenta al minuto siguiente. Si no se ha podido hacer NADA (credencial caducada,\n// calendario inexistente, Google caído…) se avisa con un error para que la ejecución salga en rojo.\nif (fallos.length > 0 && escrituras.length === 0) {\n  throw new Error(`Sincronizar Calendar: ${fallos.length} fallo(s) y ningún evento sincronizado. ${fallos.slice(0, 3).join(' | ')}`);\n}\n\nreturn escrituras;\n"
+      },
+      "id": "5ec7e7a2-0007-4000-8000-000000000007",
+      "name": "Registrar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Planificar omitidos\": limpia la marca de los items pendientes que NO se sincronizan con Calendar\n// (dejaron de ser eventos, se completaron o no tienen una fecha válida). Sin esto se reprocesarían cada minuto.\n// Lo completado conserva su evento en Calendar como registro (la etiqueta lo indica). Una cita que se convirtió en alarma o tarea NO llega aquí: la atiende la rama de borrados.\n\n// Funciones puras compartidas por los nodos del flujo \"Sincronizar Calendar\".\n// n8n no permite importar código entre nodos: el generador inserta este archivo en cada nodo que\n// lo necesita, en la línea que contiene solo el marcador COMUN (entre guiones bajos dobles y en un\n// comentario de bloque). No usa nada de n8n, así que se prueba sin red.\n\nconst HORAS_AVISO_URGENTE = 2;\n\n// Una fecha ISO con hora (la que devuelve PostgREST para un timestamptz)\nconst esFechaIso = (v) => typeof v === 'string' && /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}/.test(v) && !Number.isNaN(Date.parse(v));\n\n// Id de un evento de Google tal como lo guarda este sistema: solo caracteres seguros para ir en una URL\nconst esIdEvento = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{5,1024}$/.test(v);\n\n// Qué hacer con un item pendiente de sincronizar.\n// \"sincronizar\": crear o actualizar el evento en Calendar.\n// \"borrar\": el usuario canceló el item (estado archivado) y tiene un evento en Calendar: se borra ese evento. Es la ÚNICA\n//   excepción a que este sistema no borra eventos; un evento completado (\"hecho\") permanece como registro.\n//   También se borra el evento de un item PENDIENTE que ya no es una cita (el usuario la convirtió en alarma o en tarea: «ponla como alarma»,\n//   si no, la cita seguiría en su calendario aunque ya no lo sea.\n// \"omitir\": limpiar la marca sin tocar Calendar (si un evento se completa, el evento antiguo permanece allí como registro).\nfunction clasificar(item) {\n  if (item.estado === 'archivado' && esIdEvento(item.calendar_event_id)) return { accion: 'borrar', motivo: 'cancelado por el usuario' };\n  if (item.tipo !== 'evento' && item.estado === 'pendiente' && esIdEvento(item.calendar_event_id)) return { accion: 'borrar', motivo: 'ya no es una cita' };\n  if (item.tipo !== 'evento') return { accion: 'omitir', motivo: 'ya no es un evento' };\n  if (item.estado !== 'pendiente') return { accion: 'omitir', motivo: 'ya no está pendiente' };\n  if (!esFechaIso(item.fecha_inicio)) return { accion: 'omitir', motivo: 'no tiene una fecha de inicio válida' };\n  return { accion: 'sincronizar' };\n}\n\n// Identificador del evento en Google: los 32 caracteres hexadecimales del id del item.\n// Google acepta ids propios con las letras a-v y los dígitos 0-9 (de 5 a 1024 caracteres), únicos por calendario.\n// Así, repetir la creación de un mismo item no puede producir dos eventos distintos.\nfunction idEventoDe(itemId) {\n  const h = String(itemId).replace(/-/g, '').toLowerCase();\n  if (!/^[0-9a-f]{32}$/.test(h)) throw new Error(`El id del item no es un UUID: ${itemId}`);\n  return h;\n}\n\n// Día natural en Madrid (AAAA-MM-DD) de un instante\nconst diaMadrid = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid' }).format(new Date(ms));\n\n// Aviso urgente por WhatsApp: además del aviso del calendario, se avisa si el\n// evento es del mismo día en que se crea o se mueve, o si su aviso cae a menos de 2 horas de ese momento.\n// \"referencia\" es la hora del cambio (updated_at). Devuelve cuándo avisar, o null si no hace falta.\n// Si la hora del aviso ya ha pasado, se avisa en el acto (el aviso del iPhone llegaría tarde).\nfunction calcularAviso({ fecha_inicio, referencia, aviso_min }) {\n  const inicio = Date.parse(fecha_inicio);\n  const ref = Date.parse(referencia);\n  if (Number.isNaN(inicio) || Number.isNaN(ref)) return null;\n  if (inicio <= ref) return null; // ya ha empezado: no hay nada que avisar\n  const alarma = inicio - aviso_min * 60000;\n  const mismoDia = diaMadrid(inicio) === diaMadrid(ref);\n  const pocoMargen = alarma - ref < HORAS_AVISO_URGENTE * 3600000;\n  if (!mismoDia && !pocoMargen) return null;\n  return new Date(Math.max(alarma, ref)).toISOString();\n}\n\n// Cuerpo del evento para Google Calendar (sirve para crear y para actualizar)\nfunction cuerpoEvento(item, config) {\n  const inicioMs = Date.parse(item.fecha_inicio);\n  let finMs = esFechaIso(item.fecha_fin) ? Date.parse(item.fecha_fin) : NaN;\n  if (!(finMs > inicioMs)) finMs = inicioMs + config.duracion_min * 60000; // Google exige que el fin sea posterior\n  const descripcion = textoOnull(item.contenido) ?? '';\n  return {\n    summary: item.titulo,\n    // Siempre se envía (aunque esté vacía): en un PATCH es la única forma de borrar una descripción anterior\n    description: descripcion,\n    start: { dateTime: new Date(inicioMs).toISOString(), timeZone: config.zona },\n    end: { dateTime: new Date(finMs).toISOString(), timeZone: config.zona },\n    // Los avisos son un array: en un PATCH se sustituyen enteros, que es lo que se quiere\n    reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: config.aviso_min }] },\n    extendedProperties: { private: { item_id: item.id } },\n  };\n}\n\nfunction textoOnull(v) {\n  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null;\n}\n\n// --- Pegamento con n8n ---\nconst config = $('Configuración').first().json.config;\nconst base = `${config.supabase_url}/rest/v1`;\n\nreturn $('Leer pendientes')\n  .all()\n  .map((i) => i.json)\n  .filter((r) => r && typeof r.id === 'string')\n  .map((it) => ({ it, c: clasificar(it) }))\n  .filter(({ c }) => c.accion === 'omitir')\n  .map(({ it, c }) => ({\n    json: {\n      etiqueta: `omitido: ${it.id} (${c.motivo}${it.calendar_event_id ? '; el evento sigue en Calendar' : ''})`,\n      metodo: 'PATCH',\n      url: `${base}/items?id=eq.${encodeURIComponent(it.id)}&updated_at=eq.${encodeURIComponent(it.updated_at)}`,\n      cuerpo: { calendar_pendiente: false },\n      prefer: 'return=minimal',\n    },\n  }));\n"
+      },
+      "id": "5ec7e7a2-0008-4000-8000-000000000008",
+      "name": "Planificar omitidos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Planificar borrados\": prepara el DELETE a Google Calendar de los eventos de items ARCHIVADOS, es decir, cancelados por\n// el usuario (\"quita la cita de mañana\"). Es la única excepción a \"este sistema nunca borra eventos\": solo se borra el evento\n// cuyo id guardó este sistema en el item archivado (calendar_event_id), nunca otro, y nunca por haberse completado.\n// El nodo HTTP de Google no puede mezclar métodos con y sin cuerpo, así que los borrados tienen su propio nodo.\n// Si no hay nada que borrar no emite items y la rama no se ejecuta.\n\n// Funciones puras compartidas por los nodos del flujo \"Sincronizar Calendar\".\n// n8n no permite importar código entre nodos: el generador inserta este archivo en cada nodo que\n// lo necesita, en la línea que contiene solo el marcador COMUN (entre guiones bajos dobles y en un\n// comentario de bloque). No usa nada de n8n, así que se prueba sin red.\n\nconst HORAS_AVISO_URGENTE = 2;\n\n// Una fecha ISO con hora (la que devuelve PostgREST para un timestamptz)\nconst esFechaIso = (v) => typeof v === 'string' && /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}/.test(v) && !Number.isNaN(Date.parse(v));\n\n// Id de un evento de Google tal como lo guarda este sistema: solo caracteres seguros para ir en una URL\nconst esIdEvento = (v) => typeof v === 'string' && /^[A-Za-z0-9_-]{5,1024}$/.test(v);\n\n// Qué hacer con un item pendiente de sincronizar.\n// \"sincronizar\": crear o actualizar el evento en Calendar.\n// \"borrar\": el usuario canceló el item (estado archivado) y tiene un evento en Calendar: se borra ese evento. Es la ÚNICA\n//   excepción a que este sistema no borra eventos; un evento completado (\"hecho\") permanece como registro.\n//   También se borra el evento de un item PENDIENTE que ya no es una cita (el usuario la convirtió en alarma o en tarea: «ponla como alarma»,\n//   si no, la cita seguiría en su calendario aunque ya no lo sea.\n// \"omitir\": limpiar la marca sin tocar Calendar (si un evento se completa, el evento antiguo permanece allí como registro).\nfunction clasificar(item) {\n  if (item.estado === 'archivado' && esIdEvento(item.calendar_event_id)) return { accion: 'borrar', motivo: 'cancelado por el usuario' };\n  if (item.tipo !== 'evento' && item.estado === 'pendiente' && esIdEvento(item.calendar_event_id)) return { accion: 'borrar', motivo: 'ya no es una cita' };\n  if (item.tipo !== 'evento') return { accion: 'omitir', motivo: 'ya no es un evento' };\n  if (item.estado !== 'pendiente') return { accion: 'omitir', motivo: 'ya no está pendiente' };\n  if (!esFechaIso(item.fecha_inicio)) return { accion: 'omitir', motivo: 'no tiene una fecha de inicio válida' };\n  return { accion: 'sincronizar' };\n}\n\n// Identificador del evento en Google: los 32 caracteres hexadecimales del id del item.\n// Google acepta ids propios con las letras a-v y los dígitos 0-9 (de 5 a 1024 caracteres), únicos por calendario.\n// Así, repetir la creación de un mismo item no puede producir dos eventos distintos.\nfunction idEventoDe(itemId) {\n  const h = String(itemId).replace(/-/g, '').toLowerCase();\n  if (!/^[0-9a-f]{32}$/.test(h)) throw new Error(`El id del item no es un UUID: ${itemId}`);\n  return h;\n}\n\n// Día natural en Madrid (AAAA-MM-DD) de un instante\nconst diaMadrid = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid' }).format(new Date(ms));\n\n// Aviso urgente por WhatsApp: además del aviso del calendario, se avisa si el\n// evento es del mismo día en que se crea o se mueve, o si su aviso cae a menos de 2 horas de ese momento.\n// \"referencia\" es la hora del cambio (updated_at). Devuelve cuándo avisar, o null si no hace falta.\n// Si la hora del aviso ya ha pasado, se avisa en el acto (el aviso del iPhone llegaría tarde).\nfunction calcularAviso({ fecha_inicio, referencia, aviso_min }) {\n  const inicio = Date.parse(fecha_inicio);\n  const ref = Date.parse(referencia);\n  if (Number.isNaN(inicio) || Number.isNaN(ref)) return null;\n  if (inicio <= ref) return null; // ya ha empezado: no hay nada que avisar\n  const alarma = inicio - aviso_min * 60000;\n  const mismoDia = diaMadrid(inicio) === diaMadrid(ref);\n  const pocoMargen = alarma - ref < HORAS_AVISO_URGENTE * 3600000;\n  if (!mismoDia && !pocoMargen) return null;\n  return new Date(Math.max(alarma, ref)).toISOString();\n}\n\n// Cuerpo del evento para Google Calendar (sirve para crear y para actualizar)\nfunction cuerpoEvento(item, config) {\n  const inicioMs = Date.parse(item.fecha_inicio);\n  let finMs = esFechaIso(item.fecha_fin) ? Date.parse(item.fecha_fin) : NaN;\n  if (!(finMs > inicioMs)) finMs = inicioMs + config.duracion_min * 60000; // Google exige que el fin sea posterior\n  const descripcion = textoOnull(item.contenido) ?? '';\n  return {\n    summary: item.titulo,\n    // Siempre se envía (aunque esté vacía): en un PATCH es la única forma de borrar una descripción anterior\n    description: descripcion,\n    start: { dateTime: new Date(inicioMs).toISOString(), timeZone: config.zona },\n    end: { dateTime: new Date(finMs).toISOString(), timeZone: config.zona },\n    // Los avisos son un array: en un PATCH se sustituyen enteros, que es lo que se quiere\n    reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: config.aviso_min }] },\n    extendedProperties: { private: { item_id: item.id } },\n  };\n}\n\nfunction textoOnull(v) {\n  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null;\n}\n\n// --- Pegamento con n8n ---\nconst config = $('Configuración').first().json.config;\nconst API = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(config.calendar_id)}/events`;\n\nreturn $('Leer pendientes')\n  .all()\n  .map((i) => i.json)\n  .filter((r) => r && typeof r.id === 'string')\n  .filter((it) => clasificar(it).accion === 'borrar')\n  .map((it) => ({\n    json: {\n      accion: 'borrar',\n      metodo: 'DELETE',\n      url: `${API}/${encodeURIComponent(it.calendar_event_id)}`,\n      item_id: it.id,\n      updated_at: it.updated_at,\n      id_evento: it.calendar_event_id,\n    },\n  }));\n"
+      },
+      "id": "5ec7e7a2-0010-4000-8000-000000000010",
+      "name": "Planificar borrados",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        },
+        "method": "DELETE",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api"
+      },
+      "id": "5ec7e7a2-0011-4000-8000-000000000011",
+      "name": "Borrar en Google Calendar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        520
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": null,
+          "name": "Google Calendar"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Registrar borrados\": convierte la respuesta de Google a cada DELETE en la actualización que hay que hacer en\n// Supabase. La respuesta llega completa (statusCode, body) porque el nodo de Google no falla ante errores HTTP.\n//   2xx (204)  borrado\n//   404 / 410  el evento ya no existía (se borró a mano en Calendar): el resultado es el mismo\n//   otro       fallo: no se anota nada y se reintenta al minuto siguiente\n// Al terminar el item se olvida del evento (calendar_event_id nulo, sin aviso pendiente), con la misma condición sobre\n// updated_at que el resto de escrituras: si el item cambió mientras tanto, sigue pendiente.\n\n// --- Pegamento con n8n ---\nconst config = $('Configuración').first().json.config;\nconst base = `${config.supabase_url}/rest/v1`;\nconst plan = $('Planificar borrados').all().map((i) => i.json);\nconst respuestas = $input.all().map((i) => i.json);\n\nconst resumen = (cuerpo) => String(typeof cuerpo === 'string' ? cuerpo : JSON.stringify(cuerpo ?? '')).slice(0, 200);\n\nconst escrituras = [];\nconst fallos = [];\n\nrespuestas.forEach((r, i) => {\n  const p = plan[i];\n  const estado = r.statusCode;\n  if ((estado >= 200 && estado < 300) || estado === 404 || estado === 410) {\n    escrituras.push({\n      json: {\n        etiqueta: `${estado >= 200 && estado < 300 ? 'borrado' : 'ya no existía'}: ${p.item_id}`,\n        metodo: 'PATCH',\n        url: `${base}/items?id=eq.${encodeURIComponent(p.item_id)}&updated_at=eq.${encodeURIComponent(p.updated_at)}`,\n        cuerpo: { calendar_event_id: null, calendar_pendiente: false, aviso_whatsapp_en: null, aviso_whatsapp_enviado_at: null },\n        prefer: 'return=minimal',\n      },\n    });\n  } else {\n    const motivo = r.error ? String(r.error.message ?? r.error) : `HTTP ${estado} ${resumen(r.body)}`;\n    fallos.push(`borrar ${p.item_id}: ${motivo}`);\n  }\n});\n\n// Un fallo aislado se reintenta al minuto siguiente. Si no se ha podido hacer NADA se avisa con un error.\nif (fallos.length > 0 && escrituras.length === 0) {\n  throw new Error(`Sincronizar Calendar: ${fallos.length} fallo(s) y ningún evento borrado. ${fallos.slice(0, 3).join(' | ')}`);\n}\n\nreturn escrituras;\n"
+      },
+      "id": "5ec7e7a2-0012-4000-8000-000000000012",
+      "name": "Registrar borrados",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "={{ $json.metodo }}",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "={{ $json.prefer }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "5ec7e7a2-0009-4000-8000-000000000009",
+      "name": "Escribir en Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## ① Disparo y configuración\nSe ejecuta **cada minuto** (Programación) o a mano (Disparador manual).\n**Configuración**: el único sitio con valores a mano (URL de Supabase, ID del calendario, minutos de aviso).",
+        "height": 200,
+        "width": 460,
+        "color": 4
+      },
+      "id": "5ec7e7a2-0101-4000-8000-000000000101",
+      "name": "Nota 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ② Pendientes\nLee los eventos marcados `calendar_pendiente` (lo marca un trigger de la base de datos al crear o cambiar un evento).",
+        "height": 200,
+        "width": 240,
+        "color": 5
+      },
+      "id": "5ec7e7a2-0102-4000-8000-000000000102",
+      "name": "Nota 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        440,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ③ Google Calendar\n**Planificar** decide crear o actualizar. Google devuelve el código de estado; **Registrar** lo interpreta (409: ya existía; 404: ya no existe), limpia la marca con una condición sobre `updated_at` y calcula el aviso urgente por WhatsApp.",
+        "height": 200,
+        "width": 720,
+        "color": 6
+      },
+      "id": "5ec7e7a2-0103-4000-8000-000000000103",
+      "name": "Nota 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        680,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ④ Omitidos y borrados\n**Omitidos**: items que ya no se sincronizan (dejaron de ser evento, completados o sin fecha): solo se limpia la marca. **Borrados**: el evento de un item **archivado** (cancelado por el usuario) se borra de Calendar; es la única excepción a que este sistema no borra eventos.",
+        "height": 180,
+        "width": 720,
+        "color": 3
+      },
+      "id": "5ec7e7a2-0104-4000-8000-000000000104",
+      "name": "Nota 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        680,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⑤ Escritura\nLas dos ramas terminan aquí: actualizan `items` en Supabase.",
+        "height": 200,
+        "width": 240,
+        "color": 7
+      },
+      "id": "5ec7e7a2-0105-4000-8000-000000000105",
+      "name": "Nota 5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Antes de ejecutar\n1. Elige la credencial **Google Calendar OAuth2 API** en *Google Calendar* y en *Borrar en Google Calendar*, y la **Supabase API** en *Leer pendientes* y *Escribir en Supabase*.\n2. Identificadores: `SUPABASE_URL` y `GOOGLE_CALENDAR_ID` en el `.env` del servidor (no hace falta tocar **Configuración**).\n3. Publica el flujo para que se ejecute cada minuto.",
+        "height": 300,
+        "width": 480,
+        "color": 2
+      },
+      "id": "5ec7e7a2-0106-4000-8000-000000000106",
+      "name": "Nota 6",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        340
+      ]
+    }
+  ],
+  "connections": {
+    "Programación": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Disparador manual": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuración": {
+      "main": [
+        [
+          {
+            "node": "Leer pendientes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer pendientes": {
+      "main": [
+        [
+          {
+            "node": "Planificar sincronización",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Planificar omitidos",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Planificar borrados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Planificar sincronización": {
+      "main": [
+        [
+          {
+            "node": "Google Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar": {
+      "main": [
+        [
+          {
+            "node": "Registrar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar": {
+      "main": [
+        [
+          {
+            "node": "Escribir en Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Planificar omitidos": {
+      "main": [
+        [
+          {
+            "node": "Escribir en Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Planificar borrados": {
+      "main": [
+        [
+          {
+            "node": "Borrar en Google Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Borrar en Google Calendar": {
+      "main": [
+        [
+          {
+            "node": "Registrar borrados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar borrados": {
+      "main": [
+        [
+          {
+            "node": "Escribir en Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid",
+    "errorWorkflow": "secretariaAvisoF"
+  }
+}

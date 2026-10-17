@@ -1,0 +1,20 @@
+# Secretos: nunca al repositorio
+.env
+.env.*
+!.env.example
+/secretos/
+
+# Copias de seguridad (las crean los scripts de herramientas/servidor): contienen credenciales cifradas y datos
+# personales. Anclado a la raíz con "/": sin eso también ignoraría la carpeta herramientas/copias/ con los scripts.
+/copias/
+
+# Configuración local de editores
+.vscode/
+.idea/
+
+# Dependencias, registros y basura del sistema
+node_modules/
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store

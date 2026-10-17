@@ -1,0 +1,712 @@
+{
+  "id": "secretariaVigDri",
+  "name": "Secretaria · Vigilar Drive",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "7e5e7e10-0001-4000-8000-000000000001",
+      "name": "Cada 5 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        -120
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "7e5e7e10-0002-4000-8000-000000000002",
+      "name": "Disparador manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Configuración\" del flujo \"Secretaria · Vigilar Drive\": lo que se toca a mano está aquí.\n// Los demás nodos leen estos valores con $('Configuración').first().json.config\n// Los SECRETOS no están aquí: el número de destino se lee del entorno de n8n (WHATSAPP_NUMERO_PERMITIDO, definido en el .env)\n// y el token de envío va en una credencial de n8n (Header Auth), no aquí.\n\n// Los identificadores (no son secretos) se leen del .env del servidor, así se ponen UNA vez para todos los flujos.\n// Si una variable no está en el .env, vale lo que esté escrito aquí abajo.\nconst delEntorno = (clave, porDefecto) => {\n  try {\n    return String($env[clave] ?? '').trim() || porDefecto;\n  } catch (e) {\n    return porDefecto;\n  }\n};\n\n// === Valores fáciles de cambiar ===\n// Project URL de Supabase (Integrations > Data API), sin /rest/v1 al final. No es un secreto.\nconst SUPABASE_URL = delEntorno('SUPABASE_URL', 'https://TU-PROYECTO.supabase.co');\n// Identificador del número de WhatsApp desde el que se envía (WhatsApp > API Setup > Phone number ID). No es un secreto.\nconst PHONE_NUMBER_ID = delEntorno('WHATSAPP_PHONE_NUMBER_ID', 'TU-PHONE-NUMBER-ID');\n// Versión de la API Graph de Meta (la misma que en el flujo \"Secretaria · WhatsApp\")\nconst GRAPH_VERSION = 'v26.0';\n// ID de la carpeta \"Secretaria\" de Drive (el mismo CARPETA_RAIZ_ID del flujo \"Sincronizar Drive\"). Solo se vigila lo que cuelga de ella.\nconst CARPETA_RAIZ_ID = delEntorno('DRIVE_CARPETA_RAIZ_ID', 'TU-CARPETA-RAIZ');\n// Horas desde el último mensaje tuyo durante las que Meta admite texto libre (Meta admite 24 h: margen para no rozar el límite).\n// Fuera de ese plazo NO se envía nada (sin plantillas): los cambios quedan anotados y se avisan cuando vuelvas a escribir.\nconst VENTANA_HORAS = 23;\n// Cuántos elementos que han desaparecido del árbol se confirman con Drive en cada pasada (uno de cada carpeta borrada, no uno por archivo).\nconst LOTE_CONFIRMAR = 40;\n// Líneas máximas de un aviso (lo que sobre se avisa en la pasada siguiente)\nconst MAX_LINEAS = 15;\n// ==================================\n\nif (!/^https:\\/\\/[a-z0-9-]+\\.supabase\\.co\\/?$/i.test(SUPABASE_URL) || SUPABASE_URL.includes('TU-PROYECTO')) {\n  throw new Error('Configuración: pon tu Project URL de Supabase en SUPABASE_URL (https://<ref>.supabase.co, sin /rest/v1). Va en el .env del servidor (SUPABASE_URL=…, y después docker compose up -d)');\n}\nif (!/^\\d{8,20}$/.test(PHONE_NUMBER_ID)) {\n  throw new Error('Configuración: pon el Phone number ID de WhatsApp en PHONE_NUMBER_ID (solo dígitos). Va en el .env del servidor (WHATSAPP_PHONE_NUMBER_ID=…, y después docker compose up -d)');\n}\nif (!/^v\\d+\\.\\d+$/.test(GRAPH_VERSION)) {\n  throw new Error('Configuración: GRAPH_VERSION debe tener la forma v26.0');\n}\nif (!/^[A-Za-z0-9_-]{10,}$/.test(CARPETA_RAIZ_ID) || CARPETA_RAIZ_ID.includes('TU-CARPETA')) {\n  throw new Error('Configuración: pon el ID de la carpeta \"Secretaria\" de Drive en CARPETA_RAIZ_ID (solo letras, números, guion y guion bajo). Va en el .env del servidor (DRIVE_CARPETA_RAIZ_ID=…, y después docker compose up -d)');\n}\nif (!Number.isFinite(VENTANA_HORAS) || VENTANA_HORAS < 1 || VENTANA_HORAS > 24) {\n  throw new Error('Configuración: VENTANA_HORAS debe estar entre 1 y 24');\n}\nif (!Number.isInteger(LOTE_CONFIRMAR) || LOTE_CONFIRMAR < 1 || LOTE_CONFIRMAR > 200) {\n  throw new Error('Configuración: LOTE_CONFIRMAR debe estar entre 1 y 200');\n}\nif (!Number.isInteger(MAX_LINEAS) || MAX_LINEAS < 1 || MAX_LINEAS > 40) {\n  throw new Error('Configuración: MAX_LINEAS debe estar entre 1 y 40');\n}\n\nreturn [\n  {\n    json: {\n      config: {\n        supabase_url: SUPABASE_URL.replace(/\\/+$/, ''),\n        phone_number_id: PHONE_NUMBER_ID,\n        graph_version: GRAPH_VERSION,\n        carpeta_raiz_id: CARPETA_RAIZ_ID,\n        ventana_horas: VENTANA_HORAS,\n        lote_confirmar: LOTE_CONFIRMAR,\n        max_lineas: MAX_LINEAS,\n      },\n    },\n  },\n];\n"
+      },
+      "id": "7e5e7e10-0003-4000-8000-000000000003",
+      "name": "Configuración",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/drive_arbol?select=drive_id,tipo,nombre,padre_id,ruta,origen,visto_at,eliminado_at,updated_at&limit=1000",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "7e5e7e10-0004-4000-8000-000000000004",
+      "name": "Leer foto del árbol",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/archivos?select=drive_file_id,nombre,carpeta_id,drive_pendiente,eliminado_at&limit=1000",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "7e5e7e10-0005-4000-8000-000000000005",
+      "name": "Leer archivos registrados",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ 'https://www.googleapis.com/drive/v3/files?pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=nextPageToken%2Cfiles(id%2Cname%2CmimeType%2Cparents%2CappProperties)&q=' + encodeURIComponent(\"trashed = false and '\" + $('Configuración').first().json.config.carpeta_raiz_id + \"' in parents\") }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api"
+      },
+      "id": "7e5e7e10-0006-4000-8000-000000000006",
+      "name": "Listar nivel 1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": null,
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ 'https://www.googleapis.com/drive/v3/files?pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=nextPageToken%2Cfiles(id%2Cname%2CmimeType%2Cparents%2CappProperties)&q=' + encodeURIComponent(\"trashed = false and (\" + ((($('Listar nivel 1').first().json.files || []).filter((f) => f.mimeType === 'application/vnd.google-apps.folder').map((f) => \"'\" + f.id + \"' in parents\").join(' or ')) || (\"'\" + $('Configuración').first().json.config.carpeta_raiz_id + \"' in parents and name = 'a' and name != 'a'\")) + \")\") }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api"
+      },
+      "id": "7e5e7e10-0007-4000-8000-000000000007",
+      "name": "Listar nivel 2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": null,
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ 'https://www.googleapis.com/drive/v3/files?pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=nextPageToken%2Cfiles(id%2Cname%2CmimeType%2Cparents%2CappProperties)&q=' + encodeURIComponent(\"trashed = false and (\" + ((($('Listar nivel 2').first().json.files || []).filter((f) => f.mimeType === 'application/vnd.google-apps.folder').map((f) => \"'\" + f.id + \"' in parents\").join(' or ')) || (\"'\" + $('Configuración').first().json.config.carpeta_raiz_id + \"' in parents and name = 'a' and name != 'a'\")) + \")\") }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api"
+      },
+      "id": "7e5e7e10-0008-4000-8000-000000000008",
+      "name": "Listar nivel 3",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": null,
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ 'https://www.googleapis.com/drive/v3/files?pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=nextPageToken%2Cfiles(id%2Cname%2CmimeType%2Cparents%2CappProperties)&q=' + encodeURIComponent(\"trashed = false and (\" + ((($('Listar nivel 3').first().json.files || []).filter((f) => f.mimeType === 'application/vnd.google-apps.folder').map((f) => \"'\" + f.id + \"' in parents\").join(' or ')) || (\"'\" + $('Configuración').first().json.config.carpeta_raiz_id + \"' in parents and name = 'a' and name != 'a'\")) + \")\") }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api"
+      },
+      "id": "7e5e7e10-0009-4000-8000-000000000009",
+      "name": "Listar nivel 4",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": null,
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Comparar\": compara lo que hay AHORA en Drive (cuatro niveles bajo la carpeta raíz) con la foto guardada en la base de datos\n// (drive_arbol) y con los archivos que la secretaria tiene registrados (archivos). No escribe nada: arma el plan.\n//\n// Qué detecta:\n//   - carpeta CREADA a mano (la que crea la secretaria lleva appProperties.secretaria = '1' y no cuenta);\n//   - carpeta o archivo MOVIDO o RENOMBRADO a mano (un archivo solo si la secretaria lo tiene registrado y el cambio no es suyo:\n//     lo que hace «Sincronizar Drive» deja archivos.carpeta_id y archivos.nombre igual que Drive, o el archivo con drive_pendiente);\n//   - RESTAURADO de la papelera (estaba eliminado en la foto y vuelve a estar);\n//   - lo que HA DESAPARECIDO: se confirma después con Drive (nodo «Confirmar en Drive») si está en la papelera, borrado del todo o\n//     solo fuera de lo vigilado. Solo se confirma el elemento de más arriba de cada carpeta borrada (no uno por archivo).\n// Las listas de archivos creados a mano NO se avisan (solo quedan en la foto): el aviso es de carpetas y de los archivos de la secretaria.\n//\n// Seguridad: si Drive devuelve más de una página en algún nivel, o Supabase llega al tope de filas, se PARA con un error sin tocar nada\n// (con la lectura incompleta parecería que faltan cosas que sí existen).\n//\n// Salida: un item por elemento a confirmar (con su URL), o uno inocuo si no hay ninguno. El primero lleva el plan completo.\n\nconst config = $('Configuración').first().json.config;\nconst RAIZ = config.carpeta_raiz_id;\nconst CARPETA = 'application/vnd.google-apps.folder';\nconst TOPE_FILAS = 1000; // límite por defecto de Supabase (PostgREST): llegar a él indica lectura truncada\nconst ahora = new Date().toISOString();\n\nconst lee = (nombre) =>\n  $(nombre)\n    .all()\n    .map((i) => i.json);\n\nconst foto = lee('Leer foto del árbol').filter((r) => r && typeof r.drive_id === 'string');\nconst registrados = lee('Leer archivos registrados').filter((r) => r && typeof r.drive_file_id === 'string');\nif (foto.length >= TOPE_FILAS || registrados.length >= TOPE_FILAS) {\n  throw new Error(`Comparar: Supabase devolvió ${TOPE_FILAS} filas (su límite): la lectura puede estar truncada y no se toca nada. Hay que paginar la lectura.`);\n}\n\n// --- Lo que hay ahora en Drive ---\nconst vivos = new Map();\n['Listar nivel 1', 'Listar nivel 2', 'Listar nivel 3', 'Listar nivel 4'].forEach((nodo, i) => {\n  const nivel = $(nodo).first().json ?? {};\n  if (nivel.nextPageToken) throw new Error(`Comparar: Drive devolvió más de una página en el nivel ${i + 1}: se para sin tocar nada para no dar por borrado lo que sí existe`);\n  for (const f of Array.isArray(nivel.files) ? nivel.files : []) {\n    if (!f || typeof f.id !== 'string' || typeof f.name !== 'string') continue;\n    vivos.set(f.id, {\n      id: f.id,\n      nombre: f.name,\n      tipo: f.mimeType === CARPETA ? 'carpeta' : 'archivo',\n      padre_id: Array.isArray(f.parents) && f.parents.length > 0 ? f.parents[0] : null,\n      sistema: f.appProperties?.secretaria === '1',\n    });\n  }\n});\n\nconst memoRuta = new Map();\nfunction rutaDe(id, profundidad = 0) {\n  if (id === RAIZ) return '';\n  if (profundidad > 8) return null;\n  if (memoRuta.has(id)) return memoRuta.get(id);\n  const v = vivos.get(id);\n  if (!v) return null;\n  const padre = v.padre_id === RAIZ || v.padre_id === null ? '' : rutaDe(v.padre_id, profundidad + 1);\n  const ruta = padre === null ? null : padre ? `${padre}/${v.nombre}` : v.nombre;\n  memoRuta.set(id, ruta);\n  return ruta;\n}\nfor (const v of vivos.values()) v.ruta = rutaDe(v.id);\nfor (const [id, v] of [...vivos]) if (v.ruta === null) vivos.delete(id); // sin ruta calculable (huérfano): no se vigila\n\nconst fila = (v, origen, extra = {}) => ({\n  drive_id: v.id,\n  tipo: v.tipo,\n  nombre: v.nombre,\n  padre_id: v.padre_id,\n  ruta: v.ruta,\n  origen,\n  visto_at: ahora,\n  eliminado_at: null,\n  updated_at: ahora,\n  ...extra,\n});\n\n// --- Primera vez: se guarda la foto sin avisar de nada ---\nif (foto.length === 0) {\n  const plan = { modo: 'base', ahora, upserts: [...vivos.values()].map((v) => fila(v, 'base')), eventos: [], archivos_manual: [], restaurados_archivos: [], restaurados_carpetas: [], silenciosos: [], candidatos: [], pospuestos: 0 };\n  return [{ json: { inerte: true, url: `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(RAIZ)}?fields=id&supportsAllDrives=true`, plan } }];\n}\n\nconst S = new Map(foto.filter((r) => r.eliminado_at == null).map((r) => [r.drive_id, r]));\nconst E = new Map(foto.filter((r) => r.eliminado_at != null).map((r) => [r.drive_id, r]));\nconst reg = new Map(registrados.filter((r) => r.eliminado_at == null).map((r) => [r.drive_file_id, r]));\n\nconst upserts = [];\nconst eventos = [];\nconst archivosManual = [];\nconst restauradosArchivos = [];\nconst restauradosCarpetas = [];\nconst evento = (tipo, v, antes, despues, detalle, previa) => ({ tipo, drive_id: v.id, nombre: v.nombre, ruta_antes: antes, ruta_despues: despues, detalle, previa });\n\n// --- Lo nuevo, lo cambiado y lo recuperado ---\nconst nuevosManuales = new Set();\nconst restaurados = new Set();\nfor (const v of vivos.values()) {\n  const s = S.get(v.id);\n  const e = E.get(v.id);\n  if (!s && e) restaurados.add(v.id);\n  else if (!s) {\n    const esSistema = v.tipo === 'carpeta' ? v.sistema : reg.has(v.id);\n    upserts.push(fila(v, esSistema ? 'sistema' : 'manual'));\n    if (!esSistema && v.tipo === 'carpeta') nuevosManuales.add(v.id);\n  }\n}\n\n// Creadas a mano: se avisa de la de más arriba de cada rama, con lo que cuelga de ella\nconst hijosNuevos = new Map();\nfor (const id of nuevosManuales) {\n  const v = vivos.get(id);\n  if (!hijosNuevos.has(v.padre_id)) hijosNuevos.set(v.padre_id, []);\n  hijosNuevos.get(v.padre_id).push(id);\n}\nconst archivosNuevosPorPadre = new Map();\nfor (const v of vivos.values()) {\n  if (v.tipo === 'archivo' && !S.has(v.id) && !E.has(v.id)) archivosNuevosPorPadre.set(v.padre_id, (archivosNuevosPorPadre.get(v.padre_id) ?? 0) + 1);\n}\nfunction contarNuevo(id) {\n  let carpetas = 0;\n  let archivos = archivosNuevosPorPadre.get(id) ?? 0;\n  for (const h of hijosNuevos.get(id) ?? []) {\n    const c = contarNuevo(h);\n    carpetas += 1 + c.carpetas;\n    archivos += c.archivos;\n  }\n  return { carpetas, archivos };\n}\nfor (const id of nuevosManuales) {\n  const v = vivos.get(id);\n  if (nuevosManuales.has(v.padre_id)) continue;\n  const c = contarNuevo(id);\n  eventos.push(evento('carpeta_creada', v, null, v.ruta, { subcarpetas: c.carpetas, archivos: c.archivos }, 'nueva'));\n}\n\n// Recuperadas de la papelera: se avisa de la de más arriba; se reactivan los archivos y carpetas pedidas que dependían de ellas\nfor (const id of restaurados) {\n  const v = vivos.get(id);\n  const e = E.get(id);\n  upserts.push(fila(v, e.origen ?? 'base'));\n  if (v.tipo === 'archivo' && registrados.some((r) => r.drive_file_id === id)) restauradosArchivos.push(id);\n  if (v.tipo === 'carpeta') restauradosCarpetas.push(id);\n  if (restaurados.has(v.padre_id)) continue;\n  if (v.tipo === 'carpeta') eventos.push(evento('carpeta_restaurada', v, null, v.ruta, {}, e.eliminado_at));\n  else if (registrados.some((r) => r.drive_file_id === id)) eventos.push(evento('archivo_restaurado', v, null, v.ruta, {}, e.eliminado_at));\n}\n// Archivos registrados que estaban eliminados en la base y siguen vivos (p. ej. la foto se restauró sin pasar por la foto del árbol)\nfor (const r of registrados) if (r.eliminado_at != null && vivos.has(r.drive_file_id) && !restaurados.has(r.drive_file_id)) restauradosArchivos.push(r.drive_file_id);\n\n// --- Movidos y renombrados ---\nfor (const v of vivos.values()) {\n  const s = S.get(v.id);\n  if (!s) continue;\n  const movido = s.padre_id !== v.padre_id;\n  const renombrado = s.nombre !== v.nombre;\n  const rutaCambia = s.ruta !== v.ruta;\n  if (!movido && !renombrado && !rutaCambia) continue;\n  upserts.push(fila(v, s.origen ?? 'base'));\n  if (!movido && !renombrado) continue; // solo cambia la ruta porque se movió o renombró una carpeta de más arriba\n\n  if (v.tipo === 'carpeta') {\n    eventos.push(evento(movido ? 'carpeta_movida' : 'carpeta_renombrada', v, s.ruta, v.ruta, { renombrada: movido && renombrado, nombre_antes: s.nombre }, s.updated_at));\n    continue;\n  }\n  const a = reg.get(v.id);\n  if (!a) continue; // un archivo que la secretaria no tiene registrado: solo cambia la foto\n  const loHizoElSistema = a.drive_pendiente === true || (a.nombre === v.nombre && a.carpeta_id === v.padre_id);\n  if (loHizoElSistema) continue;\n  archivosManual.push({ drive_file_id: v.id, ...(movido ? { carpeta_id: v.padre_id } : {}), ...(renombrado ? { nombre: v.nombre } : {}) });\n  eventos.push(evento(movido ? 'archivo_movido' : 'archivo_renombrado', v, s.ruta, v.ruta, { renombrada: movido && renombrado, nombre_antes: s.nombre }, s.updated_at));\n}\n\n// --- Lo que ha desaparecido ---\nconst desaparecidos = new Set([...S.keys()].filter((id) => !vivos.has(id)));\nconst hijosFoto = new Map();\nfor (const r of S.values()) {\n  if (!hijosFoto.has(r.padre_id)) hijosFoto.set(r.padre_id, []);\n  hijosFoto.get(r.padre_id).push(r);\n}\nfunction bajoDesaparecido(raiz) {\n  const filas = [];\n  const pila = [...(hijosFoto.get(raiz.drive_id) ?? [])];\n  while (pila.length) {\n    const r = pila.pop();\n    if (!desaparecidos.has(r.drive_id)) continue;\n    filas.push(r);\n    pila.push(...(hijosFoto.get(r.drive_id) ?? []));\n  }\n  return filas;\n}\nconst cima = [...desaparecidos].map((id) => S.get(id)).filter((r) => !desaparecidos.has(r.padre_id));\nconst candidatos = [];\nconst silenciosos = []; // archivos sin registrar que faltan: solo se marcan en la foto\nfor (const r of cima.sort((a, b) => String(a.ruta).localeCompare(String(b.ruta), 'es'))) {\n  const debajo = bajoDesaparecido(r);\n  const todos = [r, ...debajo];\n  const registrada = r.tipo === 'archivo' && reg.has(r.drive_id);\n  if (r.tipo === 'archivo' && !registrada) {\n    silenciosos.push(fila({ id: r.drive_id, nombre: r.nombre, tipo: r.tipo, padre_id: r.padre_id, ruta: r.ruta }, r.origen ?? 'base', { eliminado_at: ahora, visto_at: r.visto_at }));\n    continue;\n  }\n  candidatos.push({\n    drive_id: r.drive_id,\n    tipo: r.tipo,\n    nombre: r.nombre,\n    ruta: r.ruta,\n    previa: r.updated_at,\n    filas: todos.map((x) => ({ drive_id: x.drive_id, tipo: x.tipo, nombre: x.nombre, padre_id: x.padre_id, ruta: x.ruta, origen: x.origen ?? 'base', visto_at: x.visto_at ?? ahora })),\n    archivos_registrados: todos.filter((x) => x.tipo === 'archivo' && reg.has(x.drive_id)).map((x) => x.drive_id),\n    carpetas: todos.filter((x) => x.tipo === 'carpeta').map((x) => x.drive_id),\n    n_archivos: todos.filter((x) => x.tipo === 'archivo').length,\n    n_subcarpetas: todos.filter((x) => x.tipo === 'carpeta' && x.drive_id !== r.drive_id).length,\n  });\n}\nconst aConfirmar = candidatos.slice(0, config.lote_confirmar);\nconst plan = {\n  modo: 'normal',\n  ahora,\n  upserts,\n  eventos,\n  archivos_manual: archivosManual,\n  restaurados_archivos: restauradosArchivos,\n  restaurados_carpetas: restauradosCarpetas,\n  silenciosos,\n  candidatos: aConfirmar,\n  pospuestos: candidatos.length - aConfirmar.length,\n};\n\nconst urlComprobar = (id) => `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=${encodeURIComponent('id,name,trashed,parents')}&supportsAllDrives=true`;\nif (aConfirmar.length === 0) {\n  return [{ json: { inerte: true, url: `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(RAIZ)}?fields=id&supportsAllDrives=true`, plan } }];\n}\nreturn aConfirmar.map((c, i) => ({ json: { inerte: false, drive_id: c.drive_id, url: urlComprobar(c.drive_id), ...(i === 0 ? { plan } : {}) } }));\n"
+      },
+      "id": "7e5e7e10-0010-4000-8000-000000000010",
+      "name": "Comparar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 1000
+            }
+          }
+        },
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api"
+      },
+      "id": "7e5e7e10-0011-4000-8000-000000000011",
+      "name": "Confirmar en Drive",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2160,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": null,
+          "name": "Google Drive"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Decidir\": junta el plan de \"Comparar\" con lo que Drive ha respondido sobre lo que desapareció y arma las escrituras en Supabase.\n//\n// Para cada elemento desaparecido (\"Confirmar en Drive\" pregunta por él):\n//   404                      borrado del todo (de la papelera también)  -> eliminado\n//   200 y trashed = true     en la papelera                             -> eliminado\n//   200 y trashed = false    sigue existiendo pero fuera de lo vigilado -> movido fuera (los archivos y carpetas NO se marcan eliminados)\n//   otra cosa (403, 5xx…)    sin certeza -> no se hace nada y se reintenta en la pasada siguiente\n// Lo eliminado se marca en la foto (drive_arbol), en los archivos registrados (archivos.eliminado_at) y en las carpetas pedidas\n// (carpetas_pedidas.eliminada_at). Las filas NO se borran. Todo queda en registro_drive, con una clave única por cambio\n// (tipo + id de Drive + estado anterior de la foto): repetir el flujo no duplica nada.\n//\n// Orden de las escrituras: primero el registro y las marcas, y LA FOTO LA ÚLTIMA. Si algo falla por el camino, la foto sigue siendo la\n// de antes y en la pasada siguiente se detecta lo mismo (la clave única evita duplicar el registro).\n\nconst config = $('Configuración').first().json.config;\nconst base = `${config.supabase_url}/rest/v1`;\nconst plan = $('Comparar').first().json.plan;\nconst respuestas = $input.all().map((i) => i.json);\nconst ahora = plan.ahora;\n\nconst eventos = [...plan.eventos];\nconst upserts = [...plan.upserts, ...plan.silenciosos];\nconst archivosEliminar = [];\nconst carpetasEliminar = [];\n\n(plan.candidatos ?? []).forEach((c, i) => {\n  const r = respuestas[i];\n  const estado = r?.statusCode;\n  const trashed = r?.body?.trashed === true;\n  let veredicto = null;\n  if (estado === 404) veredicto = 'borrado';\n  else if (estado >= 200 && estado < 300 && trashed) veredicto = 'papelera';\n  else if (estado >= 200 && estado < 300) veredicto = 'fuera';\n  if (veredicto === null) return;\n\n  for (const f of c.filas) upserts.push({ ...f, updated_at: ahora, eliminado_at: ahora });\n  const v = { id: c.drive_id, nombre: c.nombre };\n  if (veredicto === 'fuera') {\n    eventos.push({ tipo: c.tipo === 'carpeta' ? 'carpeta_movida' : 'archivo_movido', drive_id: v.id, nombre: v.nombre, ruta_antes: c.ruta, ruta_despues: null, detalle: { fuera: true, archivos: c.n_archivos, subcarpetas: c.n_subcarpetas }, previa: c.previa });\n    return;\n  }\n  archivosEliminar.push(...c.archivos_registrados);\n  carpetasEliminar.push(...c.carpetas);\n  eventos.push({\n    tipo: c.tipo === 'carpeta' ? 'carpeta_eliminada' : 'archivo_eliminado',\n    drive_id: v.id,\n    nombre: v.nombre,\n    ruta_antes: c.ruta,\n    ruta_despues: null,\n    detalle: { archivos: c.n_archivos, subcarpetas: c.n_subcarpetas, definitivo: veredicto === 'borrado' },\n    previa: c.previa,\n  });\n});\n\n// --- Escrituras ---\nconst escrituras = [];\nconst escribir = (etiqueta, metodo, ruta, cuerpo, prefer) => escrituras.push({ etiqueta, metodo, url: `${base}${ruta}`, cuerpo, prefer });\nconst enLotes = (lista, n) => {\n  const lotes = [];\n  for (let i = 0; i < lista.length; i += n) lotes.push(lista.slice(i, i + n));\n  return lotes;\n};\nconst unicos = (lista) => [...new Set(lista)];\nconst lista = (ids) => `in.(${ids.map(encodeURIComponent).join(',')})`;\n\nif (eventos.length > 0) {\n  const vistas = new Set();\n  const filas = [];\n  for (const e of eventos) {\n    const clave = `${e.tipo}|${e.drive_id}|${e.previa ?? 'nuevo'}`;\n    if (vistas.has(clave)) continue;\n    vistas.add(clave);\n    filas.push({ tipo: e.tipo, drive_id: e.drive_id, nombre: e.nombre, ruta_antes: e.ruta_antes, ruta_despues: e.ruta_despues, detalle: e.detalle ?? {}, clave });\n  }\n  escribir(`registrar ${filas.length} cambio(s)`, 'POST', '/registro_drive?on_conflict=clave', filas, 'resolution=ignore-duplicates,return=minimal');\n}\nfor (const lote of enLotes(unicos(archivosEliminar), 80)) {\n  escribir('archivos eliminados', 'PATCH', `/archivos?drive_file_id=${lista(lote)}&eliminado_at=is.null`, { eliminado_at: ahora, drive_pendiente: false }, 'return=minimal');\n}\nfor (const lote of enLotes(unicos(plan.restaurados_archivos), 80)) {\n  escribir('archivos recuperados', 'PATCH', `/archivos?drive_file_id=${lista(lote)}`, { eliminado_at: null }, 'return=minimal');\n}\nfor (const a of plan.archivos_manual) {\n  const { drive_file_id: id, ...cambios } = a;\n  escribir(`archivo cambiado a mano ${id}`, 'PATCH', `/archivos?drive_file_id=eq.${encodeURIComponent(id)}`, { ...cambios, vigilado_at: ahora }, 'return=minimal');\n}\nfor (const lote of enLotes(unicos(carpetasEliminar), 80)) {\n  escribir('carpetas pedidas eliminadas', 'PATCH', `/carpetas_pedidas?carpeta_id=${lista(lote)}&eliminada_at=is.null`, { eliminada_at: ahora, drive_pendiente: false }, 'return=minimal');\n}\nfor (const lote of enLotes(unicos(plan.restaurados_carpetas), 80)) {\n  escribir('carpetas pedidas recuperadas', 'PATCH', `/carpetas_pedidas?carpeta_id=${lista(lote)}`, { eliminada_at: null }, 'return=minimal');\n}\n// La foto, la última. Sin dos filas con el mismo id en una petición (Postgres lo rechaza); gana la última.\nconst porId = new Map();\nfor (const f of upserts) porId.set(f.drive_id, f);\nfor (const lote of enLotes([...porId.values()], 300)) {\n  escribir(`foto del árbol (${lote.length})`, 'POST', '/drive_arbol?on_conflict=drive_id', lote, 'resolution=merge-duplicates,return=minimal');\n}\n\nif (escrituras.length === 0) {\n  // Nada que escribir: una escritura inocua para que el flujo siga hacia los avisos pendientes\n  // (un PATCH sobre un id que no existe: no toca ninguna fila)\n  return [{ json: { etiqueta: 'sin cambios', metodo: 'PATCH', url: `${base}/registro_drive?id=eq.00000000-0000-0000-0000-000000000000`, cuerpo: {}, prefer: 'return=minimal' } }];\n}\nreturn escrituras.map((e) => ({ json: e }));\n"
+      },
+      "id": "7e5e7e10-0012-4000-8000-000000000012",
+      "name": "Decidir",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 100
+            }
+          }
+        },
+        "method": "={{ $json.metodo }}",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "={{ $json.prefer }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "7e5e7e10-0013-4000-8000-000000000013",
+      "name": "Escribir en Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/registro_drive?select=id,created_at,tipo,nombre,ruta_antes,ruta_despues,detalle&notificado_at=is.null&order=created_at.asc&limit=100",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "7e5e7e10-0014-4000-8000-000000000014",
+      "name": "Leer sin avisar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2880,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/mensajes?select=created_at&wa_message_id=like.wamid.*&order=created_at.desc&limit=1",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "7e5e7e10-0015-4000-8000-000000000015",
+      "name": "Leer último mensaje",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3120,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Redactar aviso\": construye UN mensaje de WhatsApp con los cambios de Drive que aún no se han avisado (registro_drive con\n// notificado_at nulo) y el cuerpo exacto de la petición a Meta, más los ids para marcarlos como avisados después (solo si Meta acepta).\n//\n// - Solo como texto libre y solo si la ventana de 24 h de Meta sigue abierta (el último mensaje TUYO es de hace menos de VENTANA_HORAS).\n//   Si está cerrada devuelve [] y no se envía nada: no hay plantillas. Los cambios quedan anotados y se avisan cuando vuelvas a escribir.\n// - Se redacta con código, nunca con el modelo. Máximo MAX_LINEAS líneas; el resto sale en la pasada siguiente.\n\nconst config = $('Configuración').first().json.config;\nconst LIMITE_MENSAJE = 3800;\nconst limpiar = (s) => String(s ?? '').replace(/[*_~`]/g, '').replace(/\\s+/g, ' ').trim();\nconst ruta = (r) => limpiar(r) || '(raíz)';\nconst plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;\n\nconst filas = $('Leer sin avisar')\n  .all()\n  .map((i) => i.json)\n  .filter((r) => r && typeof r.id === 'string' && typeof r.tipo === 'string' && typeof r.nombre === 'string')\n  .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));\nif (filas.length === 0) return [];\n\nconst ultimo = $('Leer último mensaje')\n  .all()\n  .map((x) => x.json)\n  .filter((r) => r && typeof r.created_at === 'string')\n  .map((r) => new Date(r.created_at))\n  .filter((d) => !Number.isNaN(d.getTime()))[0];\nconst ahora = new Date();\nconst ventanaAbierta = Boolean(ultimo) && ahora.getTime() - ultimo.getTime() < config.ventana_horas * 3600 * 1000;\nif (!ventanaAbierta) return [];\n\nconst para = String($env.WHATSAPP_NUMERO_PERMITIDO ?? '').replace(/\\D/g, '');\nif (!para) throw new Error('Redactar aviso: falta WHATSAPP_NUMERO_PERMITIDO en el entorno de n8n');\n\nfunction cuentas(d) {\n  const partes = [];\n  if (Number(d?.archivos) > 0) partes.push(plural(Number(d.archivos), 'archivo', 'archivos'));\n  if (Number(d?.subcarpetas) > 0) partes.push(plural(Number(d.subcarpetas), 'subcarpeta', 'subcarpetas'));\n  return partes.length > 0 ? ` (${partes.join(' y ')})` : '';\n}\n\nfunction linea(r) {\n  const d = r.detalle ?? {};\n  const antes = ruta(r.ruta_antes);\n  const despues = ruta(r.ruta_despues);\n  const nombre = limpiar(r.nombre);\n  switch (r.tipo) {\n    case 'carpeta_creada':\n      return `📁 Creaste la carpeta «${despues}»${cuentas(d)}.`;\n    case 'carpeta_eliminada':\n      return `🗑️ Borraste la carpeta «${antes}»${cuentas(d)}${d.definitivo ? ', definitivamente' : ', está en la papelera'}.`;\n    case 'carpeta_movida':\n      if (d.fuera) return `📤 Sacaste la carpeta «${antes}» de la zona que vigilo${cuentas(d)}.`;\n      return `↪️ Moviste la carpeta «${antes}» a «${despues}»${d.renombrada ? ` y la renombraste a «${nombre}»` : ''}.`;\n    case 'carpeta_renombrada':\n      return `✏️ Renombraste la carpeta «${antes}» a «${nombre}».`;\n    case 'carpeta_restaurada':\n      return `♻️ Recuperaste la carpeta «${despues}» de la papelera.`;\n    case 'archivo_eliminado':\n      return `🗑️ Borraste el archivo «${antes}»${d.definitivo ? ', definitivamente' : ', está en la papelera'}.`;\n    case 'archivo_movido':\n      if (d.fuera) return `📤 Sacaste el archivo «${antes}» de la zona que vigilo.`;\n      return `↪️ Moviste el archivo «${antes}» a «${despues}»${d.renombrada ? ` y lo renombraste a «${nombre}»` : ''}.`;\n    case 'archivo_renombrado':\n      return `✏️ Renombraste el archivo «${antes}» a «${nombre}».`;\n    case 'archivo_restaurado':\n      return `♻️ Recuperaste el archivo «${despues}» de la papelera.`;\n    default:\n      return `Cambio en Drive: «${nombre}».`;\n  }\n}\n\nconst incluidas = filas.slice(0, config.max_lineas);\nconst lineas = incluidas.map(linea);\nlet texto;\nif (lineas.length === 1) {\n  texto = `${lineas[0]} Lo he anotado.`;\n} else {\n  texto = `*Cambios en Drive*\\n${lineas.map((l) => `• ${l}`).join('\\n')}\\nLos he anotado todos.`;\n}\nconst sobran = filas.length - incluidas.length;\nif (sobran > 0) texto += `\\n… y ${sobran} más (te los digo en el próximo aviso).`;\nif (texto.length > LIMITE_MENSAJE) texto = `${texto.slice(0, LIMITE_MENSAJE - 1).trimEnd()}…`;\n\nreturn [\n  {\n    json: {\n      cuerpo: { messaging_product: 'whatsapp', recipient_type: 'individual', to: para, type: 'text', text: { preview_url: false, body: texto } },\n      texto,\n      ids: incluidas.map((r) => r.id),\n      marca: { notificado_at: ahora.toISOString() },\n    },\n  },\n];\n"
+      },
+      "id": "7e5e7e10-0016-4000-8000-000000000016",
+      "name": "Redactar aviso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $('Configuración').first().json.config.graph_version }}/{{ $('Configuración').first().json.config.phone_number_id }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "7e5e7e10-0017-4000-8000-000000000017",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3600,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "WhatsApp token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "PATCH",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/registro_drive?id=in.({{ $('Redactar aviso').first().json.ids.join(',') }})&notificado_at=is.null",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Redactar aviso').first().json.marca) }}"
+      },
+      "id": "7e5e7e10-0018-4000-8000-000000000018",
+      "name": "Marcar avisados",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3840,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## ① Disparo y lecturas\nCada **5 minutos** o a mano. Lee la **foto del árbol** que guardó la última vez y los archivos que la secretaria tiene registrados. La primera vez, la foto está vacía: se guarda **sin avisar de nada**.",
+        "height": 240,
+        "width": 720,
+        "color": 4
+      },
+      "id": "7e5e7e10-0101-4000-8000-000000000101",
+      "name": "Nota 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ② Drive ahora\nLista cuatro niveles bajo la carpeta *Secretaria* (carpetas, subcarpetas y archivos). Si Drive devuelve más de una página, el flujo **se para sin tocar nada**.",
+        "height": 240,
+        "width": 960,
+        "color": 5
+      },
+      "id": "7e5e7e10-0102-4000-8000-000000000102",
+      "name": "Nota 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        920,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ③ Comparar y decidir\n*Comparar* detecta carpetas creadas, movidas, renombradas, recuperadas y lo que **desapareció**. Lo que desapareció se confirma con Drive (*Confirmar en Drive*, solo lectura): papelera, borrado del todo o solo fuera de lo vigilado. *Decidir* arma las escrituras.",
+        "height": 240,
+        "width": 700,
+        "color": 6
+      },
+      "id": "7e5e7e10-0103-4000-8000-000000000103",
+      "name": "Nota 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1880,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ④ Registro y aviso\n*Escribir en Supabase* anota todo (de una en una; **la foto, la última**). Luego envía **un** WhatsApp con el detalle si escribiste hace menos de 23 h (sin plantillas); si no, los cambios esperan y se avisan cuando vuelvas a escribir. Se marcan como avisados solo si Meta acepta.",
+        "height": 240,
+        "width": 1440,
+        "color": 7
+      },
+      "id": "7e5e7e10-0104-4000-8000-000000000104",
+      "name": "Nota 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2600,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Antes de publicar\n1. **Base de datos** instalada en Supabase (`supabase/instalar.sql`).\n2. Credenciales: **Google Drive OAuth2** en *Listar nivel 1 a 4* y *Confirmar en Drive*; **Supabase API** en las lecturas, *Escribir en Supabase* y *Marcar avisados*; **Header Auth de WhatsApp** en *Enviar WhatsApp*.\n3. Identificadores: `SUPABASE_URL`, `WHATSAPP_PHONE_NUMBER_ID` y `DRIVE_CARPETA_RAIZ_ID` en el `.env` del servidor (no hace falta tocar **Configuración**).\n4. Pruébalo con *Disparador manual* (la primera ejecución solo guarda la foto). Comprueba `select count(*) from drive_arbol`.\n5. Publica. Para la **prueba real**: crea una carpeta a mano en Drive, ejecuta de nuevo y mira el WhatsApp.\n6. *Options > Settings > Error workflow* → «Secretaria · Aviso de fallos».",
+        "height": 340,
+        "width": 1200,
+        "color": 2
+      },
+      "id": "7e5e7e10-0105-4000-8000-000000000105",
+      "name": "Nota 5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 5 minutos": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Disparador manual": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuración": {
+      "main": [
+        [
+          {
+            "node": "Leer foto del árbol",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer foto del árbol": {
+      "main": [
+        [
+          {
+            "node": "Leer archivos registrados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer archivos registrados": {
+      "main": [
+        [
+          {
+            "node": "Listar nivel 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Listar nivel 1": {
+      "main": [
+        [
+          {
+            "node": "Listar nivel 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Listar nivel 2": {
+      "main": [
+        [
+          {
+            "node": "Listar nivel 3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Listar nivel 3": {
+      "main": [
+        [
+          {
+            "node": "Listar nivel 4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Listar nivel 4": {
+      "main": [
+        [
+          {
+            "node": "Comparar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Comparar": {
+      "main": [
+        [
+          {
+            "node": "Confirmar en Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmar en Drive": {
+      "main": [
+        [
+          {
+            "node": "Decidir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decidir": {
+      "main": [
+        [
+          {
+            "node": "Escribir en Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escribir en Supabase": {
+      "main": [
+        [
+          {
+            "node": "Leer sin avisar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer sin avisar": {
+      "main": [
+        [
+          {
+            "node": "Leer último mensaje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer último mensaje": {
+      "main": [
+        [
+          {
+            "node": "Redactar aviso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redactar aviso": {
+      "main": [
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Marcar avisados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid",
+    "errorWorkflow": "secretariaAvisoF"
+  }
+}

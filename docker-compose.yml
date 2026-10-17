@@ -1,0 +1,59 @@
+services:
+  n8n:
+    # Versión fijada: sin etiqueta, una recreación podría traer otra versión mayor sin avisar. Para actualizar, cambia la etiqueta a
+    # propósito, haz antes una copia (docs/servidor.md) y lee los cambios incompatibles de esa versión.
+    image: docker.n8n.io/n8nio/n8n:2.41.6
+    restart: unless-stopped
+    # Solo escucha en el propio servidor: el editor se abre por túnel SSH y los webhooks se publican con Tailscale Funnel.
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      - GENERIC_TIMEZONE=Europe/Madrid
+      - TZ=Europe/Madrid
+      # La clave de cifrado de las credenciales se lee de un ARCHIVO, no del entorno: con N8N_BLOCK_ENV_ACCESS_IN_NODE=false (abajo),
+      # cualquier nodo Code puede leer las variables de entorno, y así la clave no está entre ellas.
+      # El archivo es secretos/n8n_encryption_key (una sola línea con la clave; no se versiona). Ver docs/manual-instalacion.md.
+      - N8N_ENCRYPTION_KEY_FILE=/run/secrets/n8n_encryption_key
+      # crypto: el nodo Code lo necesita para validar la firma X-Hub-Signature-256 de Meta (n8n lo bloquea por defecto).
+      - NODE_FUNCTION_ALLOW_BUILTIN=crypto
+      # n8n 2.x bloquea $env en los nodos Code por defecto; los flujos leen de ahí los secretos de WhatsApp y los identificadores.
+      # Efecto: cualquier nodo Code puede leer TODAS las variables. No importes flujos ajenos sin leerlos.
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      # URL pública (la de Tailscale Funnel, con https:// y barra final). Si no está definida, n8n usa la local.
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678/}
+      # Dirección del EDITOR. n8n la usa para la redirección de OAuth (…/rest/oauth2-credential/callback); sin ella usaría la pública, y
+      # Funnel solo publica /webhook, así que conectar Google fallaría. El editor se abre por túnel SSH en el puerto 5678 de tu PC.
+      - N8N_EDITOR_BASE_URL=http://localhost:5678/
+      # Detrás de un proxy (Tailscale Funnel), como recomienda la documentación de n8n
+      - N8N_PROXY_HOPS=1
+      # Secretos de WhatsApp. Vacíos por defecto: sin ellos el flujo de WhatsApp rechaza todas las peticiones, pero n8n arranca.
+      - WHATSAPP_APP_SECRET=${WHATSAPP_APP_SECRET:-}
+      - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN:-}
+      - WHATSAPP_NUMERO_PERMITIDO=${WHATSAPP_NUMERO_PERMITIDO:-}
+      # Identificadores (no son secretos). Los nodos "Configuración" de todos los flujos los leen de aquí.
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID:-}
+      - GOOGLE_CALENDAR_ID=${GOOGLE_CALENDAR_ID:-}
+      - DRIVE_CARPETA_RAIZ_ID=${DRIVE_CARPETA_RAIZ_ID:-}
+      - DRIVE_ENTRADA_ID=${DRIVE_ENTRADA_ID:-}
+      # Dirección de latido de un monitor externo (flujo "Secretaria · Latido"). Vacía = no avisa a ninguno. Es privada: va en el .env.
+      - HEALTHCHECK_URL_N8N=${HEALTHCHECK_URL_N8N:-}
+    # Docker no limita los registros por defecto y hay flujos que se ejecutan cada minuto: sin esto el disco se acaba llenando.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      # Solo lectura, y sin crearlo si falta: si el archivo no existe, Docker se niega a arrancar (en vez de crear una carpeta vacía con
+      # ese nombre y arrancar n8n sin poder descifrar las credenciales)
+      - type: bind
+        source: ./secretos/n8n_encryption_key
+        target: /run/secrets/n8n_encryption_key
+        read_only: true
+        bind:
+          create_host_path: false
+
+volumes:
+  n8n_data:

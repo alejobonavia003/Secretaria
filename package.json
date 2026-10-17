@@ -1,0 +1,14 @@
+{
+  "name": "secretaria-whatsapp",
+  "version": "1.0.0",
+  "description": "Secretaria personal por WhatsApp: clasifica mensajes y los guarda en Supabase, Google Calendar y Drive con flujos de n8n.",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node herramientas/ejecutar.js probar",
+    "generar": "node herramientas/ejecutar.js generar"
+  }
+}

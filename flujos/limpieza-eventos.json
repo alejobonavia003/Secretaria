@@ -1,0 +1,303 @@
+{
+  "id": "secretariaLimpie",
+  "name": "Secretaria · Limpieza de eventos",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 3,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "5ec7e7a5-0001-4000-8000-000000000001",
+      "name": "Cada día a las 3:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        -120
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "5ec7e7a5-0002-4000-8000-000000000002",
+      "name": "Disparador manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Configuración\" del flujo \"Secretaria · Limpieza de eventos\": lo que se toca a mano está aquí.\n// Los demás nodos leen estos valores con $('Configuración').first().json.config\n\n// Los identificadores (no son secretos) se leen del .env del servidor, así se ponen UNA vez para todos los flujos.\n// Si una variable no está en el .env, vale lo que esté escrito aquí abajo.\nconst delEntorno = (clave, porDefecto) => {\n  try {\n    return String($env[clave] ?? '').trim() || porDefecto;\n  } catch (e) {\n    return porDefecto;\n  }\n};\n\n// === Valores fáciles de cambiar ===\n// Project URL de Supabase (Integrations > Data API), sin /rest/v1 al final. No es un secreto.\nconst SUPABASE_URL = delEntorno('SUPABASE_URL', 'https://TU-PROYECTO.supabase.co');\n// Días que pasan, desde que TERMINA un evento, antes de archivarlo. Al archivarlo, el flujo \"Sincronizar Calendar\" borra su evento de\n// Google Calendar (Google lo conserva unos 30 días en su papelera). El item queda en la base de datos como \"archivado\".\nconst DIAS_RETENCION = 7;\n// Máximo de eventos que se archivan en cada pasada (una al día). Si hay más (la primera vez, con eventos antiguos acumulados), el resto\n// sigue en las pasadas siguientes.\nconst LOTE = 50;\n// ==================================\n\nif (!/^https:\\/\\/[a-z0-9-]+\\.supabase\\.co\\/?$/i.test(SUPABASE_URL) || SUPABASE_URL.includes('TU-PROYECTO')) {\n  throw new Error('Configuración: pon tu Project URL de Supabase en SUPABASE_URL (https://<ref>.supabase.co, sin /rest/v1). Va en el .env del servidor (SUPABASE_URL=…, y después docker compose up -d)');\n}\nif (!Number.isFinite(DIAS_RETENCION) || DIAS_RETENCION < 1 || DIAS_RETENCION > 365) {\n  throw new Error('Configuración: DIAS_RETENCION debe estar entre 1 y 365');\n}\nif (!Number.isInteger(LOTE) || LOTE < 1 || LOTE > 200) {\n  throw new Error('Configuración: LOTE debe estar entre 1 y 200');\n}\n\nreturn [{ json: { config: { supabase_url: SUPABASE_URL.replace(/\\/+$/, ''), dias_retencion: DIAS_RETENCION, lote: LOTE } } }];\n"
+      },
+      "id": "5ec7e7a5-0003-4000-8000-000000000003",
+      "name": "Configuración",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Calcular límite\": fija la fecha límite (ahora menos DIAS_RETENCION días) y construye la URL de la consulta de eventos antiguos.\n// Un evento es antiguo si su FIN pasó antes del límite; si no tiene fin, cuenta su inicio. Solo eventos en estado pendiente o hecho\n// (los archivados ya los trata el flujo de Calendar). Los más antiguos primero, y como mucho LOTE.\n\nconst config = $('Configuración').first().json.config;\nconst limite = new Date(Date.now() - config.dias_retencion * 86400000).toISOString();\n\nconst filtroFecha = `(fecha_fin.lt.\"${limite}\",and(fecha_fin.is.null,fecha_inicio.lt.\"${limite}\"))`;\nconst url = `${config.supabase_url}/rest/v1/items?select=id,titulo,fecha_inicio,fecha_fin,estado&tipo=eq.evento&estado=in.(pendiente,hecho)&or=${encodeURIComponent(filtroFecha)}&order=fecha_inicio.asc&limit=${config.lote}`;\n\nreturn [{ json: { limite, url_lectura: url } }];\n"
+      },
+      "id": "5ec7e7a5-0004-4000-8000-000000000004",
+      "name": "Calcular límite",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $json.url_lectura }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "5ec7e7a5-0005-4000-8000-000000000005",
+      "name": "Leer eventos antiguos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Planificar archivado\": convierte los eventos antiguos que devolvió Supabase en UNA petición que los archiva.\n//\n// Doble comprobación: la consulta ya filtra por fecha, pero aquí se vuelve a comprobar cada fila (tipo evento, estado pendiente u hecho,\n// id válido y fecha realmente anterior al límite) antes de archivar nada. Así un filtro mal construido nunca puede archivar un evento\n// de hoy o futuro. Si no queda ninguno devuelve [] y el flujo termina.\n// El PATCH repite las condiciones de tipo y estado: un item que cambió entre la lectura y la escritura no se toca.\n\nconst config = $('Configuración').first().json.config;\nconst limite = Date.parse($('Calcular límite').first().json.limite);\nif (Number.isNaN(limite)) throw new Error('Planificar archivado: el límite de fecha no es válido');\n\nconst ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst antes = (s) => typeof s === 'string' && !Number.isNaN(Date.parse(s)) && Date.parse(s) < limite;\n\nconst filas = $input\n  .all()\n  .map((i) => i.json)\n  .filter((r) => r && typeof r.id === 'string' && ID.test(r.id) && ['pendiente', 'hecho'].includes(r.estado) && (r.fecha_fin != null ? antes(r.fecha_fin) : antes(r.fecha_inicio)));\n\nif (filas.length === 0) return [];\n\nreturn [\n  {\n    json: {\n      etiqueta: `archivar ${filas.length} evento(s) pasado(s)`,\n      url: `${config.supabase_url}/rest/v1/items?id=in.(${filas.map((f) => f.id).join(',')})&tipo=eq.evento&estado=in.(pendiente,hecho)&select=id,titulo`,\n      cuerpo: { estado: 'archivado' },\n      planificados: filas.length,\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a5-0006-4000-8000-000000000006",
+      "name": "Planificar archivado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "PATCH",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "5ec7e7a5-0007-4000-8000-000000000007",
+      "name": "Archivar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Resumen\": deja constancia de cuántos eventos se archivaron (se ve en el historial de ejecuciones). Los eventos archivados dejan\n// de existir en Google Calendar en los minutos siguientes: el flujo \"Sincronizar Calendar\" borra el evento de todo item archivado.\n\nconst planificados = $('Planificar archivado').first().json.planificados;\nconst archivados = $input.all().map((i) => i.json).filter((r) => r && typeof r.id === 'string');\n\nreturn [\n  {\n    json: {\n      planificados,\n      archivados: archivados.length,\n      // Los que cambiaron entre la lectura y la escritura no se tocan: solo se informa\n      sin_tocar: Math.max(0, planificados - archivados.length),\n      titulos: archivados.map((r) => String(r.titulo ?? '').slice(0, 60)),\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a5-0008-4000-8000-000000000008",
+      "name": "Resumen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ① Disparo y configuración\nSe ejecuta **cada día a las 3:00** (Europe/Madrid) o a mano (Disparador manual).\n**Configuración**: URL de Supabase, días de retención (7) y máximo por pasada (50).",
+        "height": 220,
+        "width": 480,
+        "color": 4
+      },
+      "id": "5ec7e7a5-0101-4000-8000-000000000101",
+      "name": "Nota 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ② Eventos antiguos\n**Calcular límite** fija ahora − 7 días. **Leer eventos antiguos** trae los eventos pendientes o hechos cuyo **fin** pasó antes del límite (sin fin, su inicio), los más antiguos primero.",
+        "height": 220,
+        "width": 480,
+        "color": 5
+      },
+      "id": "5ec7e7a5-0102-4000-8000-000000000102",
+      "name": "Nota 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        440,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ③ Archivar\n**Planificar archivado** vuelve a comprobar cada fila antes de tocar nada y arma UN `PATCH` que pasa los eventos a `archivado`. El flujo **Sincronizar Calendar** borra después de Google Calendar el evento de todo item archivado. El item no se borra de la base de datos.",
+        "height": 220,
+        "width": 720,
+        "color": 6
+      },
+      "id": "5ec7e7a5-0103-4000-8000-000000000103",
+      "name": "Nota 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        920,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Antes de publicar\n1. Credencial **Supabase API** en *Leer eventos antiguos* y *Archivar*.\n2. Identificadores: `SUPABASE_URL` en el `.env` del servidor (no hace falta tocar **Configuración**).\n3. Pruébalo con *Disparador manual*: mira en *Resumen* cuántos eventos archivó. La primera vez puede borrar de tu calendario todos los eventos antiguos acumulados (hasta 50 por pasada).\n4. Publica el flujo y elígelo en el aviso de fallos si quieres vigilarlo (Options > Settings > Error workflow).",
+        "height": 280,
+        "width": 720,
+        "color": 2
+      },
+      "id": "5ec7e7a5-0104-4000-8000-000000000104",
+      "name": "Nota 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Cada día a las 3:00": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Disparador manual": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuración": {
+      "main": [
+        [
+          {
+            "node": "Calcular límite",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcular límite": {
+      "main": [
+        [
+          {
+            "node": "Leer eventos antiguos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer eventos antiguos": {
+      "main": [
+        [
+          {
+            "node": "Planificar archivado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Planificar archivado": {
+      "main": [
+        [
+          {
+            "node": "Archivar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Archivar": {
+      "main": [
+        [
+          {
+            "node": "Resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid",
+    "errorWorkflow": "secretariaAvisoF"
+  }
+}

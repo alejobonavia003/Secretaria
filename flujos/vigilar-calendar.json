@@ -1,0 +1,518 @@
+{
+  "id": "secretariaVigCal",
+  "name": "Secretaria · Vigilar Calendar",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "7e5e7e20-0001-4000-8000-000000000001",
+      "name": "Cada 5 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        -120
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "7e5e7e20-0002-4000-8000-000000000002",
+      "name": "Disparador manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Configuración\" del flujo \"Secretaria · Vigilar Calendar\": lo que se toca a mano está aquí.\n// Los demás nodos leen estos valores con $('Configuración').first().json.config\n// Los SECRETOS no están aquí: el número de destino se lee del entorno de n8n (WHATSAPP_NUMERO_PERMITIDO, definido en el .env)\n// y el token de envío va en una credencial de n8n (Header Auth), no aquí.\n\n// Los identificadores (no son secretos) se leen del .env del servidor, así se ponen UNA vez para todos los flujos.\n// Si una variable no está en el .env, vale lo que esté escrito aquí abajo.\nconst delEntorno = (clave, porDefecto) => {\n  try {\n    return String($env[clave] ?? '').trim() || porDefecto;\n  } catch (e) {\n    return porDefecto;\n  }\n};\n\n// === Valores fáciles de cambiar ===\n// Project URL de Supabase (Integrations > Data API), sin /rest/v1 al final. No es un secreto.\nconst SUPABASE_URL = delEntorno('SUPABASE_URL', 'https://TU-PROYECTO.supabase.co');\n// Identificador del número de WhatsApp desde el que se envía (WhatsApp > API Setup > Phone number ID). No es un secreto.\nconst PHONE_NUMBER_ID = delEntorno('WHATSAPP_PHONE_NUMBER_ID', 'TU-PHONE-NUMBER-ID');\n// Versión de la API Graph de Meta (la misma que en el flujo \"Secretaria · WhatsApp\")\nconst GRAPH_VERSION = 'v26.0';\n// ID del calendario \"Secretaria\" (el mismo CALENDAR_ID del flujo \"Sincronizar Calendar\"; termina en @group.calendar.google.com)\nconst CALENDAR_ID = delEntorno('GOOGLE_CALENDAR_ID', 'TU-CALENDARIO@group.calendar.google.com');\n// Horas desde el último mensaje tuyo durante las que Meta admite texto libre (Meta admite 24 h: margen para no rozar el límite).\n// Fuera de ese plazo NO se envía nada (sin plantillas): los cambios quedan anotados y se avisan cuando vuelvas a escribir.\nconst VENTANA_HORAS = 23;\n// Duración que se supone a un evento sin hora de fin (la misma que usa «Sincronizar Calendar»)\nconst DURACION_MIN = 60;\n// Minutos que se retrocede respecto a la última pasada al preguntar a Google qué cambió (cubre el retraso entre la lectura y el guardado)\nconst MARGEN_MIN = 5;\n// Líneas máximas de un aviso (lo que sobre se avisa en la pasada siguiente)\nconst MAX_LINEAS = 15;\n// ==================================\n\nif (!/^https:\\/\\/[a-z0-9-]+\\.supabase\\.co\\/?$/i.test(SUPABASE_URL) || SUPABASE_URL.includes('TU-PROYECTO')) {\n  throw new Error('Configuración: pon tu Project URL de Supabase en SUPABASE_URL (https://<ref>.supabase.co, sin /rest/v1). Va en el .env del servidor (SUPABASE_URL=…, y después docker compose up -d)');\n}\nif (!/^\\d{8,20}$/.test(PHONE_NUMBER_ID)) {\n  throw new Error('Configuración: pon el Phone number ID de WhatsApp en PHONE_NUMBER_ID (solo dígitos). Va en el .env del servidor (WHATSAPP_PHONE_NUMBER_ID=…, y después docker compose up -d)');\n}\nif (!/^v\\d+\\.\\d+$/.test(GRAPH_VERSION)) {\n  throw new Error('Configuración: GRAPH_VERSION debe tener la forma v26.0');\n}\nif (!/^[^@\\s/]+@[^@\\s/]+$/.test(CALENDAR_ID) || CALENDAR_ID.includes('TU-CALENDARIO')) {\n  throw new Error('Configuración: pon el ID del calendario \"Secretaria\" en CALENDAR_ID (termina en @group.calendar.google.com). Va en el .env del servidor (GOOGLE_CALENDAR_ID=…, y después docker compose up -d)');\n}\nif (!Number.isFinite(VENTANA_HORAS) || VENTANA_HORAS < 1 || VENTANA_HORAS > 24) {\n  throw new Error('Configuración: VENTANA_HORAS debe estar entre 1 y 24');\n}\nif (!Number.isInteger(DURACION_MIN) || DURACION_MIN < 1 || DURACION_MIN > 1440) {\n  throw new Error('Configuración: DURACION_MIN debe estar entre 1 y 1440');\n}\nif (!Number.isInteger(MARGEN_MIN) || MARGEN_MIN < 0 || MARGEN_MIN > 120) {\n  throw new Error('Configuración: MARGEN_MIN debe estar entre 0 y 120');\n}\nif (!Number.isInteger(MAX_LINEAS) || MAX_LINEAS < 1 || MAX_LINEAS > 40) {\n  throw new Error('Configuración: MAX_LINEAS debe estar entre 1 y 40');\n}\n\nreturn [\n  {\n    json: {\n      config: {\n        supabase_url: SUPABASE_URL.replace(/\\/+$/, ''),\n        phone_number_id: PHONE_NUMBER_ID,\n        graph_version: GRAPH_VERSION,\n        calendar_id: CALENDAR_ID,\n        ventana_horas: VENTANA_HORAS,\n        duracion_min: DURACION_MIN,\n        margen_min: MARGEN_MIN,\n        max_lineas: MAX_LINEAS,\n      },\n    },\n  },\n];\n"
+      },
+      "id": "7e5e7e20-0003-4000-8000-000000000003",
+      "name": "Configuración",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/vigilantes_estado?select=valor&clave=eq.calendar",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "7e5e7e20-0004-4000-8000-000000000004",
+      "name": "Leer estado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/items?select=id,titulo,contenido,estado,fecha_inicio,fecha_fin,calendar_event_id,calendar_pendiente,updated_at&tipo=eq.evento&estado=in.(pendiente,hecho)&or=(fecha_inicio.gte.\"{{ new Date(Date.now() - 30 * 86400000).toISOString() }}\",fecha_inicio.is.null)&limit=1000",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "7e5e7e20-0005-4000-8000-000000000005",
+      "name": "Leer eventos de la base",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent($('Configuración').first().json.config.calendar_id) + '/events?maxResults=2500&showDeleted=true&updatedMin=' + encodeURIComponent(new Date((Date.parse($('Leer estado').first().json.valor?.ultima) || Date.now()) - $('Configuración').first().json.config.margen_min * 60000).toISOString()) + '&fields=nextPageToken%2Citems(id%2Cstatus%2Csummary%2Cdescription%2Cstart%2Cend%2Cupdated%2Crecurrence%2CrecurringEventId%2CextendedProperties%2Fprivate)' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api"
+      },
+      "id": "7e5e7e20-0006-4000-8000-000000000006",
+      "name": "Leer eventos de Calendar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": null,
+          "name": "Google Calendar"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Comparar\": compara lo que Google dice que ha CAMBIADO en el calendario desde la última pasada con los eventos de la base de datos\n// y arma las escrituras. No escribe nada: solo las prepara.\n//\n// Qué detecta (solo lo hecho A MANO en Google Calendar):\n//   - evento BORRADO     -> el item se archiva (como si lo hubieras cancelado por WhatsApp; el flujo «Sincronizar Calendar» ya sabe que el evento no existe);\n//   - evento MOVIDO      -> el item toma la hora nueva (inicio y fin); «Sincronizar Calendar» recalcula el aviso;\n//   - evento RENOMBRADO  -> el item toma el título nuevo;\n//   - evento CREADO      -> se crea un item (tipo evento, pendiente) con ese evento, para que cuente en las consultas y en los solapes.\n// Todo lo que hace la propia secretaria se ignora: sus eventos llevan extendedProperties.private.item_id, y un cambio que ya está en el item no es un cambio.\n//\n// Reglas de seguridad:\n//   - nunca se pisa un cambio hecho por WhatsApp: se ignora el evento si el item está pendiente de sincronizar o si el item cambió DESPUÉS que el evento;\n//   - la escritura de un cambio lleva la condición updated_at = <el valor que se leyó>: si el item cambió mientras tanto, no se toca;\n//   - no se importan los eventos periódicos (recurrentes) ni los de todo el día (no tienen hora: no podrían entrar en el control de solapes);\n//   - la primera vez (sin estado guardado) solo se guarda la hora de la pasada: los eventos creados a mano ANTES de activar el vigilante no se importan\n//     (editar uno en Calendar lo hace «cambiar» y entonces sí se importa);\n//   - la hora de la última pasada se guarda LA ÚLTIMA: si algo falla por el camino, la pasada siguiente lo vuelve a ver (las claves únicas evitan duplicar el registro).\n//\n// La descripción: «Sincronizar Calendar» reescribe la descripción del evento desde el item cada vez que lo actualiza. Por eso, si la descripción de un\n// evento se cambió a mano, se importa al item (sin avisar) para que esa actualización no la borre.\n//\n// Salida: una escritura por item; la última siempre guarda el estado.\n\nconst config = $('Configuración').first().json.config;\nconst base = `${config.supabase_url}/rest/v1`;\nconst inicioPasada = new Date().toISOString();\nconst TOPE_FILAS = 1000;\nconst DURACION_MS = config.duracion_min * 60000;\n// Los eventos de la base de datos se leen desde hace 30 días (nodo «Leer eventos de la base»): los más antiguos no se vigilan\nconst DIAS_VIGILADOS = 30;\n\nconst estado = $('Leer estado')\n  .all()\n  .map((i) => i.json)\n  .find((r) => r && r.valor && typeof r.valor.ultima === 'string');\nconst filasDb = $('Leer eventos de la base')\n  .all()\n  .map((i) => i.json)\n  .filter((r) => r && typeof r.id === 'string');\nif (filasDb.length >= TOPE_FILAS) {\n  throw new Error(`Comparar: Supabase devolvió ${TOPE_FILAS} eventos (su límite): la lectura puede estar truncada y no se toca nada. Hay que paginar la lectura.`);\n}\n\nconst escrituras = [];\nconst escribir = (etiqueta, metodo, ruta, cuerpo, prefer) => escrituras.push({ etiqueta, metodo, url: `${base}${ruta}`, cuerpo, prefer });\nconst guardarEstado = () => escribir('estado del vigilante', 'POST', '/vigilantes_estado?on_conflict=clave', { clave: 'calendar', valor: { ultima: inicioPasada }, updated_at: inicioPasada }, 'resolution=merge-duplicates,return=minimal');\n\n// Primera vez: solo se guarda la hora de la pasada\nif (!estado) {\n  guardarEstado();\n  return escrituras.map((e) => ({ json: e }));\n}\n\nconst lista = $('Leer eventos de Calendar').first().json ?? {};\nif (lista.nextPageToken) {\n  throw new Error('Comparar: Google devolvió más de una página de cambios: se para sin tocar nada (la hora de la última pasada no avanza)');\n}\nconst eventos = Array.isArray(lista.items) ? lista.items : [];\n\n// --- Lo que ya conoce la base de datos ---\nconst porEvento = new Map();\nconst porItem = new Map();\nfor (const it of filasDb) {\n  if (typeof it.calendar_event_id === 'string' && it.calendar_event_id !== '') porEvento.set(it.calendar_event_id, it);\n  porItem.set(it.id, it);\n}\nconst ms = (s) => (typeof s === 'string' ? Date.parse(s) : NaN);\nconst intervalo = (it) => {\n  const ini = ms(it.fecha_inicio);\n  let fin = ms(it.fecha_fin);\n  if (!(fin > ini)) fin = ini + DURACION_MS;\n  return { ini, fin };\n};\n// Con qué otros eventos pendientes choca un evento (para avisar; no impide nada)\nfunction choques(id, ini, fin) {\n  return filasDb\n    .filter((x) => x.id !== id && x.estado === 'pendiente' && Number.isFinite(ms(x.fecha_inicio)))\n    .map((x) => ({ x, i: intervalo(x) }))\n    .filter(({ i }) => ini < i.fin && i.ini < fin)\n    .slice(0, 3)\n    .map(({ x, i }) => ({ titulo: x.titulo, inicio: new Date(i.ini).toISOString(), fin: new Date(i.fin).toISOString() }));\n}\n\n// Lo que «Sincronizar Calendar» escribe como descripción de un item: su contenido.\n// Devuelve undefined si la descripción del evento es esa (no hay cambio); si no, el contenido nuevo (null si queda vacío).\nfunction descripcionCambiada(item, descripcionEvento) {\n  const hay = typeof descripcionEvento === 'string' ? descripcionEvento.trim() : '';\n  const contenido = typeof item.contenido === 'string' && item.contenido.trim() !== '' ? item.contenido.trim() : null;\n  const esperada = contenido ?? '';\n  if (hay === esperada) return undefined;\n  return hay === '' ? null : hay;\n}\n\nconst registros = [];\nconst cambiosItems = [];\nconst nuevosItems = [];\nconst registrar = (tipo, ev, itemId, titulo, detalle) => registros.push({ tipo, event_id: ev.id, item_id: itemId, titulo, detalle, clave: `${tipo}|${ev.id}|${ev.updated ?? 'sin-fecha'}` });\n\nfor (const ev of eventos) {\n  if (!ev || typeof ev.id !== 'string' || ev.id === '') continue;\n  if (ev.recurrence || ev.recurringEventId) continue; // eventos periódicos: no se vigilan\n\n  const propio = ev.extendedProperties?.private?.item_id; // lo pone la secretaria al crear o actualizar el evento\n  const item = porEvento.get(ev.id) ?? (typeof propio === 'string' ? porItem.get(propio) : undefined);\n\n  // --- Borrado a mano ---\n  if (ev.status === 'cancelled') {\n    if (!item || (item.estado !== 'pendiente' && item.estado !== 'hecho')) continue; // no era de la secretaria, o ya estaba cancelado\n    registrar('evento_eliminado', ev, item.id, item.titulo, { titulo: item.titulo, inicio: item.fecha_inicio, fin: item.fecha_fin });\n    cambiosItems.push({ id: item.id, condicion: `estado=in.(pendiente,hecho)`, cuerpo: { estado: 'archivado' }, etiqueta: `archivar «${item.titulo}»` });\n    continue;\n  }\n\n  // Sin hora (todo el día) no se mira: no puede entrar en la agenda\n  const inicio = ms(ev.start?.dateTime);\n  if (!Number.isFinite(inicio)) continue;\n  if (inicio < Date.now() - DIAS_VIGILADOS * 86400000) continue; // más antiguo que lo que se lee de la base de datos: no se importa ni se compara\n  let fin = ms(ev.end?.dateTime);\n  if (!(fin > inicio)) fin = inicio + DURACION_MS;\n  const titulo = typeof ev.summary === 'string' && ev.summary.trim() !== '' ? ev.summary.trim() : '(sin título)';\n\n  // --- Creado a mano ---\n  if (!item) {\n    if (typeof propio === 'string') continue; // lo creó la secretaria (su item ya no está entre los vigilados)\n    const choca = choques(null, inicio, fin);\n    registrar('evento_creado', ev, null, titulo, { titulo, inicio: new Date(inicio).toISOString(), fin: new Date(fin).toISOString(), choca });\n    nuevosItems.push({\n      tipo: 'evento',\n      titulo,\n      contenido: typeof ev.description === 'string' && ev.description.trim() !== '' ? ev.description.trim() : null,\n      estado: 'pendiente',\n      fecha_inicio: new Date(inicio).toISOString(),\n      fecha_fin: new Date(fin).toISOString(),\n      calendar_event_id: ev.id,\n    });\n    continue;\n  }\n\n  // --- Movido o renombrado a mano ---\n  if (item.estado !== 'pendiente') continue; // los completados no se tocan\n  if (item.calendar_pendiente === true) continue; // la secretaria está a punto de escribir en Calendar: su valor manda\n  if (!(ms(ev.updated) > ms(item.updated_at))) continue; // el item cambió después que el evento (p. ej. por WhatsApp): su valor manda\n  const antes = intervalo(item);\n  const movido = antes.ini !== inicio || antes.fin !== fin;\n  const renombrado = titulo !== item.titulo && titulo !== '(sin título)';\n  const contenidoNuevo = descripcionCambiada(item, ev.description);\n  if (!movido && !renombrado && contenidoNuevo === undefined) continue; // coincide con lo que ya hay: es un cambio de la propia secretaria\n  if (!movido && !renombrado) {\n    // Solo cambió la descripción: se importa al item sin avisar\n    cambiosItems.push({ id: item.id, condicion: `updated_at=eq.${encodeURIComponent(item.updated_at)}`, cuerpo: { contenido: contenidoNuevo }, etiqueta: `descripción de «${item.titulo}»` });\n    continue;\n  }\n  const detalle = {\n    titulo_antes: item.titulo,\n    titulo_despues: renombrado ? titulo : item.titulo,\n    inicio_antes: new Date(antes.ini).toISOString(),\n    fin_antes: new Date(antes.fin).toISOString(),\n    inicio_despues: new Date(inicio).toISOString(),\n    fin_despues: new Date(fin).toISOString(),\n    renombrado: movido && renombrado,\n  };\n  if (movido) detalle.choca = choques(item.id, inicio, fin);\n  registrar(movido ? 'evento_movido' : 'evento_renombrado', ev, item.id, item.titulo, detalle);\n  cambiosItems.push({\n    id: item.id,\n    condicion: `updated_at=eq.${encodeURIComponent(item.updated_at)}`,\n    cuerpo: { ...(movido ? { fecha_inicio: detalle.inicio_despues, fecha_fin: detalle.fin_despues } : {}), ...(renombrado ? { titulo } : {}), ...(contenidoNuevo !== undefined ? { contenido: contenidoNuevo } : {}) },\n    etiqueta: `cambiar «${item.titulo}»`,\n  });\n}\n\n// --- Escrituras: el registro primero, los items después y el estado el último ---\nconst vistas = new Set();\nconst filasRegistro = registros.filter((r) => (vistas.has(r.clave) ? false : vistas.add(r.clave)));\nif (filasRegistro.length > 0) {\n  escribir(`registrar ${filasRegistro.length} cambio(s) del calendario`, 'POST', '/registro_calendar?on_conflict=clave', filasRegistro, 'resolution=ignore-duplicates,return=minimal');\n}\nfor (const c of cambiosItems) escribir(c.etiqueta, 'PATCH', `/items?id=eq.${encodeURIComponent(c.id)}&${c.condicion}`, c.cuerpo, 'return=minimal');\nfor (const n of nuevosItems) escribir(`importar «${n.titulo}»`, 'POST', '/items', n, 'return=minimal');\nguardarEstado();\n\nreturn escrituras.map((e) => ({ json: e }));\n"
+      },
+      "id": "7e5e7e20-0007-4000-8000-000000000007",
+      "name": "Comparar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 100
+            }
+          }
+        },
+        "method": "={{ $json.metodo }}",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "={{ $json.prefer }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "7e5e7e20-0008-4000-8000-000000000008",
+      "name": "Escribir en Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/registro_calendar?select=id,created_at,tipo,titulo,detalle&notificado_at=is.null&order=created_at.asc&limit=100",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "7e5e7e20-0009-4000-8000-000000000009",
+      "name": "Leer sin avisar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/mensajes?select=created_at&wa_message_id=like.wamid.*&order=created_at.desc&limit=1",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "7e5e7e20-0010-4000-8000-000000000010",
+      "name": "Leer último mensaje",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Redactar aviso\": construye UN mensaje de WhatsApp con los cambios del calendario que aún no se han avisado (registro_calendar con\n// notificado_at nulo) y el cuerpo exacto de la petición a Meta, más los ids para marcarlos como avisados después (solo si Meta acepta).\n//\n// - Solo como texto libre y solo si la ventana de 24 h de Meta sigue abierta (el último mensaje TUYO es de hace menos de VENTANA_HORAS).\n//   Si está cerrada devuelve [] y no se envía nada: no hay plantillas. Los cambios quedan anotados y se avisan cuando vuelvas a escribir.\n// - Se redacta con código, nunca con el modelo. Máximo MAX_LINEAS líneas; el resto sale en la pasada siguiente.\n\nconst config = $('Configuración').first().json.config;\nconst LIMITE_MENSAJE = 3800;\nconst ZONA = 'Europe/Madrid';\nconst limpiar = (s) => String(s ?? '').replace(/[*_~`]/g, '').replace(/\\s+/g, ' ').trim();\nconst fmtDia = new Intl.DateTimeFormat('es-ES', { timeZone: ZONA, weekday: 'short', day: 'numeric', month: 'short' });\nconst fmtHora = new Intl.DateTimeFormat('es-ES', { timeZone: ZONA, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });\nconst dia = (iso) => fmtDia.format(new Date(iso)).replace(/[.,]/g, '');\nconst hora = (iso) => fmtHora.format(new Date(iso));\nconst cuando = (iso) => `${dia(iso)}, ${hora(iso)}`;\nconst tramo = (ini, fin) => `${dia(ini)}, de ${hora(ini)} a ${hora(fin)}`;\n\nconst filas = $('Leer sin avisar')\n  .all()\n  .map((i) => i.json)\n  .filter((r) => r && typeof r.id === 'string' && typeof r.tipo === 'string' && typeof r.titulo === 'string')\n  .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));\nif (filas.length === 0) return [];\n\nconst ultimo = $('Leer último mensaje')\n  .all()\n  .map((x) => x.json)\n  .filter((r) => r && typeof r.created_at === 'string')\n  .map((r) => new Date(r.created_at))\n  .filter((d) => !Number.isNaN(d.getTime()))[0];\nconst ahora = new Date();\nconst ventanaAbierta = Boolean(ultimo) && ahora.getTime() - ultimo.getTime() < config.ventana_horas * 3600 * 1000;\nif (!ventanaAbierta) return [];\n\nconst para = String($env.WHATSAPP_NUMERO_PERMITIDO ?? '').replace(/\\D/g, '');\nif (!para) throw new Error('Redactar aviso: falta WHATSAPP_NUMERO_PERMITIDO en el entorno de n8n');\n\n// \" ⚠️ Choca con «X» (10:30-11:30).\" — con qué otros eventos se pisa el nuevo horario (solo se avisa; no se impide nada)\nfunction aviso(choca) {\n  if (!Array.isArray(choca) || choca.length === 0) return '';\n  const lista = choca.map((c) => `«${limpiar(c.titulo)}» (${hora(c.inicio)}-${hora(c.fin)})`).join(' y ');\n  return ` ⚠️ Choca con ${lista}.`;\n}\n\nfunction linea(r) {\n  const d = r.detalle ?? {};\n  const t = limpiar(r.titulo);\n  switch (r.tipo) {\n    case 'evento_creado':\n      return `📅 Veo un evento nuevo en tu calendario: «${t}», ${tramo(d.inicio, d.fin)}. Lo he añadido a tus citas.${aviso(d.choca)}`;\n    case 'evento_eliminado':\n      return `🗑️ Borraste de tu calendario «${t}» (${cuando(d.inicio)}). Lo he cancelado también aquí.`;\n    case 'evento_movido':\n      return `🕒 Moviste «${limpiar(d.titulo_antes ?? t)}» de ${cuando(d.inicio_antes)} a ${cuando(d.inicio_despues)}${d.renombrado ? ` y lo renombraste a «${limpiar(d.titulo_despues)}»` : ''}.${aviso(d.choca)}`;\n    case 'evento_renombrado':\n      return `✏️ Renombraste el evento «${limpiar(d.titulo_antes ?? t)}» a «${limpiar(d.titulo_despues)}» (${cuando(d.inicio_antes)}).`;\n    default:\n      return `Cambio en tu calendario: «${t}».`;\n  }\n}\n\nconst incluidas = filas.slice(0, config.max_lineas);\nconst lineas = incluidas.map(linea);\nlet texto;\nif (lineas.length === 1) {\n  texto = `${lineas[0]} Lo he anotado.`;\n} else {\n  texto = `*Cambios en tu calendario*\\n${lineas.map((l) => `• ${l}`).join('\\n')}\\nLos he anotado todos.`;\n}\nconst sobran = filas.length - incluidas.length;\nif (sobran > 0) texto += `\\n… y ${sobran} más (te los digo en el próximo aviso).`;\nif (texto.length > LIMITE_MENSAJE) texto = `${texto.slice(0, LIMITE_MENSAJE - 1).trimEnd()}…`;\n\nreturn [\n  {\n    json: {\n      cuerpo: { messaging_product: 'whatsapp', recipient_type: 'individual', to: para, type: 'text', text: { preview_url: false, body: texto } },\n      texto,\n      ids: incluidas.map((r) => r.id),\n      marca: { notificado_at: ahora.toISOString() },\n    },\n  },\n];\n"
+      },
+      "id": "7e5e7e20-0011-4000-8000-000000000011",
+      "name": "Redactar aviso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $('Configuración').first().json.config.graph_version }}/{{ $('Configuración').first().json.config.phone_number_id }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "7e5e7e20-0012-4000-8000-000000000012",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "WhatsApp token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "PATCH",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/registro_calendar?id=in.({{ $('Redactar aviso').first().json.ids.join(',') }})&notificado_at=is.null",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Redactar aviso').first().json.marca) }}"
+      },
+      "id": "7e5e7e20-0013-4000-8000-000000000013",
+      "name": "Marcar avisados",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## ① Disparo y lecturas\nCada **5 minutos** o a mano. Lee la hora de la **última pasada** y los eventos pendientes o hechos de la base de datos. La primera vez, solo guarda la hora: **no importa ni avisa de nada**.",
+        "height": 240,
+        "width": 720,
+        "color": 4
+      },
+      "id": "7e5e7e20-0101-4000-8000-000000000101",
+      "name": "Nota 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ② Qué cambió en Calendar\n*Leer eventos de Calendar* pide a Google solo lo **modificado desde la última pasada** (incluidos los borrados). Solo lectura: este flujo nunca escribe en Google Calendar. *Comparar* decide qué es obra del usuario y qué de la propia secretaria.",
+        "height": 240,
+        "width": 700,
+        "color": 5
+      },
+      "id": "7e5e7e20-0102-4000-8000-000000000102",
+      "name": "Nota 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        920,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ③ Registro y aviso\n*Escribir en Supabase* anota todo (de una en una; **el estado, el último**): archiva lo borrado, mueve o renombra lo cambiado e importa lo creado a mano; el flujo **Sincronizar Calendar** deja después el evento al día. Luego envía **un** WhatsApp con el detalle si escribiste hace menos de 23 h (sin plantillas); si no, los cambios esperan. Se marcan avisados solo si Meta acepta.",
+        "height": 240,
+        "width": 1200,
+        "color": 6
+      },
+      "id": "7e5e7e20-0103-4000-8000-000000000103",
+      "name": "Nota 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1640,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Antes de publicar\n1. **Base de datos** instalada en Supabase (`supabase/instalar.sql`).\n2. Credenciales: **Google Calendar OAuth2** en *Leer eventos de Calendar*; **Supabase API** en las lecturas, *Escribir en Supabase* y *Marcar avisados*; **Header Auth de WhatsApp** en *Enviar WhatsApp*.\n3. Identificadores: `SUPABASE_URL`, `WHATSAPP_PHONE_NUMBER_ID` y `GOOGLE_CALENDAR_ID` en el `.env` del servidor (no hace falta tocar **Configuración**).\n4. Pruébalo con *Disparador manual* (la primera ejecución solo guarda la hora: `select * from vigilantes_estado`).\n5. Publica. **Prueba real**: crea, mueve, renombra y borra un evento a mano en el calendario «Secretaria» y ejecuta el flujo tras cada paso.\n6. *Options > Settings > Error workflow* → «Secretaria · Aviso de fallos».",
+        "height": 340,
+        "width": 1200,
+        "color": 2
+      },
+      "id": "7e5e7e20-0104-4000-8000-000000000104",
+      "name": "Nota 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Cada 5 minutos": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Disparador manual": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuración": {
+      "main": [
+        [
+          {
+            "node": "Leer estado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer estado": {
+      "main": [
+        [
+          {
+            "node": "Leer eventos de la base",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer eventos de la base": {
+      "main": [
+        [
+          {
+            "node": "Leer eventos de Calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer eventos de Calendar": {
+      "main": [
+        [
+          {
+            "node": "Comparar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Comparar": {
+      "main": [
+        [
+          {
+            "node": "Escribir en Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escribir en Supabase": {
+      "main": [
+        [
+          {
+            "node": "Leer sin avisar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer sin avisar": {
+      "main": [
+        [
+          {
+            "node": "Leer último mensaje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer último mensaje": {
+      "main": [
+        [
+          {
+            "node": "Redactar aviso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redactar aviso": {
+      "main": [
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Marcar avisados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid",
+    "errorWorkflow": "secretariaAvisoF"
+  }
+}

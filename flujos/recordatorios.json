@@ -1,0 +1,447 @@
+{
+  "id": "secretariaRecord",
+  "name": "Secretaria · Recordatorios",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "5ec7e7a7-0001-4000-8000-000000000001",
+      "name": "Cada minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        -120
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "5ec7e7a7-0002-4000-8000-000000000002",
+      "name": "Disparador manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Configuración\" del flujo \"Secretaria · Recordatorios\": lo que se toca a mano está aquí.\n// Los demás nodos leen estos valores con $('Configuración').first().json.config\n// Los SECRETOS no están aquí: el número de destino se lee del entorno de n8n (WHATSAPP_NUMERO_PERMITIDO, definido en el .env)\n// y el token de envío va en una credencial de n8n (Header Auth), no aquí.\n\n// Los identificadores (no son secretos) se leen del .env del servidor, así se ponen UNA vez para todos los flujos.\n// Si una variable no está en el .env, vale lo que esté escrito aquí abajo.\nconst delEntorno = (clave, porDefecto) => {\n  try {\n    return String($env[clave] ?? '').trim() || porDefecto;\n  } catch (e) {\n    return porDefecto;\n  }\n};\n\n// === Valores fáciles de cambiar ===\n// Project URL de Supabase (Integrations > Data API), sin /rest/v1 al final. No es un secreto.\nconst SUPABASE_URL = delEntorno('SUPABASE_URL', 'https://TU-PROYECTO.supabase.co');\n// Identificador del número de WhatsApp desde el que se envía (WhatsApp > API Setup > Phone number ID). No es un secreto.\nconst PHONE_NUMBER_ID = delEntorno('WHATSAPP_PHONE_NUMBER_ID', 'TU-PHONE-NUMBER-ID');\n// Versión de la API Graph de Meta (la misma que en el flujo \"Secretaria · WhatsApp\")\nconst GRAPH_VERSION = 'v26.0';\n// Cuándo avisar, en minutos ANTES de la hora del recordatorio: 1 hora antes, 30 minutos antes y a la hora (0).\n// Si cambias esta lista, cambia también AVISOS_RECORDATORIO_MIN en herramientas/flujo/resultado.js (lo que la confirmación promete).\nconst AVISOS_MIN = [60, 30, 0];\n// Horas desde el último mensaje tuyo durante las que Meta admite texto libre. Fuera de ese plazo NO se envía nada y el aviso espera:\n// en cuanto vuelvas a escribir, sale (como «atrasado» si la hora ya pasó).\nconst VENTANA_HORAS = 23;\n// Si el aviso «a la hora» sale con más minutos de retraso que estos, se dice que es un recordatorio atrasado\nconst MARGEN_ATRASADO_MIN = 15;\n// Recordatorios que se anuncian como máximo en un solo mensaje\nconst MAX_POR_MENSAJE = 10;\n// ==================================\n\nif (!/^https:\\/\\/[a-z0-9-]+\\.supabase\\.co\\/?$/i.test(SUPABASE_URL) || SUPABASE_URL.includes('TU-PROYECTO')) {\n  throw new Error('Configuración: pon tu Project URL de Supabase en SUPABASE_URL (https://<ref>.supabase.co, sin /rest/v1). Va en el .env del servidor (SUPABASE_URL=…, y después docker compose up -d)');\n}\nif (!/^\\d{8,20}$/.test(PHONE_NUMBER_ID)) {\n  throw new Error('Configuración: pon el Phone number ID de WhatsApp en PHONE_NUMBER_ID (solo dígitos). Va en el .env del servidor (WHATSAPP_PHONE_NUMBER_ID=…, y después docker compose up -d)');\n}\nif (!/^v\\d+\\.\\d+$/.test(GRAPH_VERSION)) {\n  throw new Error('Configuración: GRAPH_VERSION debe tener la forma v26.0');\n}\nif (!Array.isArray(AVISOS_MIN) || AVISOS_MIN.length === 0 || !AVISOS_MIN.every((m) => Number.isInteger(m) && m >= 0 && m <= 1440) || !AVISOS_MIN.includes(0) || new Set(AVISOS_MIN).size !== AVISOS_MIN.length) {\n  throw new Error('Configuración: AVISOS_MIN debe ser una lista de minutos distintos, entre 0 y 1440, que incluya el 0 (el aviso «a la hora»)');\n}\nif (!Number.isFinite(VENTANA_HORAS) || VENTANA_HORAS < 1 || VENTANA_HORAS > 24) {\n  throw new Error('Configuración: VENTANA_HORAS debe estar entre 1 y 24');\n}\nif (!Number.isInteger(MARGEN_ATRASADO_MIN) || MARGEN_ATRASADO_MIN < 1 || MARGEN_ATRASADO_MIN > 720) {\n  throw new Error('Configuración: MARGEN_ATRASADO_MIN debe estar entre 1 y 720');\n}\nif (!Number.isInteger(MAX_POR_MENSAJE) || MAX_POR_MENSAJE < 1 || MAX_POR_MENSAJE > 50) {\n  throw new Error('Configuración: MAX_POR_MENSAJE debe estar entre 1 y 50');\n}\n\nreturn [\n  {\n    json: {\n      config: {\n        supabase_url: SUPABASE_URL.replace(/\\/+$/, ''),\n        phone_number_id: PHONE_NUMBER_ID,\n        graph_version: GRAPH_VERSION,\n        avisos_min: [...AVISOS_MIN].sort((a, b) => b - a),\n        ventana_horas: VENTANA_HORAS,\n        margen_atrasado_min: MARGEN_ATRASADO_MIN,\n        max_por_mensaje: MAX_POR_MENSAJE,\n      },\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a7-0003-4000-8000-000000000003",
+      "name": "Configuración",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/items?select=id,titulo,estado,recordar_en,recordatorio_avisos,updated_at&tipo=eq.tarea&estado=eq.pendiente&recordar_en=lte.{{ new Date(Date.now() + Math.max(...$('Configuración').first().json.config.avisos_min) * 60000).toISOString() }}&order=recordar_en.asc&limit=50",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "5ec7e7a7-0004-4000-8000-000000000004",
+      "name": "Leer recordatorios",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Filtrar recordatorios\": de las tareas con hora de aviso que devolvió Supabase decide, para cada una, qué aviso toca ahora.\n//\n// Los avisos son (por defecto) 1 hora antes, 30 minutos antes y a la hora. Cada aviso se manda una sola vez: los ya enviados están en\n// recordatorio_avisos. Un aviso «vence» cuando llega su hora; si el recordatorio se creó (o se cambió de hora) DESPUÉS de esa hora,\n// no vence nunca (no se avisa tarde de lo que no se prometió). Si varios vencen a la vez (el flujo estuvo parado, o la ventana de 24 h\n// estaba cerrada) se anuncia solo el más cercano a la hora y los demás se dan por enviados.\n// Cada fila se revalida (uuid, pendiente, título y hora válidos). Si no queda nada devuelve [] y el flujo termina.\n\nconst config = $('Configuración').first().json.config;\nconst ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst ms = (s) => (typeof s === 'string' ? Date.parse(s) : NaN);\nconst ahora = Date.now();\n\nconst salida = [];\nfor (const r of $input.all().map((i) => i.json)) {\n  if (!r || typeof r.id !== 'string' || !ID.test(r.id) || r.estado !== 'pendiente') continue;\n  if (typeof r.titulo !== 'string' || r.titulo.trim() === '') continue;\n  const inicio = ms(r.recordar_en);\n  if (Number.isNaN(inicio)) continue;\n  const enviados = Array.isArray(r.recordatorio_avisos) ? r.recordatorio_avisos.filter((m) => Number.isInteger(m)) : [];\n  const cambio = ms(r.updated_at);\n\n  const vencidos = config.avisos_min.filter((m) => {\n    const hora = inicio - m * 60000;\n    return !enviados.includes(m) && hora <= ahora && (Number.isNaN(cambio) || hora >= cambio);\n  });\n  if (vencidos.length === 0) continue;\n\n  const aviso = Math.min(...vencidos); // el más cercano a la hora\n  salida.push({\n    id: r.id,\n    titulo: r.titulo.trim(),\n    recordar_en: r.recordar_en,\n    aviso,\n    atrasado: aviso === 0 && ahora - inicio > config.margen_atrasado_min * 60000,\n    avisos_nuevos: [...new Set([...enviados, ...vencidos])].sort((a, b) => b - a),\n    hecho: vencidos.includes(0),\n  });\n}\n\nsalida.sort((a, b) => ms(a.recordar_en) - ms(b.recordar_en));\nif (salida.length === 0) return [];\nreturn [{ json: { recordatorios: salida.slice(0, config.max_por_mensaje) } }];\n"
+      },
+      "id": "5ec7e7a7-0005-4000-8000-000000000005",
+      "name": "Filtrar recordatorios",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/mensajes?select=created_at&wa_message_id=like.wamid.*&order=created_at.desc&limit=1",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "5ec7e7a7-0006-4000-8000-000000000006",
+      "name": "Leer último mensaje",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Redactar recordatorio\": construye UN mensaje de WhatsApp con los recordatorios que toca avisar y el cuerpo exacto de la petición a Meta,\n// más lo necesario para marcarlos como avisados DESPUÉS (solo si Meta acepta el envío).\n//\n// - Solo se envía como texto libre y solo si la ventana de 24 h de Meta sigue abierta (el último mensaje TUYO es de hace menos de\n//   VENTANA_HORAS). Si está cerrada devuelve [] y no se envía nada: no se marca nada y el aviso se reintenta cada minuto; en cuanto\n//   vuelvas a escribir sale (como «atrasado» si la hora ya pasó).\n// - Se redacta con código, nunca con el modelo.\n//\n//   un recordatorio:   🔔 En 1 hora: *título* (18:30)     🔔 En 30 minutos: *título* (18:30)     🔔 Ahora: *título*\n//                      🔔 Recordatorio atrasado (era a las 18:30): *título*\n//   varios:            🔔 *Recordatorios*   y una línea «• En 30 minutos: título (18:30)» por cada uno\n\nconst config = $('Configuración').first().json.config;\nconst LIMITE_MENSAJE = 3800;\nconst ZONA = 'Europe/Madrid';\n\nconst limpiar = (s) => String(s ?? '').replace(/[*_~`]/g, '').replace(/\\s+/g, ' ').trim();\nconst fmtHora = new Intl.DateTimeFormat('es-ES', { timeZone: ZONA, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });\nconst hora = (iso) => fmtHora.format(new Date(iso));\n\n// Antelación con palabras: 60 -> \"1 hora\", 120 -> \"2 horas\", 30 -> \"30 minutos\"\nfunction antes(minutos) {\n  if (minutos > 0 && minutos % 60 === 0) return minutos === 60 ? 'En 1 hora' : `En ${minutos / 60} horas`;\n  return `En ${minutos} minutos`;\n}\n\nconst recordatorios = $('Filtrar recordatorios').first().json.recordatorios;\nconst ultimo = $('Leer último mensaje')\n  .all()\n  .map((x) => x.json)\n  .filter((r) => r && typeof r.created_at === 'string')\n  .map((r) => new Date(r.created_at))\n  .filter((d) => !Number.isNaN(d.getTime()))[0];\n\nconst ahora = new Date();\nconst ventanaAbierta = Boolean(ultimo) && ahora.getTime() - ultimo.getTime() < config.ventana_horas * 3600 * 1000;\nif (!ventanaAbierta) return [];\n\nconst para = String($env.WHATSAPP_NUMERO_PERMITIDO ?? '').replace(/\\D/g, '');\nif (!para) throw new Error('Redactar recordatorio: falta WHATSAPP_NUMERO_PERMITIDO en el entorno de n8n');\n\nconst titulo = (r) => limpiar(r.titulo);\nconst una = (r) => {\n  if (r.atrasado) return `🔔 Recordatorio atrasado (era a las ${hora(r.recordar_en)}): *${titulo(r)}*`;\n  if (r.aviso === 0) return `🔔 Ahora: *${titulo(r)}*`;\n  return `🔔 ${antes(r.aviso)}: *${titulo(r)}* (${hora(r.recordar_en)})`;\n};\nconst linea = (r) => {\n  if (r.atrasado) return `• Atrasado (era a las ${hora(r.recordar_en)}): ${titulo(r)}`;\n  if (r.aviso === 0) return `• Ahora: ${titulo(r)}`;\n  return `• ${antes(r.aviso)}: ${titulo(r)} (${hora(r.recordar_en)})`;\n};\n\nlet texto = recordatorios.length === 1 ? una(recordatorios[0]) : `🔔 *Recordatorios*\\n${recordatorios.map(linea).join('\\n')}`;\nif (texto.length > LIMITE_MENSAJE) texto = `${texto.slice(0, LIMITE_MENSAJE - 1).trimEnd()}…`;\n\nreturn [\n  {\n    json: {\n      cuerpo: { messaging_product: 'whatsapp', recipient_type: 'individual', to: para, type: 'text', text: { preview_url: false, body: texto } },\n      texto,\n      // Lo que hay que anotar en cada recordatorio DESPUÉS de que Meta acepte el envío\n      marcas: recordatorios.map((r) => ({ id: r.id, recordar_en: r.recordar_en, avisos: r.avisos_nuevos, hecho: r.hecho })),\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a7-0007-4000-8000-000000000007",
+      "name": "Redactar recordatorio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $('Configuración').first().json.config.graph_version }}/{{ $('Configuración').first().json.config.phone_number_id }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "5ec7e7a7-0008-4000-8000-000000000008",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "WhatsApp token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Preparar marcas\": tras enviar el aviso, una petición por recordatorio para anotar los avisos ya enviados.\n// Si era el aviso «a la hora» el recordatorio se da por hecho (ya cumplió su función). Cada petición repite las condiciones de lo que se\n// leyó (misma hora de recordatorio, tarea, pendiente): si el usuario cambió la hora o lo completó mientras tanto, no se toca.\n\nconst config = $('Configuración').first().json.config;\nconst marcas = $('Redactar recordatorio').first().json.marcas;\n\nreturn marcas.map((m) => ({\n  json: {\n    url: `${config.supabase_url}/rest/v1/items?id=eq.${encodeURIComponent(m.id)}&tipo=eq.tarea&estado=eq.pendiente&recordar_en=eq.${encodeURIComponent(m.recordar_en)}`,\n    cuerpo: { recordatorio_avisos: m.avisos, ...(m.hecho ? { estado: 'hecho' } : {}) },\n  },\n}));\n"
+      },
+      "id": "5ec7e7a7-0009-4000-8000-000000000009",
+      "name": "Preparar marcas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "PATCH",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "5ec7e7a7-0010-4000-8000-000000000010",
+      "name": "Marcar avisados",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Preparar registro del aviso\": tras enviar el aviso, anota en avisos_enviados el id del mensaje que devolvió Meta\n// y qué elementos iban en él. Así, si respondes a este aviso («10 minutos más», «muévela a las 12»), el flujo principal sabe de qué\n// alarma hablas.\n// Si Meta no devolvió un id válido no se anota nada (el aviso ya se mandó; solo se pierde poder responderle).\n\nconst config = $('Configuración').first().json.config;\nconst VALIDO = /^[A-Za-z0-9._=+\\/-]{1,300}$/;\nconst ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\n\nconst wamid = $input.first()?.json?.messages?.[0]?.id;\nif (typeof wamid !== 'string' || !VALIDO.test(wamid)) return [];\n\nconst redactado = $('Redactar recordatorio').first().json;\nconst ids = [...new Set((redactado.marcas ?? []).map((x) => (typeof x === 'string' ? x : x?.id)).filter((i) => typeof i === 'string' && ID.test(i)))];\nif (ids.length === 0) return [];\n\nreturn [\n  {\n    json: {\n      url: `${config.supabase_url}/rest/v1/avisos_enviados?on_conflict=wa_message_id,item_id`,\n      cuerpo: ids.map((id) => ({ wa_message_id: wamid, item_id: id, tipo: 'alarma' })),\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a7-0011-4000-8000-000000000011",
+      "name": "Preparar registro del aviso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "5ec7e7a7-0012-4000-8000-000000000012",
+      "name": "Guardar aviso enviado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        220
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## ① Disparo y configuración\nSe ejecuta **cada minuto** o a mano (Disparador manual).\n**Configuración**: URL de Supabase, Phone number ID, los avisos (`AVISOS_MIN`: 1 hora antes, 30 minutos antes y a la hora) y la ventana de 24 h.",
+        "height": 220,
+        "width": 480,
+        "color": 4
+      },
+      "id": "5ec7e7a7-0101-4000-8000-000000000101",
+      "name": "Nota 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ② Qué avisar\nUn recordatorio es una **tarea con hora de aviso** (`recordar_en`): no va a Calendar y no choca con las citas. Aquí se leen los que están a punto, se revalida cada fila y se decide qué aviso toca (el más cercano a la hora; los avisos que ya no tienen sentido no se mandan).",
+        "height": 220,
+        "width": 480,
+        "color": 5
+      },
+      "id": "5ec7e7a7-0102-4000-8000-000000000102",
+      "name": "Nota 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        440,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ③ Envío y marcado\nSolo se envía si escribiste hace menos de 23 h (texto libre). Si Meta acepta el envío, **Marcar avisados** anota los avisos enviados (y, tras el aviso «a la hora», da el recordatorio por hecho); si lo rechaza, la ejecución queda en rojo y se reintenta el minuto siguiente. Con la ventana cerrada no se manda nada y el aviso espera: sale en cuanto vuelvas a escribir.",
+        "height": 220,
+        "width": 1200,
+        "color": 6
+      },
+      "id": "5ec7e7a7-0103-4000-8000-000000000103",
+      "name": "Nota 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        920,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Antes de publicar\n1. Base de datos instalada en Supabase (`supabase/instalar.sql`).\n2. Credencial **Supabase API** en *Leer recordatorios*, *Leer último mensaje*, *Marcar avisados* y *Guardar aviso enviado*, y la **Header Auth de WhatsApp** (la misma del flujo de WhatsApp) en *Enviar WhatsApp*.\n3. Identificadores: `SUPABASE_URL` y `WHATSAPP_PHONE_NUMBER_ID` en el `.env` del servidor (no hace falta tocar **Configuración**).\n4. Pruébalo con *Disparador manual* (sin recordatorios a punto termina sin hacer nada) y publica el flujo.\n5. Elige «Secretaria · Aviso de fallos» como Error workflow.",
+        "height": 320,
+        "width": 720,
+        "color": 2
+      },
+      "id": "5ec7e7a7-0104-4000-8000-000000000104",
+      "name": "Nota 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Cada minuto": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Disparador manual": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuración": {
+      "main": [
+        [
+          {
+            "node": "Leer recordatorios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer recordatorios": {
+      "main": [
+        [
+          {
+            "node": "Filtrar recordatorios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtrar recordatorios": {
+      "main": [
+        [
+          {
+            "node": "Leer último mensaje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer último mensaje": {
+      "main": [
+        [
+          {
+            "node": "Redactar recordatorio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redactar recordatorio": {
+      "main": [
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Preparar marcas",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Preparar registro del aviso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar marcas": {
+      "main": [
+        [
+          {
+            "node": "Marcar avisados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar registro del aviso": {
+      "main": [
+        [
+          {
+            "node": "Guardar aviso enviado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid",
+    "errorWorkflow": "secretariaAvisoF"
+  }
+}

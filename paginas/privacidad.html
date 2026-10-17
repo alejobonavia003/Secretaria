@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Política de privacidad · Secretaria</title>
+  <meta name="description" content="Qué datos trata Secretaria, para qué, dónde se guardan y cómo retirar el acceso.">
+  <style>
+    :root { color-scheme: light dark; --fondo: #fafaf9; --texto: #1c1917; --suave: #57534e; --linea: #d6d3d1; --acento: #1d4ed8; }
+    @media (prefers-color-scheme: dark) { :root { --fondo: #1c1917; --texto: #f5f5f4; --suave: #a8a29e; --linea: #44403c; --acento: #93c5fd; } }
+    body { margin: 0; background: var(--fondo); color: var(--texto); font: 17px/1.6 system-ui, sans-serif; }
+    main { max-width: 42rem; margin: 0 auto; padding: 3rem 1rem; }
+    h1 { font-size: 2rem; margin: 0 0 .25rem; }
+    h2 { font-size: 1.2rem; margin: 2rem 0 .5rem; }
+    p, li { color: var(--suave); }
+    a { color: var(--acento); }
+    .fecha { font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Política de privacidad</h1>
+    <p class="fecha">Secretaria · actualizada el 16 de octubre de 2026 · <a href="index.html">volver al inicio</a></p>
+
+    <h2>Qué es Secretaria</h2>
+    <p>Secretaria es un proyecto personal de código abierto. Su responsable es Guillermo Garcia Andugar. Funciona en un servidor privado suyo y trata únicamente los datos de su propia cuenta de Google y de su propio WhatsApp. No es un servicio abierto al público.</p>
+
+    <h2>Qué datos de Google usa y para qué</h2>
+    <ul>
+      <li><strong>Google Calendar:</strong> crear, leer, modificar y borrar eventos del calendario del usuario, para reflejar las citas que él pide por WhatsApp (y las que cambia a mano).</li>
+      <li><strong>Google Drive:</strong> crear carpetas, subir, mover y leer los archivos de una carpeta del propio usuario, para guardar y ordenar los archivos que envía por WhatsApp.</li>
+    </ul>
+    <p>Solo se accede a esos datos para esas funciones. No se usan para publicidad, no se venden y no se comparten con terceros. El uso de la información recibida de las APIs de Google cumple la <a href="https://developers.google.com/terms/api-services-user-data-policy">Política de datos de usuario de los servicios de API de Google</a>, incluidos los requisitos de uso limitado.</p>
+
+    <h2>Qué otros datos se tratan</h2>
+    <ul>
+      <li><strong>Mensajes de WhatsApp</strong> del usuario (texto, transcripción de sus audios y archivos adjuntos), recibidos a través de la API de WhatsApp Cloud de Meta.</li>
+      <li>El texto de cada mensaje se envía a la <strong>API de Gemini</strong> de Google para entender qué se pide. Las transcripciones de audio se hacen igual.</li>
+      <li>Los datos ya clasificados (tareas, notas, listas, citas, proyectos) se guardan en una base de datos de <strong>Supabase</strong> en la Unión Europea, con acceso restringido.</li>
+    </ul>
+
+    <h2>Quién puede verlos</h2>
+    <p>Solo el usuario y los servicios que acaban de nombrarse, que actúan por cuenta suya. No se ceden datos a nadie más.</p>
+
+    <h2>Cuánto tiempo se guardan</h2>
+    <p>Hasta que el usuario los borra (por WhatsApp, en Supabase, en Google Calendar o en Google Drive) o deja de usar Secretaria.</p>
+
+    <h2 id="borrar">Cómo retirar el acceso o borrar los datos</h2>
+    <ul>
+      <li>El acceso a Google se retira en <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>, eliminando la app Secretaria.</li>
+      <li>Los datos de Calendar y de Drive son del propio usuario y los puede borrar en esos servicios. El resto (mensajes, tareas, notas) se borra a petición del usuario por WhatsApp o directamente en su base de datos de Supabase.</li>
+    </ul>
+
+    <h2>Cambios</h2>
+    <p>Si esta política cambia, se actualizará esta página y su fecha.</p>
+  </main>
+</body>
+</html>

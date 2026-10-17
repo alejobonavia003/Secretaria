@@ -1,0 +1,423 @@
+{
+  "id": "secretariaEvento",
+  "name": "Secretaria · Avisos de eventos",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "5ec7e7a5-0001-4000-8000-000000000001",
+      "name": "Cada minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        -120
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "5ec7e7a5-0002-4000-8000-000000000002",
+      "name": "Disparador manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Configuración\" del flujo \"Secretaria · Avisos de eventos\": lo que se toca a mano está aquí.\n// Los demás nodos leen estos valores con $('Configuración').first().json.config\n// Los SECRETOS no están aquí: el número de destino se lee del entorno de n8n (WHATSAPP_NUMERO_PERMITIDO, definido en el .env)\n// y el token de envío va en una credencial de n8n (Header Auth), no aquí.\n\n// Los identificadores (no son secretos) se leen del .env del servidor, así se ponen UNA vez para todos los flujos.\n// Si una variable no está en el .env, vale lo que esté escrito aquí abajo.\nconst delEntorno = (clave, porDefecto) => {\n  try {\n    return String($env[clave] ?? '').trim() || porDefecto;\n  } catch (e) {\n    return porDefecto;\n  }\n};\n\n// === Valores fáciles de cambiar ===\n// Project URL de Supabase (Integrations > Data API), sin /rest/v1 al final. No es un secreto.\nconst SUPABASE_URL = delEntorno('SUPABASE_URL', 'https://TU-PROYECTO.supabase.co');\n// Identificador del número de WhatsApp desde el que se envía (WhatsApp > API Setup > Phone number ID). No es un secreto.\nconst PHONE_NUMBER_ID = delEntorno('WHATSAPP_PHONE_NUMBER_ID', 'TU-PHONE-NUMBER-ID');\n// Versión de la API Graph de Meta (la misma que en el flujo \"Secretaria · WhatsApp\")\nconst GRAPH_VERSION = 'v26.0';\n// Horas desde el último mensaje tuyo durante las que Meta admite texto libre. Meta admite 24 h: margen para no rozar el límite.\n// Fuera de ese plazo NO se envía nada (no hay plantilla de aviso de evento): el aviso queda sin enviar hasta que el evento empiece.\nconst VENTANA_HORAS = 23;\n// Máximo de avisos por pasada (cada minuto). Más de los que caben en un mensaje se agrupan; el resto sale en la pasada siguiente.\nconst MAX_AVISOS = 10;\n// ==================================\n\nif (!/^https:\\/\\/[a-z0-9-]+\\.supabase\\.co\\/?$/i.test(SUPABASE_URL) || SUPABASE_URL.includes('TU-PROYECTO')) {\n  throw new Error('Configuración: pon tu Project URL de Supabase en SUPABASE_URL (https://<ref>.supabase.co, sin /rest/v1). Va en el .env del servidor (SUPABASE_URL=…, y después docker compose up -d)');\n}\nif (!/^\\d{8,20}$/.test(PHONE_NUMBER_ID)) {\n  throw new Error('Configuración: pon el Phone number ID de WhatsApp en PHONE_NUMBER_ID (solo dígitos). Va en el .env del servidor (WHATSAPP_PHONE_NUMBER_ID=…, y después docker compose up -d)');\n}\nif (!/^v\\d+\\.\\d+$/.test(GRAPH_VERSION)) {\n  throw new Error('Configuración: GRAPH_VERSION debe tener la forma v26.0');\n}\nif (!Number.isFinite(VENTANA_HORAS) || VENTANA_HORAS < 1 || VENTANA_HORAS > 24) {\n  throw new Error('Configuración: VENTANA_HORAS debe estar entre 1 y 24');\n}\nif (!Number.isInteger(MAX_AVISOS) || MAX_AVISOS < 1 || MAX_AVISOS > 50) {\n  throw new Error('Configuración: MAX_AVISOS debe estar entre 1 y 50');\n}\n\nreturn [\n  {\n    json: {\n      config: {\n        supabase_url: SUPABASE_URL.replace(/\\/+$/, ''),\n        phone_number_id: PHONE_NUMBER_ID,\n        graph_version: GRAPH_VERSION,\n        ventana_horas: VENTANA_HORAS,\n        max_avisos: MAX_AVISOS,\n      },\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a5-0003-4000-8000-000000000003",
+      "name": "Configuración",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/items?select=id,tipo,titulo,estado,fecha_inicio,aviso_whatsapp_en,aviso_whatsapp_enviado_at&tipo=eq.evento&estado=eq.pendiente&aviso_whatsapp_en=lte.{{ new Date().toISOString() }}&aviso_whatsapp_enviado_at=is.null&fecha_inicio=gt.{{ new Date().toISOString() }}&order=fecha_inicio.asc&limit=50",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "5ec7e7a5-0004-4000-8000-000000000004",
+      "name": "Leer avisos vencidos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Filtrar avisos\": de lo que devolvió Supabase se queda solo con los avisos que de verdad hay que enviar ahora.\n//\n// La consulta ya filtra, pero cada fila se revalida aquí (tipo evento, pendiente, id válido, aviso vencido, aviso sin enviar y\n// evento que todavía no ha empezado): un filtro mal construido nunca puede mandar un aviso de un evento pasado o ya avisado.\n// Si no queda ninguno devuelve [] y el flujo termina (no se lee ni el último mensaje).\n\nconst config = $('Configuración').first().json.config;\nconst ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst ms = (s) => (typeof s === 'string' ? Date.parse(s) : NaN);\nconst ahora = Date.now();\n\nconst eventos = $input\n  .all()\n  .map((i) => i.json)\n  .filter(\n    (r) =>\n      r &&\n      typeof r.id === 'string' &&\n      ID.test(r.id) &&\n      r.tipo === 'evento' &&\n      r.estado === 'pendiente' &&\n      typeof r.titulo === 'string' &&\n      r.titulo.trim() !== '' &&\n      r.aviso_whatsapp_enviado_at == null &&\n      ms(r.aviso_whatsapp_en) <= ahora &&\n      ms(r.fecha_inicio) > ahora,\n  )\n  .sort((a, b) => ms(a.fecha_inicio) - ms(b.fecha_inicio))\n  .slice(0, config.max_avisos)\n  .map((r) => ({ id: r.id, titulo: r.titulo, fecha_inicio: r.fecha_inicio }));\n\nif (eventos.length === 0) return [];\nreturn [{ json: { eventos } }];\n"
+      },
+      "id": "5ec7e7a5-0005-4000-8000-000000000005",
+      "name": "Filtrar avisos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "GET",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/mensajes?select=created_at&wa_message_id=like.wamid.*&order=created_at.desc&limit=1",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi"
+      },
+      "id": "5ec7e7a5-0006-4000-8000-000000000006",
+      "name": "Leer último mensaje",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Redactar aviso\": construye UN mensaje de WhatsApp con los eventos que están a punto de empezar y el cuerpo exacto de la\n// petición a Meta, más lo necesario para marcarlos como avisados después (solo si Meta acepta el envío).\n//\n// - Solo se envía como texto libre y solo si la ventana de 24 h de Meta sigue abierta (el último mensaje TUYO es de hace menos de\n//   VENTANA_HORAS). Si está cerrada devuelve [] y no se envía nada: no existe plantilla para este aviso, y el aviso queda sin\n//   marcar (si vuelves a escribir antes de que el evento empiece, se envía entonces; si no, caduca solo).\n// - Se redacta con código, nunca con el modelo.\n\nconst config = $('Configuración').first().json.config;\nconst LIMITE_MENSAJE = 3800;\nconst ZONA = 'Europe/Madrid';\n\nconst limpiar = (s) => String(s ?? '').replace(/[*_~`]/g, '').replace(/\\s+/g, ' ').trim();\nconst fmtHora = new Intl.DateTimeFormat('es-ES', { timeZone: ZONA, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });\nconst hora = (iso) => fmtHora.format(new Date(iso));\n\nfunction faltan(inicioMs, ahoraMs) {\n  const min = Math.max(1, Math.ceil((inicioMs - ahoraMs) / 60000));\n  if (min < 90) return `en ${min} min`;\n  const h = Math.floor(min / 60);\n  const m = min % 60;\n  return m === 0 ? `en ${h} h` : `en ${h} h ${m} min`;\n}\n\nconst eventos = $('Filtrar avisos').first().json.eventos;\nconst ultimo = $('Leer último mensaje')\n  .all()\n  .map((x) => x.json)\n  .filter((r) => r && typeof r.created_at === 'string')\n  .map((r) => new Date(r.created_at))\n  .filter((d) => !Number.isNaN(d.getTime()))[0];\n\nconst ahora = new Date();\nconst ventanaAbierta = Boolean(ultimo) && ahora.getTime() - ultimo.getTime() < config.ventana_horas * 3600 * 1000;\nif (!ventanaAbierta) return [];\n\nconst para = String($env.WHATSAPP_NUMERO_PERMITIDO ?? '').replace(/\\D/g, '');\nif (!para) throw new Error('Redactar aviso: falta WHATSAPP_NUMERO_PERMITIDO en el entorno de n8n');\n\nconst linea = (e) => `${hora(e.fecha_inicio)} ${limpiar(e.titulo)} (${faltan(Date.parse(e.fecha_inicio), ahora.getTime())})`;\nlet texto;\nif (eventos.length === 1) {\n  const e = eventos[0];\n  texto = `⏰ *${limpiar(e.titulo)}* empieza a las ${hora(e.fecha_inicio)} (${faltan(Date.parse(e.fecha_inicio), ahora.getTime())}).`;\n} else {\n  texto = `⏰ *Estos eventos van a empezar*\\n${eventos.map((e) => `• ${linea(e)}`).join('\\n')}`;\n}\nif (texto.length > LIMITE_MENSAJE) texto = `${texto.slice(0, LIMITE_MENSAJE - 1).trimEnd()}…`;\n\nconst ids = eventos.map((e) => e.id);\nreturn [\n  {\n    json: {\n      cuerpo: { messaging_product: 'whatsapp', recipient_type: 'individual', to: para, type: 'text', text: { preview_url: false, body: texto } },\n      texto,\n      ids,\n      marca: { aviso_whatsapp_enviado_at: ahora.toISOString() },\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a5-0007-4000-8000-000000000007",
+      "name": "Redactar aviso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $('Configuración').first().json.config.graph_version }}/{{ $('Configuración').first().json.config.phone_number_id }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "5ec7e7a5-0008-4000-8000-000000000008",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "WhatsApp token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "PATCH",
+        "url": "={{ $('Configuración').first().json.config.supabase_url }}/rest/v1/items?id=in.({{ $('Redactar aviso').first().json.ids.join(',') }})&tipo=eq.evento&aviso_whatsapp_en=not.is.null&aviso_whatsapp_enviado_at=is.null",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Redactar aviso').first().json.marca) }}"
+      },
+      "id": "5ec7e7a5-0009-4000-8000-000000000009",
+      "name": "Marcar avisados",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nodo \"Preparar registro del aviso\": tras enviar el aviso, anota en avisos_enviados el id del mensaje que devolvió Meta\n// y qué elementos iban en él. Así, si respondes a este aviso («10 minutos más», «muévela a las 12»), el flujo principal sabe de qué\n// cita hablas.\n// Si Meta no devolvió un id válido no se anota nada (el aviso ya se mandó; solo se pierde poder responderle).\n\nconst config = $('Configuración').first().json.config;\nconst VALIDO = /^[A-Za-z0-9._=+\\/-]{1,300}$/;\nconst ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\n\nconst wamid = $input.first()?.json?.messages?.[0]?.id;\nif (typeof wamid !== 'string' || !VALIDO.test(wamid)) return [];\n\nconst redactado = $('Redactar aviso').first().json;\nconst ids = [...new Set((redactado.ids ?? []).map((x) => (typeof x === 'string' ? x : x?.id)).filter((i) => typeof i === 'string' && ID.test(i)))];\nif (ids.length === 0) return [];\n\nreturn [\n  {\n    json: {\n      url: `${config.supabase_url}/rest/v1/avisos_enviados?on_conflict=wa_message_id,item_id`,\n      cuerpo: ids.map((id) => ({ wa_message_id: wamid, item_id: id, tipo: 'cita' })),\n    },\n  },\n];\n"
+      },
+      "id": "5ec7e7a5-0010-4000-8000-000000000010",
+      "name": "Preparar registro del aviso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "options": {},
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.cuerpo) }}"
+      },
+      "id": "5ec7e7a5-0011-4000-8000-000000000011",
+      "name": "Guardar aviso enviado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        220
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "supabaseApi": {
+          "id": null,
+          "name": "Supabase"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## ① Disparo y configuración\nSe ejecuta **cada minuto** o a mano (Disparador manual).\n**Configuración**: URL de Supabase, Phone number ID y la ventana de 24 h.",
+        "height": 220,
+        "width": 480,
+        "color": 4
+      },
+      "id": "5ec7e7a5-0101-4000-8000-000000000101",
+      "name": "Nota 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ② Qué avisar\nEl flujo de **Sincronizar Calendar** calcula `aviso_whatsapp_en` (eventos del mismo día o con poco margen). Aquí se leen los vencidos, sin enviar y que aún no han empezado, y se revalida cada fila.",
+        "height": 220,
+        "width": 480,
+        "color": 5
+      },
+      "id": "5ec7e7a5-0102-4000-8000-000000000102",
+      "name": "Nota 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        440,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ③ Envío\nSolo se envía si escribiste hace menos de 23 h (texto libre; no hay plantilla para este aviso). Si Meta acepta el envío, **Marcar avisados** anota `aviso_whatsapp_enviado_at`; si lo rechaza, la ejecución queda en rojo y se reintenta el minuto siguiente.",
+        "height": 220,
+        "width": 960,
+        "color": 6
+      },
+      "id": "5ec7e7a5-0103-4000-8000-000000000103",
+      "name": "Nota 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        920,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Antes de publicar\n1. Credencial **Supabase API** en *Leer avisos vencidos*, *Leer último mensaje*, *Marcar avisados* y *Guardar aviso enviado*, y la **Header Auth de WhatsApp** (la misma del flujo de WhatsApp) en *Enviar WhatsApp*.\n2. Identificadores: `SUPABASE_URL` y `WHATSAPP_PHONE_NUMBER_ID` en el `.env` del servidor (no hace falta tocar **Configuración**).\n3. Pruébalo con *Disparador manual* (sin avisos vencidos termina sin hacer nada) y publica el flujo.\n4. Elige «Secretaria · Aviso de fallos» como Error workflow.",
+        "height": 300,
+        "width": 720,
+        "color": 2
+      },
+      "id": "5ec7e7a5-0104-4000-8000-000000000104",
+      "name": "Nota 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Cada minuto": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Disparador manual": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuración": {
+      "main": [
+        [
+          {
+            "node": "Leer avisos vencidos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer avisos vencidos": {
+      "main": [
+        [
+          {
+            "node": "Filtrar avisos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtrar avisos": {
+      "main": [
+        [
+          {
+            "node": "Leer último mensaje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer último mensaje": {
+      "main": [
+        [
+          {
+            "node": "Redactar aviso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redactar aviso": {
+      "main": [
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Marcar avisados",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Preparar registro del aviso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar registro del aviso": {
+      "main": [
+        [
+          {
+            "node": "Guardar aviso enviado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid",
+    "errorWorkflow": "secretariaAvisoF"
+  }
+}

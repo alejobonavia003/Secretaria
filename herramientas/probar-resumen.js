@@ -1,0 +1,230 @@
+// Pruebas sin red ni coste del flujo "Resumen diario" (flujos/resumen-diario.json).
+// Ejecuta el código real de herramientas/flujo-resumen/*.js con entradas simuladas y un reloj fijo.
+// Uso: node herramientas/probar-resumen.js
+
+const fs = require('fs');
+const path = require('path');
+const { construirFlujo } = require('./generar-resumen.js');
+
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const leer = (...p) => fs.readFileSync(path.join(__dirname, ...p), 'utf8').replace(/\r\n/g, '\n');
+const CODIGO_CONFIG = leer('flujo-resumen', 'configuracion.js');
+const CODIGO_REDACTAR = leer('flujo-resumen', 'redactar.js');
+
+let pasan = 0;
+const fallan = [];
+function afirmar(nombre, condicion, detalle) {
+  if (condicion) pasan += 1;
+  else {
+    fallan.push(nombre);
+    console.log(`  FALLA: ${nombre}${detalle ? `\n         ${detalle}` : ''}`);
+  }
+}
+
+// Reloj fijo: solo cambia "new Date()" sin argumentos y Date.now()
+const RealDate = Date;
+async function conHora(iso, fn) {
+  const fijo = new RealDate(iso).getTime();
+  class Fija extends RealDate {
+    constructor(...a) {
+      if (a.length === 0) super(fijo);
+      else super(...a);
+    }
+    static now() {
+      return fijo;
+    }
+  }
+  globalThis.Date = Fija;
+  try {
+    return await fn();
+  } finally {
+    globalThis.Date = RealDate;
+  }
+}
+
+const CONFIG = { supabase_url: 'https://abc.supabase.co', phone_number_id: '123456789012345', graph_version: 'v25.0', ventana_horas: 23 };
+
+function simular(nodos) {
+  return (nombre) => {
+    if (nombre === 'Configuración') return { first: () => ({ json: { config: nodos.config ?? CONFIG } }) };
+    if (!(nombre in nodos)) throw new Error(`Node "${nombre}" hasn't been executed`);
+    const items = nodos[nombre].map((json) => ({ json }));
+    return { all: () => items, first: () => items[0] };
+  };
+}
+async function correr(codigo, { nodos = {}, env = { WHATSAPP_NUMERO_PERMITIDO: '34600111222' } } = {}) {
+  const fn = new AsyncFunction('$input', '$', '$env', codigo);
+  const salida = await fn({ all: () => [], first: () => undefined }, simular(nodos), env);
+  return salida.map((x) => x.json);
+}
+async function lanza(nombre, promesa, trozo) {
+  try {
+    await promesa;
+    afirmar(nombre, false, 'debía lanzar un error y no lo hizo');
+  } catch (e) {
+    afirmar(nombre, String(e.message).includes(trozo), `error recibido: ${e.message}`);
+  }
+}
+
+// "Ahora": lunes 12 de octubre de 2026, 7:00 en Madrid (+02:00)
+const AHORA = '2026-10-12T05:00:00.000Z';
+let n = 0;
+const item = (o) => ({ id: `id-${++n}`, estado: 'pendiente', contenido: null, lista: null, fecha_inicio: null, fecha_fin: null, fecha_limite: null, ...o });
+const DENTISTA = item({ tipo: 'evento', titulo: 'Dentista', fecha_inicio: '2026-10-12T08:00:00+00:00', fecha_fin: '2026-10-12T09:00:00+00:00' }); // hoy 10:00
+const REUNION = item({ tipo: 'evento', titulo: 'Reunión', fecha_inicio: '2026-10-13T08:00:00+00:00', fecha_fin: '2026-10-13T09:00:00+00:00' }); // mañana
+const AYER = item({ tipo: 'evento', titulo: 'Evento de ayer', fecha_inicio: '2026-10-11T08:00:00+00:00', fecha_fin: '2026-10-11T09:00:00+00:00' });
+const T_HOY = item({ tipo: 'tarea', titulo: 'Entregar informe', fecha_limite: '2026-10-12T15:00:00+00:00' });
+const T_ATRASADA = item({ tipo: 'tarea', titulo: 'Pagar seguro', fecha_limite: '2026-10-09T10:00:00+00:00' });
+const T_FUTURA = item({ tipo: 'tarea', titulo: 'Renovar DNI', fecha_limite: '2026-10-20T10:00:00+00:00' });
+const NOTA = item({ tipo: 'nota', titulo: 'Idea', contenido: 'Probar el nuevo gimnasio' });
+const LISTA = ['Huevos', 'Leche', 'Café'].map((t) => item({ tipo: 'lista', titulo: t, lista: 'compra' }));
+const ARCH = [
+  { id: 'a1', nombre: 'foto-1.jpg', drive_url: 'https://drive.google.com/file/d/AAA/view', created_at: '2026-10-11T18:30:00+00:00' },
+  { id: 'a2', nombre: 'presupuesto.pdf', drive_url: 'https://drive.google.com/file/d/BBB/view', created_at: '2026-10-11T19:00:00+00:00' },
+];
+const TODO = [DENTISTA, REUNION, AYER, T_HOY, T_ATRASADA, T_FUTURA, NOTA, ...LISTA];
+const ULT_RECIENTE = [{ created_at: '2026-10-11T20:00:00+00:00' }]; // hace 9 h: ventana abierta
+const ULT_ANTIGUO = [{ created_at: '2026-10-10T20:00:00+00:00' }]; // hace 33 h: ventana cerrada
+
+const redactar = (items, archivos, ultimo, extra = {}) =>
+  conHora(AHORA, () => correr(CODIGO_REDACTAR, { nodos: { 'Leer pendientes': items, 'Leer archivos': archivos, 'Leer último mensaje': ultimo, ...extra.nodos }, env: extra.env }));
+
+async function main() {
+  console.log('Modo texto (ventana abierta)');
+  {
+    const [r] = await redactar(TODO, ARCH, ULT_RECIENTE);
+    const c = r.cuerpo;
+    afirmar('modo texto', r.modo === 'texto' && c.type === 'text' && c.messaging_product === 'whatsapp', JSON.stringify(c));
+    afirmar('va al número permitido, solo dígitos', c.to === '34600111222');
+    const t = c.text.body;
+    afirmar('saluda con el día en Madrid', t.startsWith('Buenos días. Esto es lo que tienes (lunes 12 oct):'), t.split('\n')[0]);
+    afirmar('Hoy: el evento de hoy con su hora en Madrid', t.includes('*Hoy*\n• Dentista, 10:00'), t);
+    afirmar('Hoy: la tarea con entrega hoy', t.includes('• Entregar informe (entrega hoy)'));
+    afirmar('Atrasado: la tarea vencida', t.includes('*Atrasado*\n• Pagar seguro (era vie 9 oct)'), t);
+    afirmar('lo de hoy no se repite en las listas', t.split('Dentista').length === 2 && t.split('Entregar informe').length === 2 && t.split('Pagar seguro').length === 2);
+    afirmar('el evento de ayer no sale', !t.includes('Evento de ayer'));
+    afirmar('citas próximas', t.includes('*Citas*\n• Reunión, mar 13 oct, 10:00'), t);
+    afirmar('tarea futura con su fecha', t.includes('• Renovar DNI (mar 20 oct)'));
+    afirmar('notas', t.includes('*Pensamientos*\n• Idea\n'));
+    afirmar('lista de la compra', t.includes('*Lista de compra*\n• Huevos, leche, café'));
+    const [rp] = await redactar([...TODO, { tipo: 'tarea', titulo: 'Llamar al casero', proyecto: 'Mudanza' }, { tipo: 'nota', titulo: 'Idea caja', proyecto: 'Mudanza' }], ARCH, ULT_RECIENTE);
+    const tp = rp.cuerpo.text.body;
+    afirmar('proyectos: aparte de las tareas cotidianas, una línea por proyecto', tp.includes('*Proyectos*\n📁 *Mudanza*\n• Llamar al casero\n• 📝 Idea caja') && !/\*Tareas\*[^*]*casero/.test(tp), tp);
+    afirmar('archivos sin clasificar con enlace', t.includes('*Archivos sin clasificar*\n• foto-1.jpg (recibido dom 11 oct, 20:30)\n  https://drive.google.com/file/d/AAA/view') && t.includes('presupuesto.pdf'), t);
+    afirmar('cabe en un mensaje', t.length <= 3800);
+  }
+
+  console.log('Mismo formato que la consulta normal');
+  {
+    const fuente = leer('flujo', 'resultado.js');
+    const ini = fuente.indexOf('const LIMITE_MENSAJE');
+    const fin = fuente.indexOf('// --- Lista de carpetas');
+    afirmar('se localiza el bloque de formato en resultado.js', ini >= 0 && fin > ini);
+    // Contenido del propio repositorio leído del disco (nunca datos del usuario): new Function es seguro aquí
+    const { formatearLista } = new Function(`${fuente.slice(ini, fin)}\nreturn { formatearLista };`)();
+    const [r] = await redactar(TODO, ARCH, ULT_RECIENTE);
+    const resto = TODO.filter((x) => ![DENTISTA, T_HOY, T_ATRASADA].includes(x));
+    // El resumen no lleva el « …» de «tiene más detalle» ni su nota final: es solo el titular
+    const esperado = (await conHora(AHORA, () => formatearLista(resto, { estado: 'pendiente', con_rango: false }, new Date(), ARCH))).filter((b) => !b.startsWith('(…)')).map((b) => b.replace(/ …$/gm, ''));
+    afirmar('las secciones de debajo son idénticas a las de «qué tengo pendiente»', r.cuerpo.text.body.endsWith(`\n\n${esperado.join('\n\n')}`), `esperado:\n${esperado.join('\n\n')}\n\nobtenido:\n${r.cuerpo.text.body}`);
+  }
+
+  console.log('Ventana cerrada: no se envía nada (sin plantillas)');
+  {
+    for (const [nombre, ultimo] of [['último mensaje de hace 33 h', ULT_ANTIGUO], ['nunca ha escrito', [{}]]]) {
+      const r = await redactar(TODO, ARCH, ultimo);
+      afirmar(`${nombre}: no devuelve nada, así que no se envía ni plantilla ni texto`, r.length === 0, JSON.stringify(r));
+    }
+    const justo = (horas) => [{ created_at: new RealDate(new RealDate(AHORA).getTime() - horas * 3600 * 1000).toISOString() }];
+    afirmar('hace 22 h 59 min: aún texto', (await redactar(TODO, ARCH, justo(22.98)))[0].modo === 'texto');
+    afirmar('hace 23 h 01 min: ya no se envía nada', (await redactar(TODO, ARCH, justo(23.02))).length === 0);
+    afirmar('una fecha de último mensaje ilegible cuenta como ventana cerrada', (await redactar(TODO, ARCH, [{ created_at: 'no es fecha' }])).length === 0);
+    afirmar('con la ventana cerrada tampoco falla si no hay nada pendiente', (await redactar([{}], [{}], ULT_ANTIGUO)).length === 0);
+    afirmar('el código ya no contiene ninguna plantilla', !CODIGO_REDACTAR.includes('template') && !CODIGO_REDACTAR.includes('resumenCompacto') && !CODIGO_CONFIG.includes('PLANTILLA'));
+  }
+
+  console.log('Hoy según la hora de Madrid');
+  {
+    const casi = item({ tipo: 'tarea', titulo: 'Casi mañana', fecha_limite: '2026-10-12T22:30:00+00:00' }); // 00:30 del 13 en Madrid
+    const apenas = item({ tipo: 'tarea', titulo: 'Recién hoy', fecha_limite: '2026-10-11T22:30:00+00:00' }); // 00:30 del 12 en Madrid
+    const [r] = await redactar([casi, apenas], [], ULT_RECIENTE);
+    const t = r.cuerpo.text.body;
+    afirmar('00:30 del día 12 en Madrid es hoy; 00:30 del 13, no', t.includes('*Hoy*\n• Recién hoy (entrega hoy)') && !t.includes('Casi mañana (entrega hoy)') && t.includes('• Casi mañana (mar 13 oct)'), t);
+  }
+
+  console.log('Nada pendiente');
+  {
+    const [a] = await redactar([{}], [{}], ULT_RECIENTE);
+    afirmar('texto: se envía igualmente', a.cuerpo.text.body === 'Buenos días. No tienes nada pendiente.', a.cuerpo.text?.body);
+    const [c] = await redactar([], ARCH, ULT_RECIENTE);
+    afirmar('solo archivos en Entrada: se avisa', c.cuerpo.text.body.includes('*Archivos sin clasificar*') && !c.cuerpo.text.body.includes('No tienes nada pendiente'));
+    const [d] = await redactar([AYER], [], ULT_RECIENTE);
+    afirmar('solo un evento ya pasado: nada pendiente', d.cuerpo.text.body === 'Buenos días. No tienes nada pendiente.');
+  }
+
+  console.log('Mucho contenido y errores');
+  {
+    const muchas = Array.from({ length: 500 }, (_, i) => item({ tipo: 'nota', titulo: `Nota ${i}`, contenido: 'x'.repeat(120) }));
+    const [r] = await redactar([T_HOY, ...muchas], ARCH, ULT_RECIENTE);
+    const t = r.cuerpo.text.body;
+    afirmar('si no cabe, un solo mensaje de menos de 3.800 caracteres con aviso', t.length <= 3800 && t.endsWith('«qué tengo pendiente».') && t.includes('*Hoy*'), `${t.length}`);
+    await lanza('sin número permitido, falla con un mensaje claro', redactar(TODO, ARCH, ULT_RECIENTE, { env: {} }), 'WHATSAPP_NUMERO_PERMITIDO');
+    const [x] = await redactar([{ tipo: 'nota' }, { titulo: 'sin tipo' }, ...TODO], ARCH, ULT_RECIENTE);
+    afirmar('filas incompletas se ignoran', x.modo === 'texto' && x.cuerpo.text.body.includes('• Dentista, 10:00'));
+  }
+
+  console.log('Configuración');
+  {
+    await lanza('con los valores de ejemplo, avisa de qué falta', correr(CODIGO_CONFIG), 'SUPABASE_URL');
+    const buena = CODIGO_CONFIG.replace('TU-PROYECTO', 'abcdefghijk').replace('TU-PHONE-NUMBER-ID', '123456789012345');
+    const [r] = await correr(buena);
+    afirmar('con valores válidos devuelve la configuración', r.config.supabase_url === 'https://abcdefghijk.supabase.co' && !('nombre_plantilla' in r.config) && !('max_parametro' in r.config) && r.config.ventana_horas === 23, JSON.stringify(r));
+    await lanza('rechaza una ventana de más de 24 h', correr(buena.replace('VENTANA_HORAS = 23', 'VENTANA_HORAS = 30')), 'VENTANA_HORAS');
+  }
+
+  console.log('Estructura del flujo');
+  {
+    const f = construirFlujo();
+    const por = Object.fromEntries(f.nodes.map((x) => [x.name, x]));
+    const trabajo = f.nodes.filter((x) => !x.type.endsWith('stickyNote'));
+    afirmar('8 nodos de trabajo', trabajo.length === 8, String(trabajo.length));
+    afirmar('zona Europe/Madrid', f.settings.timezone === 'Europe/Madrid');
+    const regla = por['Cada día a las 7:00'].parameters.rule.interval[0];
+    afirmar('programación: cada día a las 7:00', regla.field === 'days' && regla.daysInterval === 1 && regla.triggerAtHour === 7 && regla.triggerAtMinute === 0 && por['Cada día a las 7:00'].typeVersion === 1.4);
+    const ids = new Set(f.nodes.map((x) => x.id));
+    afirmar('ids únicos', ids.size === f.nodes.length);
+    const destinos = Object.values(f.connections).flatMap((c) => c.main.flat().map((d) => d.node));
+    afirmar('todas las conexiones apuntan a nodos que existen', destinos.every((d) => d in por) && Object.keys(f.connections).every((o) => o in por));
+    // Recorrido: desde cada disparador se llega hasta Enviar WhatsApp pasando por las tres lecturas y la redacción
+    const sigue = (nombre, vistos = []) => (nombre === 'Enviar WhatsApp' ? [vistos.concat(nombre)] : (f.connections[nombre]?.main.flat() ?? []).flatMap((d) => sigue(d.node, vistos.concat(nombre))));
+    for (const d of ['Cada día a las 7:00', 'Disparador manual']) {
+      const ruta = sigue(d)[0] ?? [];
+      afirmar(`${d} llega a Enviar WhatsApp por las lecturas y la redacción`, ['Configuración', 'Leer pendientes', 'Leer archivos', 'Leer último mensaje', 'Redactar resumen', 'Enviar WhatsApp'].every((x) => ruta.includes(x)), ruta.join(' > '));
+    }
+    for (const nom of ['Leer pendientes', 'Leer archivos', 'Leer último mensaje']) {
+      const x = por[nom];
+      afirmar(`${nom}: GET a Supabase con credencial, una vez, con salida aunque no haya filas y SIN ocultar fallos`, x.parameters.method === 'GET' && x.parameters.nodeCredentialType === 'supabaseApi' && x.executeOnce === true && x.alwaysOutputData === true && x.onError === undefined);
+    }
+    afirmar('items pendientes: lee las columnas que usa el formato y filtra por estado', por['Leer pendientes'].parameters.url.includes('select=id,tipo,titulo,contenido,lista,estado,fecha_inicio,fecha_fin,fecha_limite,recordar_en,proyecto') && por['Leer pendientes'].parameters.url.includes('estado=eq.pendiente'));
+    afirmar('archivos: solo los pendientes', por['Leer archivos'].parameters.url.includes('/rest/v1/archivos?select=id,nombre,drive_url,created_at&estado=eq.pendiente'));
+    afirmar('último mensaje: solo ids de WhatsApp, el más reciente', por['Leer último mensaje'].parameters.url.includes('wa_message_id=like.wamid.*') && por['Leer último mensaje'].parameters.url.includes('order=created_at.desc&limit=1'));
+    const e = por['Enviar WhatsApp'];
+    afirmar('Enviar: POST a Graph con Header Auth y el cuerpo ya construido', e.parameters.method === 'POST' && e.parameters.url.includes('graph.facebook.com') && e.parameters.authentication === 'genericCredentialType' && e.parameters.genericAuthType === 'httpHeaderAuth' && e.parameters.jsonBody === '={{ JSON.stringify($json.cuerpo) }}');
+    afirmar('Enviar: reintenta y NO oculta el fallo (la ejecución queda en rojo)', e.retryOnFail === true && e.onError === undefined);
+    afirmar('las credenciales no van dentro del JSON', !JSON.stringify(f).match(/EAA[A-Za-z0-9]{20,}/));
+    const actual = JSON.stringify(f, null, 2) + '\n';
+    const enDisco = fs.existsSync(path.join(__dirname, '..', 'flujos', 'resumen-diario.json')) ? leer('..', 'flujos', 'resumen-diario.json') : null;
+    afirmar('flujos/resumen-diario.json está al día (si no, ejecuta node herramientas/generar-resumen.js)', enDisco === actual);
+  }
+
+  console.log(`\n${pasan} pruebas correctas, ${fallan.length} fallos.`);
+  if (fallan.length) {
+    console.log(fallan.map((x) => ` - ${x}`).join('\n'));
+    process.exitCode = 1;
+  }
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
