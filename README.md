@@ -2,6 +2,7 @@
 
 [![Pruebas](https://github.com/gguillex/Secretaria/actions/workflows/pruebas.yml/badge.svg)](https://github.com/gguillex/Secretaria/actions/workflows/pruebas.yml)
 [![Licencia: MIT](https://img.shields.io/badge/licencia-MIT-blue.svg)](LICENSE)
+![Versión 1.1.0](https://img.shields.io/badge/versión-1.1.0-informational)
 ![n8n 2.41.6](https://img.shields.io/badge/n8n-2.41.6-EA4B71)
 ![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933)
 ![Gemini](https://img.shields.io/badge/IA-Gemini-4285F4)
@@ -15,7 +16,7 @@ Pensado para **una sola persona**: tú. Corre en un servidor pequeño propio, co
 
 **Índice:** [Qué hace](#qué-hace) · [Ejemplos](#ejemplos) · [Cómo está hecha](#cómo-está-hecha) · [Qué necesitas](#qué-necesitas) ·
 [Instalación](#instalación) · [Estructura](#estructura-del-repositorio) · [Desarrollo](#desarrollo) · [Seguridad](#seguridad) ·
-[Límites](#límites-conocidos) · [Licencia](#licencia)
+[Límites](#límites-conocidos) · [Versiones](#versiones) · [Licencia](#licencia)
 
 ## Qué hace
 
@@ -24,14 +25,21 @@ Pensado para **una sola persona**: tú. Corre en un servidor pequeño propio, co
 - **Alarmas** («recuérdame a las 18:30…»), con avisos 1 hora antes, 30 minutos antes y a la hora. **Respondiendo a un aviso** se aplaza
   o se mueve («10 minutos más», «muévela a las 20:00»).
 - **Tareas, listas, notas y proyectos**, con consultas en lenguaje natural («qué tengo hoy», «qué alarmas tengo», «qué apunté del
-  casero») y comandos (`/help`, `/today`, `/pending`, `/files`…). Los listados van con titulares cortos; «completo» enseña el detalle.
+  casero») y comandos (`/help`, `/today`, `/pending`, `/files`, `/memory`…). Los listados van con titulares cortos; «completo» enseña el detalle.
 - **Cambiar de tipo** algo ya guardado («ponla como alarma», «pásalo a cita», «que sea una tarea»): lo hace el código, que mueve las
   fechas y solo confirma lo que de verdad quedó guardado. Si una alarma o cita nueva se llama como otra pendiente, pregunta si
   cambiarla o añadir otra.
 - **Borrar con cuidado:** «borra todo» pregunta qué sección, y borrar en bloque enseña la lista y pide confirmación.
-- **Archivos:** los organiza en carpetas de Drive a petición («guárdala en Fotos/Viajes») y te los devuelve por WhatsApp.
+- **Archivos:** los organiza en carpetas de Drive a petición («guárdala en Fotos/Viajes») y te los devuelve por WhatsApp. También
+  borra carpetas y archivos («borra la carpeta Fotos/Viajes», «vacía la carpeta Facturas»): enseña la lista y solo los manda a la
+  papelera de Drive (recuperable unos 30 días) si le dices que sí.
+- **Memoria:** recuerda lo que le cuentas que dura («trabajo los viernes por la mañana», «Emma es mi hermana») y cómo quieres que te
+  llame («llámame Ana»). `/memory` enseña lo que recuerda (hasta 50 datos) y `/forget 2` olvida el segundo; si se lo pides con palabras
+  («olvida lo de Emma»), pregunta antes.
+- **Charla breve:** a un saludo o un «gracias» contesta con naturalidad, sin guardar nada.
 - **Resumen diario** a las 7:00 (con los proyectos en viñetas) y recordatorio de archivos sin clasificar.
-- **Errores honestos:** si un mensaje no se puede procesar, el aviso dice cuál era (sus primeras líneas).
+- **No adivina:** si no entiende un mensaje o no está segura, pregunta o te dice que no te ha entendido, en vez de guardar algo mal.
+  El aviso de fallos solo llega cuando falla algo de verdad, y dice qué mensaje era.
 - **Vigilancia:** refleja lo que cambias a mano en Calendar y Drive, y te avisa (por WhatsApp y por correo) si algo se atasca o se cae.
 
 ## Ejemplos
@@ -47,6 +55,8 @@ Pensado para **una sola persona**: tú. Corre en un servidor pequeño propio, co
 | Una foto, y luego le respondes «guárdala en Fotos/Viajes» | La sube a `Entrada/` de Drive y la mueve a esa carpeta. |
 | Una nota de voz | Te dice «🎙️ Entendí: …» y la trata como si la hubieras escrito. |
 | «borra todo» | Pregunta qué sección y, antes de borrar, te enseña la lista y pide confirmación. |
+| «borra la carpeta Fotos/Viajes» | Enseña lo que se borraría y, si dices «sí», lo manda a la papelera de Drive. |
+| «para que lo sepas: trabajo los viernes por la mañana» · `/memory` | Lo recuerda para entender lo que le pidas después; `/memory` lo enseña. |
 
 ## Cómo está hecha
 
@@ -139,6 +149,10 @@ Después, en el servidor: `git pull`, `bash herramientas/servidor/importar-flujo
   para corregirlo («no, era el jueves»).
 - **Sin copia automática de Supabase:** los datos que solo viven ahí (tareas, notas, memoria) no tienen copia salvo que la hagas tú.
 - Más detalle en [`docs/arquitectura.md`](docs/arquitectura.md#límites-conocidos).
+
+## Versiones
+
+Los cambios de cada versión, y qué hacer para actualizar una instalación existente, están en [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Licencia
 

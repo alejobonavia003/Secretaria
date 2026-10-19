@@ -15,9 +15,9 @@
 // Las consultas (GET) no pasan por "Escribir en Supabase": n8n no permite una expresión en
 // "Send Body", así que el GET lo ejecuta el nodo "Leer consulta" con meta.consulta_url.
 
-const INTENCIONES = ['guardar', 'consultar', 'corregir', 'completar', 'recordar', 'aclarar', 'descartar', 'archivar', 'carpetas', 'cancelar', 'ver_archivos', 'crear_carpeta', 'borrar_drive', 'ayuda', 'proyectos', 'proyecto'];
+const INTENCIONES = ['guardar', 'consultar', 'corregir', 'completar', 'recordar', 'aclarar', 'descartar', 'charla', 'archivar', 'carpetas', 'cancelar', 'ver_archivos', 'crear_carpeta', 'borrar_drive', 'ayuda', 'proyectos', 'proyecto'];
 // Intenciones que no crean items (si el modelo devuelve alguno, se ignora)
-const SIN_ITEMS = ['archivar', 'carpetas', 'cancelar', 'completar', 'ver_archivos', 'crear_carpeta', 'borrar_drive', 'ayuda', 'proyectos', 'proyecto'];
+const SIN_ITEMS = ['charla', 'archivar', 'carpetas', 'cancelar', 'completar', 'ver_archivos', 'crear_carpeta', 'borrar_drive', 'ayuda', 'proyectos', 'proyecto'];
 const NIVELES_CARPETA_MAX = 3; // niveles de una carpeta pedida (Fotos/Viajes/2026)
 const MAX_CARPETAS_PEDIDAS = 10; // carpetas que se pueden pedir en un solo mensaje
 const TIPOS = ['evento', 'tarea', 'lista', 'nota'];
@@ -224,6 +224,56 @@ function normalizarSeleccion(valor, refs, ref, config, avisos) {
   return { ids: [] };
 }
 
+// Memoria de hechos del usuario: el nombre con el que quiere que se le llame vive con un término fijo, como el de la secretaria
+const NOMBRE_USUARIO = 'nombre del usuario';
+const MAX_TERMINO = 60;
+const MAX_SIGNIFICADO = 300;
+// Solo un término que diga «usuario»: «mi nombre» o «cómo llamarme» son ambiguos (justo tras «¿cómo quieres llamarme?» hablan de la secretaria)
+const esNombreDelUsuario = (termino) => /\busuario\b/.test(sinAcentos(termino ?? ''));
+const NOMBRE_VALIDO_USUARIO = /^[\p{L}\p{N}][\p{L}\p{N} .'’-]{0,59}$/u;
+// La charla la redacta el modelo, pero nunca puede decir que ha hecho algo: no escribe nada
+const PROMETE_ALGO = /\b(?:he (?:apuntado|guardado|anadido|anotado|borrado|quitado|cambiado|puesto|creado|movido)|(?:te )?(?:lo )?(?:he )?apuntad[oa]s?|guardad[oa]s?|te avis(?:o|are)|(?:lo )?recordare)\b/;
+const TEXTO_CHARLA_SEGURO = 'No he apuntado nada. Si quieres que apunte o consulte algo, dímelo.';
+// (si la charla trae un dato que sí se guarda en la memoria, Resultado ya lo dice: el texto seguro sería contradictorio)
+function textoCharla(texto, guardaDato = false) {
+  const t = String(texto ?? '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  if (!t || PROMETE_ALGO.test(sinAcentos(t))) return guardaDato ? 'De acuerdo.' : TEXTO_CHARLA_SEGURO;
+  return t;
+}
+
+// --- Memoria permanente: verla, olvidar un dato y el tope ---
+const MAX_MEMORIA = 50;
+const VACIAS_MEMORIA = new Set(['que', 'del', 'los', 'las', 'una', 'uno', 'con', 'por', 'para', 'sobre', 'mis', 'tus', 'esto', 'eso', 'dato']);
+const filasDeMemoria = (lista) =>
+  (Array.isArray(lista) ? lista : []).filter((m) => m && typeof m.id === 'string' && typeof m.termino === 'string' && typeof m.significado === 'string');
+const esNombreSecretaria = (m) => sinAcentos(m.termino) === NOMBRE_TERMINO;
+function lineaMemoria(m) {
+  const t = sinAcentos(m.termino);
+  const etiqueta = t === NOMBRE_TERMINO ? 'Mi nombre' : t === NOMBRE_USUARIO ? 'Cómo te llamo' : limpiarTxt(m.termino);
+  return `${etiqueta}: ${limpiarTxt(m.significado)}`;
+}
+// La lista numerada: el número es el que usa /forget (mismo orden que «Leer memoria»: por término)
+function textoMemoria(filas, pista = false) {
+  if (filas.length === 0) return 'Todavía no recuerdo nada de ti. Si me cuentas algo que deba saber («para que lo sepas: trabajo los viernes por la mañana»), lo guardo.';
+  const lineas = filas.map((m, i) => `${i + 1}. ${lineaMemoria(m)}`);
+  return [
+    `*Lo que recuerdo* (${filas.length} de ${MAX_MEMORIA})`,
+    ...lineas,
+    pista ? 'Dime cuál olvido: /forget y su número (por ejemplo /forget 2).' : 'Para olvidar uno: /forget y su número (por ejemplo /forget 2), o «borra de tu memoria lo de…».',
+  ].join('\n');
+}
+// Los datos que encajan con lo que dice el usuario: todas sus palabras (de 3 letras o más) en el término o el significado
+function buscarEnMemoria(filas, texto) {
+  const palabras = sinAcentos(texto).replace(/[^\p{L}\p{N} ]/gu, ' ').split(/\s+/).filter((w) => w.length > 2 && !VACIAS_MEMORIA.has(w));
+  if (palabras.length === 0) return [];
+  return filas.filter((m) => {
+    const en = sinAcentos(`${m.termino} ${m.significado}`);
+    return palabras.every((w) => en.includes(w.length > 4 ? w.replace(/s$/, '') : w));
+  });
+}
+const TEXTO_NOMBRE_NO_SE_OLVIDA = 'Mi nombre no lo olvido (sin él te lo volvería a preguntar). Si quieres otro, dímelo: «te llamas Marta».';
+const textoMemoriaLlena = (termino) => `Mi memoria está llena (${MAX_MEMORIA} datos) y no he guardado «${limpiarTxt(termino)}». Mira /memory y olvida alguno con /forget.`;
+
 const esAlarmaItem = (r) => r.tipo === 'tarea' && Boolean(r.recordar_en) && !r.fecha_limite;
 
 // Los elementos pendientes (con ids reales) que cumplen el filtro
@@ -334,7 +384,10 @@ function urlConsulta(base, q) {
 // Devuelve { datos, avisos } o lanza ErrorValidacion
 // Término de la memoria donde se guarda el nombre que el usuario le pone a la secretaria (sin acentos ni mayúsculas, como termino_norm)
 const NOMBRE_TERMINO = 'nombre de la secretaria';
-const TEXTO_NO_BORRAR_DRIVE = 'No puedo borrar carpetas ni archivos de Drive. Si quieres quitarlos, hazlo tú en Drive (clic derecho > Mover a la papelera).';
+// Por debajo de esta confianza no se guarda nada: se pregunta (regla 5 del prompt)
+const UMBRAL_CONFIANZA = 0.7;
+const NOMBRE_TIPO = { evento: 'cita', tarea: 'tarea', lista: 'lista', nota: 'pensamiento' };
+const TEXTO_QUE_BORRAR_DRIVE = 'Dime qué carpeta o qué archivo de Drive quieres borrar (por ejemplo «borra la carpeta Fotos/Viajes»). Te enseñaré lo que se borraría antes de hacerlo.';
 const TEXTO_PEDIR_NOMBRE =
   'Antes de empezar: ¿cómo quieres llamarme? Elige el nombre que quieras; lo recordaré siempre y puedes cambiármelo cuando quieras. ' +
   '(Lo que acabas de escribirme queda guardado pero sin procesar: mándamelo otra vez cuando me hayas puesto nombre.)';
@@ -387,20 +440,43 @@ function validarRespuesta(texto, config, refs, refsArchivos = {}, opciones = {})
 
   let memoriaNueva = null;
   let nombreNuevo = null;
+  let nombreUsuario = null;
+  // Un dato duradero del usuario («trabajo los viernes por la mañana», «llámame Ana») puede venir también con guardar,
+  // charla o aclarar (memoria_nueva junto a lo demás). Ahí nunca puede cambiar el nombre de la secretaria: eso solo con recordar.
+  if (datos.intencion !== 'recordar' && datos.memoria_nueva && typeof datos.memoria_nueva === 'object' && ['guardar', 'charla', 'aclarar'].includes(datos.intencion)) {
+    let termino = textoONull(datos.memoria_nueva.termino);
+    const significado = textoONull(datos.memoria_nueva.significado);
+    if (termino && significado && sinAcentos(termino) !== NOMBRE_TERMINO && termino.length <= MAX_TERMINO && significado.length <= MAX_SIGNIFICADO) {
+      if (!esNombreDelUsuario(termino)) memoriaNueva = { termino, significado };
+      else if (NOMBRE_VALIDO_USUARIO.test(significado)) {
+        memoriaNueva = { termino: NOMBRE_USUARIO, significado };
+        nombreUsuario = significado;
+      } else avisos.push('nombre del usuario no válido: se ignora');
+    } else if (termino || significado) avisos.push(`memoria_nueva no válida junto a ${datos.intencion}: se ignora`);
+  }
   if (datos.intencion === 'recordar') {
     let termino = textoONull(datos.memoria_nueva?.termino);
     const significado = textoONull(datos.memoria_nueva?.significado);
     if (!termino || !significado) fallo('recordar: memoria_nueva necesita termino y significado');
+    // El nombre del USUARIO (cómo quiere que le llamen) no es el de la secretaria, aunque llegue justo tras preguntarle el suyo
+    // («La reina de España» → «no tú no, yo»)
+    if (esNombreDelUsuario(termino)) {
+      if (!NOMBRE_VALIDO_USUARIO.test(significado)) fallo(`el nombre no es válido (hasta 60 letras, sin signos raros): ${significado.slice(0, 60)}`);
+      memoriaNueva = { termino: NOMBRE_USUARIO, significado };
+      nombreUsuario = significado;
+    }
     // El nombre de la secretaria vive en la memoria con un término fijo. Si la última pregunta era «¿cómo quieres llamarme?», lo que
     // responda el usuario es ese nombre sea cual sea el término que haya puesto el modelo; también cuando pide cambiárselo.
     // (con la pregunta del nombre abierta solo cuenta como nombre si el término que eligió el modelo habla de un nombre; si no, es otro término)
     const hablaDeNombre = /nombre|secretari|llam|apodo|mote/.test(sinAcentos(termino));
-    if ((opciones.esperaNombre && hablaDeNombre) || sinAcentos(termino) === NOMBRE_TERMINO) {
+    if (nombreUsuario) {
+      // ya resuelto arriba
+    } else if ((opciones.esperaNombre && hablaDeNombre) || sinAcentos(termino) === NOMBRE_TERMINO) {
       if (!/^[\p{L}\p{N}][\p{L}\p{N} .'’-]{0,39}$/u.test(significado)) fallo(`el nombre no es válido (hasta 40 letras, sin signos raros): ${significado.slice(0, 60)}`);
       termino = NOMBRE_TERMINO;
       nombreNuevo = significado;
     }
-    memoriaNueva = { termino, significado };
+    if (!nombreUsuario) memoriaNueva = { termino, significado };
   }
 
   let correccion = null;
@@ -412,7 +488,7 @@ function validarRespuesta(texto, config, refs, refsArchivos = {}, opciones = {})
       avisos.push('corregir: item_id suelto, se usa como lista de un elemento');
       ids = [c.item_id];
     }
-    // Cambiar de tipo (v11): el modelo solo dice a cuál (alarma, cita o tarea) y, si el usuario la dio, la fecha nueva. Las fechas y el tipo los
+    // Cambiar de tipo: el modelo solo dice a cuál (alarma, cita o tarea) y, si el usuario la dio, la fecha nueva. Las fechas y el tipo los
     // mueve Planificar; los cambios que el modelo ponga además (título…) se respetan. Con convertir_a, "cambios" puede venir vacío.
     const convertir = ['alarma', 'cita', 'tarea'].includes(c.convertir_a) ? c.convertir_a : null;
     if (c.convertir_a != null && c.convertir_a !== '' && !convertir) avisos.push(`correccion.convertir_a "${c.convertir_a}" no es alarma, cita ni tarea: se ignora`);
@@ -457,6 +533,24 @@ function validarRespuesta(texto, config, refs, refsArchivos = {}, opciones = {})
     filtroArchivos = { carpeta, tipo, solo_pendientes: f.solo_pendientes === true, enviar: f.enviar === true };
   }
 
+  // Borrar en Drive: una carpeta (entera, o solo sus archivos) y/o archivos concretos por su referencia
+  // (a1…). Aquí solo se valida lo que pide: qué hay dentro lo resuelve «Resultado» con el árbol de Drive y lo enseña antes de borrar nada.
+  let borrarDrive = null;
+  if (datos.intencion === 'borrar_drive') {
+    const b = typeof datos.borrar_drive === 'object' && datos.borrar_drive !== null && !Array.isArray(datos.borrar_drive) ? datos.borrar_drive : {};
+    let carpeta = null;
+    if (textoONull(b.carpeta)) {
+      const segs = segmentosCarpeta(String(b.carpeta).split('/').map((x) => x.trim()).join('/'));
+      if (!segs) fallo(`borrar_drive.carpeta no es una ruta válida (de 1 a ${NIVELES_CARPETA_MAX} niveles, sin barras invertidas ni ".."): ${JSON.stringify(b.carpeta)}`);
+      carpeta = segs.join('/');
+    }
+    const refsPedidas = Array.isArray(b.archivos) ? b.archivos.filter((r) => typeof r === 'string') : [];
+    const fuera = refsPedidas.filter((r) => !Object.prototype.hasOwnProperty.call(refsArchivos, r));
+    if (fuera.length > 0) avisos.push(`borrar_drive.archivos: referencias que no existen (${fuera.join(', ')}): se ignoran`);
+    const archivoIds = [...new Set(refsPedidas.filter((r) => !fuera.includes(r)).map((r) => refsArchivos[r]))];
+    if (carpeta || archivoIds.length > 0) borrarDrive = { carpeta, archivo_ids: archivoIds, solo_archivos: Boolean(carpeta) && b.solo_archivos === true };
+  }
+
   // Crear carpetas vacías ("crea la carpeta Proyectos dentro de Trabajo"): una lista de rutas bajo Secretaria/, con las mismas reglas que
   // la carpeta de archivar. Los espacios alrededor de las barras ("Trabajo / Proyectos") se limpian; sin distinguir mayúsculas ni
   // tildes, una ruta repetida cuenta una sola vez.
@@ -481,7 +575,7 @@ function validarRespuesta(texto, config, refs, refsArchivos = {}, opciones = {})
 
   const consulta = datos.intencion === 'consultar' ? normalizarConsulta(datos.consulta, config, avisos) : null;
 
-  return { datos: { intencion: datos.intencion, items, pregunta, memoriaNueva, nombreNuevo, correccion, seleccion, proyecto, consulta, archivos, filtroArchivos, rutasNuevas, respuestaUsuario }, avisos };
+  return { datos: { intencion: datos.intencion, items, pregunta, memoriaNueva, nombreNuevo, nombreUsuario, correccion, seleccion, proyecto, consulta, archivos, filtroArchivos, rutasNuevas, borrarDrive, respuestaUsuario }, avisos };
 }
 
 // --- Archivos: carpeta pedida, referencias y nombres ---
@@ -654,7 +748,7 @@ const diasConfirmados = (hilo) => confirmacionesDelHilo(hilo).dias;
 // Los comandos empiezan por «/», se escriben en inglés (/help, /about, /manual…) y su contenido está en español. Los resuelve este código, sin el modelo:
 // es más fiable y no cuesta nada. Dos clases:
 //   - de TEXTO: ayuda fija (/help, /about, /manual, /examples, /name);
-//   - ATAJOS (/pending, /today, /files, /folders, /subjects): se convierten en la respuesta que daría el modelo y siguen por el mismo camino de validación.
+//   - ATAJOS (/pending, /today, /files, /folders): se convierten en la respuesta que daría el modelo y siguen por el mismo camino de validación.
 // También se reconocen las frases de quien está perdido («ayuda», «estoy perdido», «qué puedes hacer»…) y, con el modelo, la intención «ayuda».
 // Un comando NUNCA cierra una pregunta que haya quedado pendiente: se contesta y todo sigue como estaba.
 
@@ -671,6 +765,8 @@ const COMANDOS = [
   ['folders', 'Tus carpetas de Drive', 'atajos'],
   ['projects', 'Tus proyectos', 'atajos'],
   ['name', 'Mi nombre y cómo cambiarlo', 'atajos'],
+  ['memory', 'Lo que recuerdo de ti, numerado', 'atajos'],
+  ['forget', 'Olvidar un dato de mi memoria: /forget 2 (el número de /memory)', 'atajos'],
 ];
 // Alias en español, por si se escriben sin pensar (el comando oficial es el inglés)
 const ALIAS_COMANDO = {
@@ -684,6 +780,8 @@ const ALIAS_COMANDO = {
   carpetas: 'folders', folder: 'folders',
   proyectos: 'projects', project: 'projects',
   nombre: 'name',
+  memoria: 'memory', recuerdos: 'memory', recuerdas: 'memory',
+  olvidar: 'forget', olvida: 'forget', olvidalo: 'forget',
 };
 
 const TEXTO_AYUDA =
@@ -710,8 +808,9 @@ const textoAbout = (nombre) =>
     '*Además*\n' +
       '• Cada mañana te mando un resumen de lo que tienes.\n' +
       '• Entiendo audios: te digo lo que he entendido antes de actuar.\n' +
+      '• Recuerdo lo que me cuentes de ti («trabajo los viernes»): /memory para verlo y /forget para olvidar algo.\n' +
       '• Si cambias algo a mano en Drive o en Google Calendar (borrar, mover, renombrar o crear), lo anoto y te lo cuento.\n' +
-      '• No borro carpetas ni archivos de Drive: eso lo haces tú.\n\n' +
+      '• Borro carpetas y archivos de Drive si me lo pides: antes te enseño la lista y te pregunto, y van a la papelera.\n\n' +
       'Escribe /help para ver los comandos y /manual para la guía completa.',
   ];
 
@@ -766,7 +865,8 @@ const MANUAL = {
     titulo: 'Carpetas de Drive',
     texto:
       '• «crea la carpeta Proyectos dentro de Trabajo» (hasta 3 niveles). Para ver todas: /folders.\n' +
-      '• *No borro* carpetas ni archivos: bórralos tú en Drive. Si lo haces, lo anoto y te aviso.',
+      '• Borrar: «borra la carpeta Fotos/Viajes», «vacía la carpeta Facturas» (quita lo de dentro y deja la carpeta), «borra la foto del DNI». Te enseño lo que se borraría y solo lo mando a la papelera de Drive si me dices que sí (se recupera unos 30 días). Entrada y Notas no se borran enteras.\n' +
+      '• Si cambias algo a mano en Drive, lo anoto y te aviso.',
   },
   avisos: {
     titulo: 'Avisos y resumen',
@@ -783,10 +883,20 @@ const MANUAL = {
       '• Añadir detalles sin borrar lo que había: «añade a la tarea del banco que lleve el DNI».\n' +
       '• Completar: «ya compré la leche», «ya entregué el informe». Todo de golpe: «ya hice todas las tareas».\n' +
       '• Cancelar: «quita la cita de mañana», «olvida lo de la leche». Todo de golpe: «quita todos los pensamientos», «vacía la lista de la compra».\n' +
-      '• Si son más de 3 cosas a la vez, te las enseño y te pregunto antes.\n' +
+      '• Si borras una sección o varias cosas a la vez, siempre te enseño la lista y te pregunto antes; si marcas como hechas más de 3, también. «Borra todo» te pregunta qué sección.\n' +
       '• Ver los detalles de algo: «qué apunté del casero», «enséñame el contenido de la tarea del banco».\n' +
       '• Todo con todos los detalles: «dámelo todo completo» o /pending completo.\n' +
       '• Si no estoy segura de a cuál te refieres, te pregunto.',
+  },
+  memoria: {
+    titulo: 'Lo que recuerdo de ti',
+    texto:
+      '• Si me cuentas algo que no cambia («para que lo sepas: trabajo los viernes por la mañana», «Emma es mi hermana»), lo recuerdo y te lo digo con 📌.\n' +
+      '• «Llámame Ana»: así te llamaré. «Te llamas Lola»: es mi nombre.\n' +
+      '• Ver lo que recuerdo: /memory o «qué sabes de mí» (una lista numerada).\n' +
+      '• Olvidar un dato: /forget y su número (/forget 2), o «borra de tu memoria lo de Emma» (te pregunto antes).\n' +
+      '• «Olvida lo de la leche» sin decir «memoria» es quitar una tarea o una nota, no un dato.\n' +
+      '• Recuerdo como mucho 50 datos. Mi nombre no lo olvido: se cambia.',
   },
 };
 const TEMAS_MANUAL = Object.keys(MANUAL);
@@ -809,7 +919,9 @@ const TEXTO_EJEMPLOS =
   '• guárdala en Fotos/Viajes (respondiendo a una foto)\n' +
   '• dame las fotos de Viajes\n' +
   '• crea la carpeta Proyectos dentro de Trabajo\n' +
-  '• llámate Marta (para cambiarme el nombre)\n\n' +
+  '• borra la carpeta Fotos/Viajes (te enseño lo que hay y te pregunto)\n' +
+  '• llámate Marta (para cambiarme el nombre) · llámame Ana\n' +
+  '• para que lo sepas: trabajo los viernes por la mañana · qué sabes de mí\n\n' +
   'Y si no sabes cómo decirlo, dilo como te salga: te preguntaré lo que me falte.';
 
 const textoManualIndice = () =>
@@ -849,6 +961,15 @@ const FRASES_ABOUT = new Set([
   'que puedes hacer', 'que sabes hacer', 'que puedes hacer por mi', 'que sabes', 'para que sirves', 'para que sirve esto', 'para que sirve', 'que eres', 'quien eres', 'que haces',
   'que funciones tienes', 'que funcionalidades tienes', 'que haces tu', 'que eres capaz de hacer',
 ]);
+
+// La memoria permanente: verla y olvidar un dato se resuelven sin el modelo. Para olvidar con palabras hay que nombrar la memoria
+// («borra de tu memoria lo del trabajo», «olvida el dato del trabajo»): «olvida lo de la leche» a secas es quitar una tarea o una nota.
+const FRASES_MEMORIA = new Set([
+  'que recuerdas de mi', 'que sabes de mi', 'que sabes sobre mi', 'que recuerdas sobre mi', 'que guardas de mi', 'dime que sabes de mi',
+  'que tienes en la memoria', 'que tienes en tu memoria', 'que hay en tu memoria', 'que hay en la memoria', 'que recuerdas', 'que te acuerdas de mi',
+  'ensename tu memoria', 'muestrame tu memoria', 'dime tu memoria', 'tu memoria', 'memoria', 'ver memoria', 'ver tu memoria', 'mi memoria',
+]);
+const OLVIDAR_MEMORIA = /^(?:por favor )?(?:olvida|olvidate|borra|quita|elimina)(?:r|me)? (?:de (?:tu|la) memoria|del? (?:tu|la) memoria|el dato|ese dato|de lo que (?:recuerdas|sabes) de mi) (?:(?:lo )?(?:del|de|que|sobre) )?(.+)$/;
 
 // Las preguntas más corrientes sobre lo pendiente se resuelven aquí con una consulta SIN filtros, igual que /pending y /today: no dependen de que el modelo
 // las interprete bien (si añadía un filtro, "nada pendiente" salía como "nada con esos criterios").
@@ -900,6 +1021,9 @@ function interpretarComando(mensaje, { ahora, nombre } = {}) {
         return { tipo: 'atajo', datos: { intencion: 'recordar', memoria_nueva: { termino: NOMBRE_TERMINO, significado: nuevo } } };
       }
     }
+    if (FRASES_MEMORIA.has(f) || FRASES_MEMORIA.has(f.replace(SALUDO_INICIAL, ''))) return { tipo: 'memoria', accion: 'ver' };
+    const olvido = OLVIDAR_MEMORIA.exec(f.replace(SALUDO_INICIAL, ''));
+    if (olvido) return { tipo: 'memoria', accion: 'olvidar', arg: olvido[1].trim() };
     if (FRASES_AYUDA.has(f)) return { tipo: 'texto', mensajes: [TEXTO_AYUDA], motivo: 'help' };
     if (FRASES_ABOUT.has(f)) return { tipo: 'texto', mensajes: textoAbout(nombre), motivo: 'about' };
     if (FRASES_PENDIENTE.has(f)) return { tipo: 'atajo', datos: { intencion: 'consultar', consulta: { estado: 'pendiente' } } };
@@ -937,6 +1061,10 @@ function interpretarComando(mensaje, { ahora, nombre } = {}) {
       return { tipo: 'texto', mensajes: [TEXTO_EJEMPLOS], motivo: 'examples' };
     case 'name':
       return { tipo: 'texto', mensajes: [textoName(nombre)], motivo: 'name' };
+    case 'memory':
+      return { tipo: 'memoria', accion: 'ver' };
+    case 'forget':
+      return arg ? { tipo: 'memoria', accion: 'olvidar', arg } : { tipo: 'memoria', accion: 'ver', pista: true };
     case 'manual': {
       if (arg === '') return { tipo: 'texto', mensajes: [textoManualIndice()], motivo: 'manual' };
       if (arg === 'todo' || arg === 'todos' || arg === 'completo') {
@@ -1039,6 +1167,23 @@ function interpretarAplazamiento(mensaje, citados, ahora) {
 // Si tu última pregunta era "Ya tienes «Dentista» (…). ¿La cambio o añado otra?" y el usuario pregunta cuáles existen, lo contesta el código
 // con la lista de las que existen y la pregunta sigue abierta para que decida después.
 const PIDE_CUALES = /^(?:y )?(?:(?:dime|dame|muestrame|ensename|ver|lista) )?(?:cuales|cual|las que|lo que|que)(?: ya)?(?: hay| existen| existe| tengo| tienes| son| ya hay)*$|^(?:muestramelas|ensenamelas|dimelas|la lista|lista)$/;
+// El turno del modelo se guarda tal cual en el hilo. Una confirmación de borrar en Drive solo la puede escribir el código («Resultado»):
+// si el modelo devuelve algo con esa forma (por ejemplo, porque un mensaje reenviado se lo pide), se le quita antes de guardarlo.
+function sinMarcaDeCodigo(texto) {
+  try {
+    const j = JSON.parse(texto);
+    if (j && typeof j === 'object' && (j.motivo === 'confirmar_drive' || j.motivo === 'confirmar_memoria' || 'papelera' in j || 'olvidar' in j || 'origen' in j)) {
+      delete j.motivo;
+      delete j.papelera;
+      delete j.olvidar;
+      delete j.origen;
+      return JSON.stringify(j);
+    }
+  } catch {
+    // no es JSON: se guarda tal cual
+  }
+  return texto;
+}
 function motivoDelHilo(hilo) {
   const ultimo = (Array.isArray(hilo) ? hilo : []).at(-1);
   if (ultimo?.rol !== 'model') return null;
@@ -1064,7 +1209,7 @@ const CUANDO = /\d|\b(?:mediodia|medianoche|manana|hoy|pasado|noche|tarde|lunes|
 const ELIGE_TIPO = /\b(?:alarma|cita|tarea)s?\b/;
 const ELIGE_REPETIDO = /\b(?:cambia|cambiala|cambialo|actualiza|actualizala|modifica|sustituye|reemplaza|anade|anadela|otra|otro|nueva|nuevo|las dos|los dos|ambas|ambos|si|no|cuales|cual)\b/;
 const ORDEN_NUEVA = /^(?:que|cuales|cual|cuantos|cuantas|dame|dime|ensename|muestrame|mis|lista|borra|quita|elimina|recuerdame|apunta|anota|crea|abre|cierra|completa|marca|\/)/;
-const MOTIVOS_SI_NO = ['confirmar_agenda', 'confirmar_lote', 'crear_proyecto'];
+const MOTIVOS_SI_NO = ['confirmar_agenda', 'confirmar_lote', 'crear_proyecto', 'confirmar_drive'];
 function tipoDePregunta(fila) {
   const motivo = motivoDelHilo(fila.hilo)?.motivo;
   if (MOTIVOS_SI_NO.includes(motivo)) return 'sino';
@@ -1126,14 +1271,36 @@ function seccionElegida(mensaje, hilo) {
   return null;
 }
 const NO_CONFIRMA = /^(?:no|mejor no|no gracias|ni hablar|dejalo|cancela|cancelalo|espera)\b/;
-const SI_CONFIRMA = /^(?:si|vale|ok|okey|dale|venga|claro|adelante|hazlo|por supuesto|de acuerdo|sip|perfecto|correcto|quitalos|quitalo|quitalas|quitala|borralos|borralo|borralas|borrala|eliminalos|marcalos|marcalo)\b/;
+const SI_CONFIRMA = /^(?:si|vale|ok|okey|dale|venga|claro|adelante|hazlo|por supuesto|de acuerdo|sip|perfecto|correcto|quitalos|quitalo|quitalas|quitala|borralos|borralo|borralas|borrala|eliminalos|eliminalo|eliminala|eliminalas|mandalo|mandalos|marcalos|marcalo|olvidalo|olvidalos)\b/;
+// Lo que se manda a la papelera de Drive: ids de Drive con la forma de siempre, como mucho MAX_PAPELERA
+const ID_DRIVE_PAPELERA = /^[A-Za-z0-9_-]{10,100}$/;
+const MAX_PAPELERA = 50;
+function papeleraDelHilo(t) {
+  if (t?.motivo !== 'confirmar_drive' || t.origen !== 'codigo' || !Array.isArray(t.papelera)) return null;
+  const lista = t.papelera
+    .filter((e) => e && ['carpeta', 'archivo'].includes(e.tipo) && typeof e.id === 'string' && ID_DRIVE_PAPELERA.test(e.id))
+    .map((e) => ({ tipo: e.tipo, id: e.id, nombre: String(e.nombre ?? '').slice(0, 200) }))
+    .slice(0, MAX_PAPELERA);
+  return lista.length > 0 ? lista : null;
+}
+// Olvidar datos de la memoria: ids de la tabla memoria, solo si la pregunta la escribió el código
+const ID_MEMORIA = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function olvidarDelHilo(t) {
+  if (t?.motivo !== 'confirmar_memoria' || t.origen !== 'codigo' || !Array.isArray(t.olvidar)) return null;
+  const ids = t.olvidar.filter((x) => typeof x === 'string' && ID_MEMORIA.test(x)).slice(0, 50);
+  return ids.length > 0 ? ids : null;
+}
 function respuestaConfirmacion(mensaje, hilo) {
   const t = motivoDelHilo(hilo);
-  if (t?.motivo !== 'confirmar_lote' || !Array.isArray(t.lotes) || t.lotes.length === 0) return null;
+  const papelera = papeleraDelHilo(t);
+  const olvidar = olvidarDelHilo(t);
+  if (!papelera && !olvidar && (t?.motivo !== 'confirmar_lote' || !Array.isArray(t.lotes) || t.lotes.length === 0)) return null;
   const m = sinSignos(mensaje ?? '');
   if (!m || m.split(' ').length > 4) return null;
   if (NO_CONFIRMA.test(m)) return { tipo: 'no' };
   if (!SI_CONFIRMA.test(m)) return null;
+  if (papelera) return { tipo: 'si', accion: 'papelera', papelera };
+  if (olvidar) return { tipo: 'si', accion: 'olvidar', ids: olvidar };
   const lote = t.lotes.at(-1);
   if (!['cancelar', 'completar'].includes(lote?.accion) || !Array.isArray(lote.ids)) return null;
   return { tipo: 'si', accion: lote.accion, ids: lote.ids.filter((x) => typeof x === 'string') };
@@ -1517,6 +1684,45 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     meta: { ok: true, error: null, intencion, avisos: [], respuesta_usuario: mensajes.join('\n\n'), mensajes_fijos: mensajes, pregunta: null, consulta_url: urlNeutra, consulta: null, carpetas: false, ahora: ahora.toISOString() },
   });
   if (comando?.tipo === 'texto') return ayudaFija(comando.mensajes);
+  const filasMem = filasDeMemoria(contexto.memoria);
+  const olvidarIds = (ids, cerrarPregunta) => {
+    const vivos = ids.filter((id) => filasMem.some((m) => m.id === id && !esNombreSecretaria(m)));
+    if (vivos.length === 0) return ayudaFija(['Eso ya no está en mi memoria. Escribe /memory para ver lo que recuerdo.']);
+    return {
+      peticiones: [
+        ...(cerrarPregunta && contexto.pendienteId ? [peticion('cerrar pregunta anterior', 'PATCH', `/mensajes?id=eq.${encodeURIComponent(contexto.pendienteId)}`, { pregunta_pendiente: false }, 'return=minimal')] : []),
+        marcarMensaje({ procesado: true, error: null }),
+        ...vivos.map((id) => peticion('olvidar un dato', 'POST', '/rpc/olvidar_memoria', { p_id: id }, 'return=representation')),
+      ],
+      meta: { ok: true, error: null, intencion: 'olvidar_memoria', avisos: [], respuesta_usuario: '', pregunta: null, consulta_url: urlNeutra, consulta: null, carpetas: false, ahora: ahora.toISOString() },
+    };
+  };
+  if (comando?.tipo === 'memoria' && comando.accion === 'ver') return ayudaFija([textoMemoria(filasMem, comando.pista === true)]);
+  if (comando?.tipo === 'memoria' && comando.accion === 'olvidar') {
+    const arg = String(comando.arg ?? '').trim();
+    // «/forget 2»: el número de la lista, sin preguntar (lo que se olvida se dice tal cual)
+    if (/^\d{1,3}$/.test(arg)) {
+      const fila = filasMem[Number(arg) - 1];
+      if (!fila) return ayudaFija([`No tengo el dato número ${arg}.\n\n${textoMemoria(filasMem, true)}`]);
+      if (esNombreSecretaria(fila)) return ayudaFija([TEXTO_NOMBRE_NO_SE_OLVIDA]);
+      return olvidarIds([fila.id], false);
+    }
+    // Con palabras: se busca y se pregunta antes (con la lista de lo que se olvidaría)
+    const encontrados = buscarEnMemoria(filasMem, arg);
+    const olvidables = encontrados.filter((m) => !esNombreSecretaria(m));
+    if (olvidables.length === 0) {
+      return ayudaFija([encontrados.length > 0 ? TEXTO_NOMBRE_NO_SE_OLVIDA : `No encuentro nada en mi memoria sobre «${limpiarTxt(arg).slice(0, 60)}». Escribe /memory para ver lo que recuerdo.`]);
+    }
+    const lineas = olvidables.map((m) => `${filasMem.indexOf(m) + 1}. ${lineaMemoria(m)}`);
+    const texto = olvidables.length === 1
+      ? `¿Olvido esto?\n${lineas[0]}`
+      : `Esto es lo que encuentro:\n${lineas.join('\n')}\n¿Lo olvido todo? Si solo es uno, escribe /forget y su número.`;
+    const turno = JSON.stringify({ intencion: 'aclarar', motivo: 'confirmar_memoria', origen: 'codigo', olvidar: olvidables.map((m) => m.id), pregunta: texto, items: [], respuesta_usuario: texto });
+    return {
+      peticiones: [marcarMensaje({ procesado: true, error: null, pregunta: texto, pregunta_pendiente: true, hilo: [{ rol: 'user', texto: contexto.mensaje }, { rol: 'model', texto: turno }] })],
+      meta: { ok: true, error: null, intencion: 'aclarar', avisos: [], respuesta_usuario: texto, pregunta: texto, consulta_url: urlNeutra, consulta: null, carpetas: false, ahora: ahora.toISOString() },
+    };
+  }
   const sinPregunta = comando || contexto.pedirNombre === true || contexto.esperaNombre === true ? null : siNoSinPregunta(contexto.mensaje, contexto.hiloPrevio);
   if (sinPregunta) return ayudaFija([sinPregunta]);
   if (comando?.tipo === 'atajo') resp = respuestaDeAtajo(comando.datos);
@@ -1529,6 +1735,19 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
         marcarMensaje({ procesado: true, error: null }),
       ],
       meta: { ok: true, error: null, intencion: 'descartar', avisos: [], respuesta_usuario: 'Vale, no quito nada.', respuesta_fija: true, pregunta: null, consulta_url: urlNeutra, consulta: null, carpetas: false, ahora: ahora.toISOString() },
+    };
+  }
+  if (confirmacion?.tipo === 'si' && confirmacion.accion === 'olvidar') return olvidarIds(confirmacion.ids, true);
+  if (confirmacion?.tipo === 'si' && confirmacion.accion === 'papelera') {
+    // Borrar en Drive confirmado: se cierra la pregunta y se leen otra vez el árbol y los archivos registrados. «Preparar papelera»
+    // comprueba con ellos cada id antes de mandarlo a la papelera (una carpeta tiene que colgar de Secretaria y no ser Entrada ni
+    // Notas; un archivo tiene que estar registrado) y «Resultado» cuenta lo que de verdad se hizo.
+    return {
+      peticiones: [
+        ...(contexto.pendienteId ? [peticion('cerrar pregunta anterior', 'PATCH', `/mensajes?id=eq.${encodeURIComponent(contexto.pendienteId)}`, { pregunta_pendiente: false }, 'return=minimal')] : []),
+        marcarMensaje({ procesado: true, error: null }),
+      ],
+      meta: { ok: true, error: null, intencion: 'borrar_drive', avisos: [], respuesta_usuario: '', pregunta: null, consulta_url: urlNeutra, consulta: null, carpetas: true, papelera: confirmacion.papelera, ahora: ahora.toISOString() },
     };
   }
   if (confirmacion?.tipo === 'si') {
@@ -1582,10 +1801,27 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     validado = validarRespuesta(texto, config, refs, archivos.refs ?? {}, { esperaNombre: contexto.esperaNombre === true });
   } catch (e) {
     if (!(e instanceof ErrorValidacion)) throw e;
-    return conError(`Respuesta no válida: ${e.message}. Texto recibido: ${texto.slice(0, MAX_TEXTO_ERROR)}`, { intencion: null });
+    // El modelo devolvió algo que no encaja: no se hace nada y se contesta «no te he entendido» (Resultado). No es un fallo del flujo:
+    // el mensaje queda procesado, con el motivo anotado para poder revisarlo (supabase/comprobaciones/ver-errores.sql).
+    const motivo = `Respuesta no válida: ${e.message}. Texto recibido: ${texto.slice(0, MAX_TEXTO_ERROR)}`;
+    return {
+      peticiones: [marcarMensaje({ procesado: true, error: motivo })],
+      meta: { ok: false, no_entendido: true, error: motivo, intencion: null, avisos: [], respuesta_usuario: '', pregunta: null, consulta_url: urlNeutra, consulta: null },
+    };
   }
 
   const { datos, avisos } = validado;
+  // Sin seguridad no se apunta nada (regla 5 del prompt, ahora también por código): si algo de lo que iba a guardar tiene una confianza baja,
+  // se pregunta en vez de guardar, enseñando lo que se ha entendido. La respuesta vuelve al modelo con el hilo.
+  const dudosos = datos.intencion === 'guardar' ? datos.items.filter((it) => typeof it.confianza === 'number' && it.confianza < UMBRAL_CONFIANZA) : [];
+  if (dudosos.length > 0) {
+    avisos.push(`confianza baja (${dudosos.map((it) => it.confianza).join(', ')}): se pregunta en vez de guardar`);
+    const lineas = datos.items.slice(0, 5).map((it) => `• ${NOMBRE_TIPO[it.tipo] ?? it.tipo}: «${limpiarTxt(it.titulo)}»`);
+    datos.intencion = 'aclarar';
+    datos.pregunta = `No estoy segura de haberte entendido y prefiero no apuntar nada mal. He entendido esto:\n${lineas.join('\n')}\n¿Es así? Si no, dímelo de otra forma.`;
+    datos.items = [];
+    datos.archivos = null;
+  }
   const meta = {
     ok: true,
     error: null,
@@ -1599,6 +1835,22 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     ahora: ahora.toISOString(),
     ...(datos.nombreNuevo ? { nombre_nuevo: datos.nombreNuevo, tras_pregunta_nombre: contexto.esperaNombre === true } : {}),
   };
+
+  // Tope de la memoria: un dato NUEVO (un término que no existe) no se guarda si ya hay MAX_MEMORIA; cambiar uno que existe, sí
+  if (datos.memoriaNueva) {
+    const norma = (t) => String(t).trim().toLowerCase();
+    const existe = filasMem.some((m) => norma(m.termino) === norma(datos.memoriaNueva.termino));
+    const fijo = [NOMBRE_TERMINO, NOMBRE_USUARIO].includes(sinAcentos(datos.memoriaNueva.termino));
+    if (!existe && !fijo && filasMem.length >= MAX_MEMORIA) {
+      avisos.push(`memoria llena (${filasMem.length}): no se guarda «${datos.memoriaNueva.termino}»`);
+      meta.memoria_llena = datos.memoriaNueva.termino;
+      if (datos.intencion === 'recordar') {
+        meta.respuesta_usuario = textoMemoriaLlena(datos.memoriaNueva.termino);
+        meta.respuesta_fija = true;
+      }
+      datos.memoriaNueva = null;
+    }
+  }
 
   const cerrarAnterior = () =>
     peticion('cerrar pregunta anterior', 'PATCH', `/mensajes?id=eq.${encodeURIComponent(contexto.pendienteId)}`, { pregunta_pendiente: false }, 'return=minimal');
@@ -1615,11 +1867,16 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     };
   }
 
-  // Borrar carpetas o archivos de Drive: el sistema no borra nada en Drive (solo el flujo «Reiniciar todo», a mano). Se dice y no se toca nada.
+  // Borrar carpetas o archivos de Drive: aquí no se borra nada. Se leen el árbol de carpetas y los archivos registrados y
+  // «Resultado» enseña la lista de lo que se mandaría a la papelera y deja la pregunta abierta; con el «sí» se manda (más abajo, por código).
+  // Es una orden nueva: no contesta ni cierra otra pregunta abierta.
   if (datos.intencion === 'borrar_drive') {
+    if (!datos.borrarDrive) {
+      return { peticiones: [marcarMensaje({ procesado: true, error: null })], meta: { ...meta, respuesta_usuario: TEXTO_QUE_BORRAR_DRIVE, respuesta_fija: true } };
+    }
     return {
-      peticiones: [...(contexto.pendienteId ? [cerrarAnterior()] : []), marcarMensaje({ procesado: true, error: null })],
-      meta: { ...meta, respuesta_usuario: TEXTO_NO_BORRAR_DRIVE },
+      peticiones: [marcarMensaje({ procesado: true, error: null })],
+      meta: { ...meta, respuesta_usuario: '', carpetas: true, borrar_drive: datos.borrarDrive },
     };
   }
 
@@ -1825,11 +2082,15 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     meta.consulta_url = `${base}/archivos?select=nombre,drive_file_id,drive_url,created_at,tipo_mime,carpeta_destino,estado,items(tipo)&eliminado_at=is.null&order=created_at.desc&limit=1000`;
     meta.consulta_archivos = datos.filtroArchivos;
   }
-  if (datos.intencion === 'recordar') {
+  if (datos.memoriaNueva) {
     peticiones.push(
       peticion('guardar memoria', 'POST', '/memoria?on_conflict=termino_norm', datos.memoriaNueva, 'resolution=merge-duplicates,return=representation'),
     );
+    if (datos.intencion !== 'recordar') meta.memoria_nueva = datos.memoriaNueva;
+    if (datos.nombreUsuario) meta.nombre_usuario = datos.nombreUsuario;
   }
+  // Charla: no se escribe nada; la respuesta es la del modelo, sin promesas de haber hecho algo
+  if (datos.intencion === 'charla') meta.respuesta_usuario = textoCharla(datos.respuestaUsuario, Boolean(datos.memoriaNueva));
   if (datos.intencion === 'corregir') {
     // Añadir al contenido va por la función anadir_contenido, que concatena en la base de datos; el resto de cambios, con un
     // PATCH. No dependen uno del otro (anadir_contenido nunca va junto a contenido).
@@ -1874,7 +2135,7 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     Object.assign(cuerpoMensaje, {
       pregunta: datos.pregunta,
       pregunta_pendiente: true,
-      hilo: [...(contexto.hiloPrevio ?? []), { rol: 'user', texto: contexto.mensaje }, { rol: 'model', texto }],
+      hilo: [...(contexto.hiloPrevio ?? []), { rol: 'user', texto: contexto.mensaje }, { rol: 'model', texto: sinMarcaDeCodigo(texto) }],
     });
   }
   peticiones.push(marcarMensaje(cuerpoMensaje));
@@ -1906,6 +2167,8 @@ const contexto = {
   pedirNombre: construccion.pedir_nombre === true,
   esperaNombre: construccion.espera_nombre === true,
   nombreSecretaria: typeof construccion.nombre_secretaria === 'string' ? construccion.nombre_secretaria : null,
+  // La memoria permanente con sus ids (para /memory y /forget) y el tope
+  memoria: Array.isArray(construccion.memoria_filas) ? construccion.memoria_filas : [],
   // El aviso de alarma o cita al que responde el usuario (referencias cortas) y las alarmas ya sonadas que se pueden reabrir (ids reales)
   citados: Array.isArray(construccion.avisos_citados) ? construccion.avisos_citados : [],
   reabribles: Array.isArray(construccion.reabribles) ? construccion.reabribles : [],

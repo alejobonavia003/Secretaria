@@ -29,6 +29,8 @@ const textoFallo = (texto) => {
   return cita ? `No he podido procesar ${varios ? 'estos mensajes' : 'este mensaje'}: ${cita}. Lo he guardado para revisarlo. Si necesitas ayuda, escribe /help.` : MENSAJE_FALLO;
 };
 const MAX_ERROR_GUARDADO = 1000; // tope de lo que se anota en mensajes.error
+// Cuando el modelo devuelve algo que no encaja: no es un fallo del flujo, es que no ha entendido el mensaje
+const TEXTO_NO_ENTENDIDO = 'No te he entendido bien, así que no he hecho nada. ¿Me lo dices de otra forma? Si es algo que no sé hacer, escribe /help para ver lo que puedo hacer.';
 
 const textoError = (e) => (typeof e === 'string' ? e : (e?.message ?? JSON.stringify(e)));
 
@@ -232,6 +234,81 @@ function arbolDeCarpetas({ niveles, raizId, filas }) {
   };
 }
 
+// --- Borrar en Drive (intención "borrar_drive") ---
+// Al pedirlo, «Revisar Drive» propone qué se mandaría a la papelera y aquí se enseña con la pregunta; con el «sí», «Revisar Drive» comprueba
+// cada cosa otra vez, «Mandar a la papelera» la manda y aquí se cuenta lo que de verdad pasó (con lo que respondió Drive).
+const MAX_LINEAS_DRIVE = 15;
+const TEXTO_RECUPERAR = 'Si te equivocas, se recupera desde la papelera de Drive durante unos 30 días.';
+function lineasConTope(lineas) {
+  return lineas.length > MAX_LINEAS_DRIVE ? [...lineas.slice(0, MAX_LINEAS_DRIVE), `… y ${lineas.length - MAX_LINEAS_DRIVE} más`] : lineas;
+}
+// Devuelve { texto } para contestar sin más o { texto, papelera } con la pregunta de confirmación
+function textoPropuestaDrive(p) {
+  if (!p || typeof p !== 'object') return { texto: 'No he podido revisar tus carpetas de Drive.', error: 'Revisar Drive no devolvió la propuesta', fallo: true };
+  if (p.ambiguas) return { texto: `Hay varias carpetas con ese nombre:\n${p.ambiguas.map((r) => `• ${limpiar(r)}`).join('\n')}\nDime cuál, con la ruta entera (por ejemplo «borra la carpeta ${limpiar(p.ambiguas[0])}»).` };
+  if (p.no_encontrada) return { texto: `No encuentro la carpeta «${limpiar(p.no_encontrada)}» en Drive (miro hasta 3 niveles dentro de Secretaria). Escribe «qué carpetas tengo» para verlas.` };
+  if (p.protegida) return { texto: `No borro la carpeta «${limpiar(p.protegida)}»: la uso yo para ordenar tus cosas. Puedo borrar lo que hay dentro: dime una subcarpeta o «borra los archivos de ${limpiar(p.protegida)}».` };
+  if (p.demasiados) return { texto: `Eso son ${p.demasiados} archivos sueltos y como mucho borro 50 de una vez. Borra la carpeta entera o hazlo desde Drive.` };
+  if (p.vacia) return { texto: `No tengo archivos registrados en «${limpiar(p.vacia)}».` };
+  const objetivos = Array.isArray(p.objetivos) ? p.objetivos : [];
+  if (objetivos.length === 0) return { texto: 'No encuentro esos archivos (puede que ya estén borrados). Escribe «qué archivos tengo» para verlos.' };
+  const lineas = [];
+  for (const o of objetivos) {
+    if (o.tipo === 'carpeta') {
+      lineas.push(`📁 ${limpiar(o.nombre)} (la carpeta entera)`);
+      for (const r of o.subcarpetas ?? []) lineas.push(`   📁 ${limpiar(r)}`);
+      for (const r of o.archivos ?? []) lineas.push(`   • ${limpiar(r)}`);
+    } else lineas.push(`• ${limpiar(o.nombre)}`);
+  }
+  const conCarpeta = objetivos.some((o) => o.tipo === 'carpeta');
+  const texto = [
+    'Voy a mandar a la papelera de Drive:',
+    ...lineasConTope(lineas),
+    conCarpeta ? 'Con la carpeta va todo lo que tenga dentro, también lo que subieras a mano (eso no lo tengo registrado).' : '',
+    TEXTO_RECUPERAR,
+    objetivos.length === 1 && !conCarpeta ? '¿Lo mando a la papelera?' : '¿Lo mando todo a la papelera?',
+  ].filter(Boolean).join('\n');
+  return { texto, papelera: objetivos.map((o) => ({ tipo: o.tipo, id: o.id, nombre: o.nombre })) };
+}
+function motivoDrive(r) {
+  if (!r) return 'no hubo respuesta de Drive';
+  if (r.error) return `error de Drive (${textoError(r.error)})`;
+  if (r.statusCode === 404) return 'ya no existe en Drive';
+  if (r.statusCode === 403) return 'Drive no me deja (sin permiso)';
+  return `error de Drive (HTTP ${r.statusCode})`;
+}
+// revisados: la salida de «Revisar Drive»; mandados: la de «Mandar a la papelera» (mismo orden); marcado: la de «Marcar borrado»
+function textoPapelera({ revisados, mandados, marcado }) {
+  const primero = revisados[0] ?? {};
+  if (primero.error) return { texto: 'No he podido leer tus carpetas de Drive, así que no he borrado nada. Vuelve a pedírmelo en un rato.', error: primero.error, fallo: true };
+  const hechos = [];
+  const fallidos = [];
+  let fallo = false; // un 403 o un 404 son una respuesta de Drive; sin respuesta o un 5xx, un fallo del flujo
+  revisados.forEach((it, i) => {
+    if (!it.papelera) return;
+    const r = mandados[i];
+    const nombre = `${it.papelera.tipo === 'carpeta' ? '📁 ' : ''}${limpiar(it.papelera.nombre)}`;
+    if (r && r.statusCode >= 200 && r.statusCode < 300 && !r.error) hechos.push(nombre);
+    else {
+      fallidos.push(`• ${nombre}: ${motivoDrive(r)}`);
+      if (!r || r.error || !(r.statusCode >= 400 && r.statusCode < 500)) fallo = true;
+    }
+  });
+  const rechazados = (Array.isArray(primero.rechazados) ? primero.rechazados : []).map((x) => `• ${limpiar(x.nombre)}: ${limpiar(x.motivo)}`);
+  const no = [...fallidos, ...rechazados];
+  const bloques = [];
+  if (hechos.length > 0) bloques.push(['🗑️ En la papelera de Drive:', ...lineasConTope(hechos.map((h) => `• ${h}`)), TEXTO_RECUPERAR].join('\n'));
+  if (no.length > 0) bloques.push([hechos.length > 0 ? 'Esto no he podido mandarlo:' : 'No he borrado nada:', ...lineasConTope(no)].join('\n'));
+  if (bloques.length === 0) bloques.push('No había nada que borrar.');
+  let error = null;
+  if (fallidos.length > 0) error = `No se pudo mandar a la papelera: ${fallidos.join(' | ')}`;
+  else if (hechos.length > 0 && (!marcado || marcado.error)) {
+    error = `Mandado a la papelera, pero no se pudo anotar en la base de datos (Vigilar Drive lo avisará como borrado a mano): ${marcado?.error ? textoError(marcado.error) : 'sin respuesta'}`;
+    fallo = true;
+  }
+  return { texto: bloques.join('\n\n'), error, fallo };
+}
+
 // --- Ver los archivos (intención "ver_archivos") ---
 // Todos los archivos, de cualquier estado, agrupados por la carpeta donde están, con su enlace de Drive. Los filtros (carpeta,
 // tipo, solo pendientes) se aplican aquí, sin patrones de búsqueda con datos del modelo. La carpeta de un archivo es la que pidió
@@ -369,6 +446,16 @@ function textoHoraMovida(filas, ahora) {
 // Cambio de tipo (alarma, cita o tarea): se confirma con lo que devolvió la base de datos y solo si de verdad quedó así. Si una fila no tiene
 // la forma que se pidió, se dice (antes la confirmación era la frase del modelo y a veces decía «hecho» sin haber cambiado nada).
 const ARTICULO_TIPO = { alarma: 'una alarma', cita: 'una cita', tarea: 'una tarea' };
+// Un dato duradero que se guardó en la memoria junto a otra cosa: se dice, con lo que de verdad se guarda
+function textoRecuerdo(meta) {
+  const m = meta.memoria_nueva;
+  if (!m || typeof m.termino !== 'string' || typeof m.significado !== 'string') return '';
+  if (typeof meta.nombre_usuario === 'string') return `A partir de ahora te llamaré ${limpiar(meta.nombre_usuario)}.`;
+  return `📌 Lo recordaré: ${limpiar(m.termino)}: ${limpiar(m.significado)}.`;
+}
+const textoLlena = (meta) =>
+  typeof meta.memoria_llena === 'string' ? `Mi memoria está llena (50 datos) y no he guardado «${limpiar(meta.memoria_llena)}». Mira /memory y olvida alguno con /forget.` : '';
+
 function textoConversion(a, filas, ahora) {
   const lineas = [];
   const fallidas = [];
@@ -453,19 +540,28 @@ function partir(bloques, limite = LIMITE_MENSAJE) {
   return mensajes;
 }
 
-function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = '', archivosPendientes = [], proyectos = [], mensaje = '' }) {
+function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = '', archivosPendientes = [], proyectos = [], mensaje = '', drive = {} }) {
   const MENSAJE_FALLO = textoFallo(mensaje); // sombrea al de arriba: dice qué mensaje falló
   const erroresEscritura = escrituras.map((e) => e?.error).filter(Boolean).map(textoError);
   const filasEscritas = escrituras.filter((e) => e && typeof e.id === 'string');
   const avisos = [...(meta.avisos ?? [])];
   let error = meta.error ?? null;
+  // fallo_flujo: solo lo que de verdad ha fallado (el modelo no respondió, Supabase o Drive dieron error). Es lo que hace saltar el aviso de
+  // fallos en el flujo de WhatsApp. «No te he entendido» o «no he encontrado nada que cambiar» se anotan (error) pero no son un fallo.
+  let falloFlujo = false;
   let mensajes;
   let envios = []; // archivos que el flujo de WhatsApp debe mandar después del texto (ver_archivos con enviar)
+  let preguntaDrive = null; // la confirmación de borrar en Drive: se guarda como pregunta abierta (anotacion)
 
   if (!meta.ok) {
-    mensajes = [MENSAJE_FALLO];
+    if (meta.no_entendido) mensajes = [TEXTO_NO_ENTENDIDO];
+    else {
+      falloFlujo = true;
+      mensajes = [MENSAJE_FALLO];
+    }
   } else if (erroresEscritura.length) {
     error = erroresEscritura[0];
+    falloFlujo = true;
     mensajes = [MENSAJE_FALLO];
   } else if (Array.isArray(meta.mensajes_fijos) && meta.mensajes_fijos.length > 0) {
     // Ayuda y comandos (/help, /manual…): textos fijos, cada uno ya cabe en un mensaje de WhatsApp
@@ -474,6 +570,7 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     const erroresLectura = lecturas.map((e) => e?.error).filter(Boolean).map(textoError);
     if (erroresLectura.length) {
       error = `Error al leer la consulta: ${erroresLectura[0]}`;
+      falloFlujo = true;
       mensajes = [MENSAJE_FALLO];
     } else {
       const filas = lecturas.filter((r) => r && typeof r.tipo === 'string');
@@ -488,14 +585,37 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     const arbol = arbolDeCarpetas({ niveles, raizId, filas: lecturas.filter((r) => r && !r.error) });
     if (arbol.error) {
       error = arbol.error;
+      falloFlujo = true;
       mensajes = ['No he podido leer tus carpetas de Drive.'];
     } else {
       mensajes = partir([arbol.texto]);
+    }
+  } else if (meta.intencion === 'borrar_drive' && Array.isArray(meta.papelera)) {
+    const r = textoPapelera({ revisados: drive.revisados ?? [], mandados: drive.mandados ?? [], marcado: drive.marcado ?? null });
+    mensajes = [r.texto];
+    if (r.error) error = r.error;
+    if (r.fallo) falloFlujo = true;
+  } else if (meta.intencion === 'borrar_drive' && meta.borrar_drive) {
+    const revisado = (drive.revisados ?? [])[0] ?? {};
+    const r = revisado.error ? { texto: 'No he podido leer tus carpetas de Drive.', error: revisado.error, fallo: true } : textoPropuestaDrive(revisado.propuesta);
+    mensajes = [r.texto];
+    if (r.error) error = r.error;
+    if (r.fallo) falloFlujo = true;
+    if (r.papelera) {
+      preguntaDrive = {
+        pregunta: r.texto,
+        pregunta_pendiente: true,
+        hilo: [
+          { rol: 'user', texto: mensaje || '(borrar en Drive)' },
+          { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', motivo: 'confirmar_drive', origen: 'codigo', papelera: r.papelera, pregunta: r.texto }) },
+        ],
+      };
     }
   } else if (meta.intencion === 'ver_archivos') {
     const erroresLectura = lecturas.map((e) => e?.error).filter(Boolean).map(textoError);
     if (erroresLectura.length) {
       error = `Error al leer los archivos: ${erroresLectura[0]}`;
+      falloFlujo = true;
       mensajes = [MENSAJE_FALLO];
     } else {
       if (meta.consulta_archivos?.enviar === true) {
@@ -506,6 +626,10 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
         mensajes = partir(formatearArchivos(lecturas, meta.consulta_archivos));
       }
     }
+  } else if (meta.intencion === 'olvidar_memoria') {
+    // Lo que de verdad se borró (olvidar_memoria devuelve el dato); si ya no estaba, se dice
+    const borrados = escrituras.filter((e) => e && e.borrado === true && typeof e.termino === 'string');
+    mensajes = [borrados.length > 0 ? `🗑️ Olvidado:\n${borrados.map((e) => `• ${limpiar(e.termino)}: ${limpiar(e.significado)}`).join('\n')}` : 'Eso ya no estaba en mi memoria. Escribe /memory para ver lo que recuerdo.'];
   } else if (meta.respuesta_fija) {
     // Planificar ya decidió la respuesta y no escribió nada (nada que cancelar, un proyecto que ya existe…): no es un fallo
     mensajes = [meta.respuesta_usuario];
@@ -513,8 +637,13 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     mensajes = partir([textoProyectos(proyectos)]);
   } else if (meta.intencion === 'proyecto') {
     const p = meta.proyecto ?? {};
-    if (filasEscritas.length === 0) {
-      error = 'No se pudo crear ni cerrar el proyecto';
+    if (filasEscritas.length === 0 && p.accion === 'cerrar') {
+      // Cerrar uno que no existe (o ya cerrado) no es un fallo: no había nada que cerrar
+      error = 'No se cerró ningún proyecto';
+      mensajes = [`No encuentro ningún proyecto abierto que se llame «${limpiar(p.nombre)}». Escribe /projects para ver los que tienes.`];
+    } else if (filasEscritas.length === 0) {
+      error = 'No se pudo crear el proyecto';
+      falloFlujo = true;
       mensajes = [MENSAJE_FALLO];
     } else if (p.accion === 'crear') {
       mensajes = [`Proyecto «${limpiar(p.nombre)}» creado. Para añadirle cosas: «para el proyecto ${limpiar(p.nombre)}: …».`];
@@ -526,6 +655,7 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     const rutas = Array.isArray(meta.carpetas_pedidas) ? meta.carpetas_pedidas : [];
     if (rutas.length === 0 || filasEscritas.length === 0) {
       error = 'No se registró ninguna carpeta pedida';
+      falloFlujo = true;
       mensajes = [MENSAJE_FALLO];
     } else {
       mensajes = [textoCarpetasPedidas(rutas)];
@@ -540,14 +670,17 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
       mensajes = [`No he podido dejar ${c.fallidas.map((t) => `«${t}»`).join(', ')} como ${meta.conversion}. Díselo otra vez con la hora, por ejemplo «ponla como ${meta.conversion} mañana a las 8».`];
     } else mensajes = [c.texto];
   } else if (meta.intencion === 'aclarar') {
-    mensajes = [meta.pregunta];
+    mensajes = [[textoRecuerdo(meta), textoLlena(meta), meta.pregunta].filter(Boolean).join('\n')];
   } else if (meta.intencion === 'cancelar' || meta.intencion === 'completar') {
     mensajes = [textoSeleccion(meta.intencion, filasEscritas)];
   } else {
     // Un nombre nuevo para la secretaria lo confirma el código, con el nombre ya validado (no lo que diga el modelo)
+    // Igual con el nombre del usuario: cómo quiere que se le llame
     const confirmacion = meta.intencion === 'recordar' && typeof meta.nombre_nuevo === 'string'
       ? `Perfecto: a partir de ahora me llamo ${limpiar(meta.nombre_nuevo)}. ${meta.tras_pregunta_nombre ? 'Ya puedes mandarme lo que quieras. Escribe /help para ver qué puedo hacer.' : 'Cuando quieras otro nombre, dímelo.'}`
-      : (meta.respuesta_usuario ?? '').trim() || 'Hecho.';
+      : meta.intencion === 'recordar' && typeof meta.nombre_usuario === 'string'
+        ? `De acuerdo: a partir de ahora te llamaré ${limpiar(meta.nombre_usuario)}.`
+        : (meta.respuesta_usuario ?? '').trim() || 'Hecho.';
     // Al guardar eventos, el horario sale de los datos guardados (no de lo que diga el modelo); al cambiar la hora de una alarma o una
     // cita, también (sustituye a la frase del modelo)
     const movida = meta.intencion === 'corregir' && meta.hora_movida ? textoHoraMovida(filasEscritas, ahora) : '';
@@ -560,13 +693,17 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     const nuevos = Array.isArray(meta.proyectos_nuevos) && meta.proyectos_nuevos.length > 0
       ? `${meta.proyectos_nuevos.length === 1 ? 'Proyecto nuevo' : 'Proyectos nuevos'}: ${meta.proyectos_nuevos.map((p) => `«${limpiar(p)}»`).join(', ')}.`
       : '';
-    mensajes = [(alarmas.length > 0 ? [recordatorios, horario, nota, nuevos] : [movida || confirmacion, horario, recordatorios, nuevos]).filter(Boolean).join('\n')];
+    const recuerdo = meta.intencion === 'recordar' ? '' : [textoRecuerdo(meta), textoLlena(meta)].filter(Boolean).join('\n');
+    mensajes = [(alarmas.length > 0 ? [recordatorios, horario, nota, nuevos, recuerdo] : [movida || confirmacion, horario, recordatorios, nuevos, recuerdo]).filter(Boolean).join('\n')];
   }
 
   // Constancia en la base de datos: si Planificar ya dejó el motivo en el mensaje (meta.ok falso) no hace falta repetirlo; en
   // cambio, un fallo POSTERIOR (escritura o lectura) solo lo conoce este nodo y, sin esto, el mensaje quedaría como procesado
   // y sin error. Una escritura fallida lo marca además como no procesado.
-  const anotacion = meta.ok && error !== null ? { error: String(error).slice(0, MAX_ERROR_GUARDADO), ...(erroresEscritura.length > 0 ? { procesado: false } : {}) } : null;
+  // La confirmación de borrar en Drive se guarda aquí (Planificar no sabía qué había en las carpetas): la pregunta queda abierta con su lista.
+  const anotacion = meta.ok && error !== null
+    ? { error: String(error).slice(0, MAX_ERROR_GUARDADO), ...(erroresEscritura.length > 0 ? { procesado: false } : {}) }
+    : preguntaDrive;
 
   return {
     ok: error === null,
@@ -575,6 +712,7 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     mensajes,
     avisos,
     error,
+    fallo_flujo: falloFlujo,
     errores_escritura: erroresEscritura,
     anotacion,
     envios_archivos: envios,
@@ -589,6 +727,14 @@ const nivel = (nombre) => {
     return $(nombre).first().json;
   } catch (e) {
     return null;
+  }
+};
+// Todos los items de un nodo, o [] si no se ejecutó en este mensaje
+const todos = (nombre) => {
+  try {
+    return $(nombre).all().map((i) => i.json);
+  } catch (e) {
+    return [];
   }
 };
 // Archivos sin clasificar (los lee el nodo "Leer archivos", que siempre corre antes que el modelo)
@@ -618,7 +764,9 @@ const salida = resolver({
   archivosPendientes,
   proyectos: construccion.proyectos ?? [],
   escrituras: $('Escribir en Supabase').all().map((i) => i.json),
-  lecturas: $input.all().map((i) => i.json),
+  // Con la rama de carpetas, lo que llega es lo de Drive (Revisar Drive, Marcar borrado): los archivos contados se leen de su nodo
+  lecturas: meta.carpetas ? todos('Contar archivos') : $input.all().map((i) => i.json),
+  drive: { revisados: todos('Revisar Drive'), mandados: todos('Mandar a la papelera'), marcado: nivel('Marcar borrado') },
   ahora: meta.ahora ? new Date(meta.ahora) : new Date(),
   niveles: meta.carpetas ? ['Listar nivel 1', 'Listar nivel 2', 'Listar nivel 3'].map(nivel) : [],
   raizId: meta.carpetas ? $('Configuración').first().json.config.carpeta_raiz_id : '',

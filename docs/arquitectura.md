@@ -14,8 +14,10 @@ Cómo está hecha la secretaria y por qué. Para instalarla, el [manual](manual-
 4. **Lo que no necesita al modelo no lo usa**: los comandos (`/help`, `/today`…), las frases fijas («qué tengo hoy», «cómo te llamas»,
    «qué proyectos / alarmas / citas / tareas / pensamientos / listas tengo») y los aplazamientos simples («10 minutos más» respondiendo
    a un aviso) se contestan sin llamar a Gemini: más rápido y sin coste.
-5. **Nada se borra a ciegas**: cancelar archiva (recuperable); en Drive la secretaria nunca borra nada (solo el flujo manual «Reiniciar
-   todo» manda a la papelera); los eventos se borran de Calendar solo si su elemento está archivado.
+5. **Nada se borra a ciegas**: cancelar archiva (recuperable); en Drive solo se borra lo que el usuario confirma tras ver la lista, y
+   siempre a la papelera (recuperable unos 30 días); los eventos se borran de Calendar solo si su elemento está archivado.
+6. **No adivinar**: si la respuesta del modelo no encaja o su confianza es baja (< 0,7), el código pregunta o contesta «no te he
+   entendido» y no hace nada. Eso no es un fallo: el aviso de fallos queda para cuando falla de verdad el flujo, Supabase o Google.
 
 ## Flujos de n8n
 
@@ -36,7 +38,7 @@ nombre y «Aviso de fallos» como *Error workflow* (`herramientas/comun/importac
 | Recordatorio de archivos | 19:00 | Archivos que llevan más de un día sin clasificar. |
 | Limpieza de eventos | 3:00 | Archiva los eventos que acabaron hace más de 7 días (y así salen de Calendar). |
 | Latido | Cada 5 minutos | Detecta atascos (eventos sin sincronizar, mensajes sin procesar, reloj desfasado…) y avisa al monitor externo y por WhatsApp. |
-| Aviso de fallos | *Error workflow* | Un WhatsApp corto cuando otro flujo falla, como mucho uno por flujo cada hora y diez al día. |
+| Aviso de fallos | *Error workflow* | Un WhatsApp corto cuando otro flujo falla de verdad (no cuando no entiende un mensaje), como mucho uno por flujo cada hora y diez al día. |
 | Reiniciar todo | Manual | Vacía Calendar y Drive (a la papelera), con ensayo previo. No se publica. |
 
 ## Base de datos (Supabase / Postgres)
@@ -49,7 +51,7 @@ ni `authenticated`: solo la clave secreta (`service_role`) que usa n8n puede lee
 | `mensajes` | Todo lo que llega, tal cual, con su estado (procesado, error, en cola) y la pregunta abierta si la hay. |
 | `items` | Lo clasificado: eventos, tareas, listas y notas, con su proyecto si lo tienen. |
 | `archivos` | Archivos recibidos: id de Drive, carpeta pedida, a qué elemento pertenecen. |
-| `memoria` | Términos que el usuario enseña («BBVA es mi banco») y el nombre de la secretaria. Solo se escribe si el usuario lo pide. |
+| `memoria` | Términos que el usuario enseña («BBVA es mi banco»), datos duraderos que cuenta («trabajo los viernes por la mañana»), cómo quiere que se le llame y el nombre de la secretaria. Hasta 50; `/memory` la enseña y `/forget` borra un dato. |
 | `proyectos`, `carpetas_pedidas` | Proyectos (activo/cerrado) y carpetas que se piden crear. |
 | `drive_arbol`, `registro_drive`, `vigilantes_estado`, `registro_calendar` | Estado y registro de los vigilantes. |
 | `avisos_enviados` | Qué alarmas y citas iban en cada aviso enviado (para entender las respuestas a un aviso). |
@@ -99,7 +101,16 @@ hace nada (llegó otro después, que los juntará). El turno caduca solo si una 
   confirma **siempre**, enseñando la lista de lo que se quitaría; con esa pregunta abierta, el nombre de una sección es esa sección
   (no su listado) y un «sí» corto quita exactamente lo que se enseñó. Quitar una sola cosa por su nombre no pregunta; marcar como
   hecho pregunta a partir de cuatro.
-- **Memoria:** el modelo nunca deduce y guarda un significado por su cuenta; solo con confirmación del usuario.
+- **Memoria:** solo se guarda lo que el usuario enseña o cuenta como estable sobre sí mismo (horarios fijos, quién es quién); nunca lo
+  que el modelo deduce, ni una tarea o una cita de un día concreto. Un dato sobre lo mismo sustituye al anterior. `/memory` enseña la
+  lista numerada y `/forget N` borra ese dato; «olvida lo del trabajo» enseña los que encajan y pregunta antes. El nombre de la
+  secretaria no se olvida, se cambia.
+- **Charla:** a un saludo o un comentario contesta el modelo en una o dos frases, pero el código descarta cualquier respuesta que diga
+  haber guardado o cambiado algo: con charla no se escribe nada.
+- **Borrar en Drive:** el modelo solo dice qué carpeta o qué archivos; el código busca la carpeta en el árbol (si el nombre está en dos
+  sitios, pregunta cuál), enseña todo lo que se borraría y guarda en la pregunta los ids exactos. Con el «sí», vuelve a comprobar cada id
+  contra el árbol actual (que cuelgue de `Secretaria/` y no sea `Entrada` ni `Notas`, que no se borran enteras), lo manda a la papelera
+  y lo anota con `marcar_borrado_drive()` para que «Vigilar Drive» no lo avise como un borrado a mano.
 
 ## Seguridad
 
@@ -122,6 +133,8 @@ hace nada (llegó otro después, que los juntará). El turno caduca solo si una 
 - **A qué pregunta contesta un mensaje:** se decide por palabras; una respuesta rara con varias preguntas abiertas puede asignarse a
   otra. El límite de archivos cuenta por notificación de Meta, no por ráfaga.
 - **Vigilantes:** hasta 5 minutos de retraso; Drive se vigila hasta 4 niveles y Calendar no ve eventos periódicos ni de todo el día.
+- **Charla y datos duraderos:** los decide el modelo; puede guardar como dato algo que no lo era, o contestar como charla a algo que
+  pedía otra cosa. `/memory` permite revisarlo y `/forget`, corregirlo.
 - **Saldo de Gemini:** no hay API para consultarlo; sin saldo, Gemini devuelve 402 y llega el aviso de fallos.
 - **Copia de Supabase:** no es automática; los datos que solo viven ahí (mensajes, tareas, notas, memoria) no tienen copia salvo que la
   hagas tú (parte 15 del manual). Archivos y citas están en Drive y Calendar.

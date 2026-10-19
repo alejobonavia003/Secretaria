@@ -635,6 +635,9 @@ async function main() {
     await lanza('el flujo principal con un fallo de ejecución (item con error) también', comprobar({ 'Procesar mensaje': [{ error: { message: 'Workflow could not be started' } }] }), 'Workflow could not be started');
     await lanza('si fallan las dos cosas, las cuenta las dos', comprobar({ 'Procesar mensaje': [{ ok: false, error: 'e2' }] }, [{ envio_error: 'e1' }]), 'no se enviaron (e1); el flujo principal');
     await lanza('el mensaje de error lleva el nombre del flujo (lo usa el aviso)', comprobar(bien, [{ envio_error: 'x' }]), 'Secretaria · WhatsApp:');
+    afirmar('«no te he entendido» (ok = false, error anotado, fallo_flujo = false) no hace saltar el aviso de fallos', (await comprobar({ 'Procesar mensaje': [{ ok: false, error: 'Respuesta no válida: x', fallo_flujo: false }] })).length === 0);
+    afirmar('«no he encontrado nada que cambiar» tampoco', (await comprobar({ 'Procesar mensaje': [{ ok: false, error: 'La actualización no afectó a ningún item', fallo_flujo: false }] })).length === 0);
+    await lanza('un fallo de verdad (fallo_flujo = true) sí', comprobar({ 'Procesar mensaje': [{ ok: false, error: 'Error del modelo: HTTP 503', fallo_flujo: true }] }), 'Error del modelo: HTTP 503');
     const largo = await comprobar({ 'Procesar mensaje': [{ ok: true }] });
     afirmar('un ok = true sin más no es un fallo', largo.length === 0);
     try {

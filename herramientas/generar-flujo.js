@@ -154,7 +154,7 @@ function construirFlujoBase() {
       5,
       'Leer memoria',
       x('Leer memoria'),
-      { method: 'GET', url: `={{ ${CFG}.supabase_url }}/rest/v1/memoria?select=termino,significado&order=termino.asc`, ...supabase },
+      { method: 'GET', url: `={{ ${CFG}.supabase_url }}/rest/v1/memoria?select=id,termino,significado&order=termino.asc`, ...supabase },
       { alwaysOutputData: true },
     ),
     // Todos los items pendientes (tope de 200), para que el modelo pueda referirse a cualquiera al corregir o completar
@@ -317,7 +317,59 @@ function construirFlujoBase() {
     nodoHttp(17, 'Listar nivel 1', x('¿Listar carpetas?') + PASO, { method: 'GET', url: urlNivel(`[${CFG}.carpeta_raiz_id]`), ...driveAuth, options: RESPUESTA_COMPLETA }, { onError: 'continueRegularOutput', executeOnce: true, position: [x('¿Listar carpetas?') + PASO, FILA_CARPETAS] }),
     nodoHttp(18, 'Listar nivel 2', x('¿Listar carpetas?') + PASO * 2, { method: 'GET', url: urlNivel(idsDe('Listar nivel 1')), ...driveAuth, options: RESPUESTA_COMPLETA }, { onError: 'continueRegularOutput', executeOnce: true, position: [x('¿Listar carpetas?') + PASO * 2, FILA_CARPETAS] }),
     nodoHttp(19, 'Listar nivel 3', x('¿Listar carpetas?') + PASO * 3, { method: 'GET', url: urlNivel(idsDe('Listar nivel 2')), ...driveAuth, options: RESPUESTA_COMPLETA }, { onError: 'continueRegularOutput', executeOnce: true, position: [x('¿Listar carpetas?') + PASO * 3, FILA_CARPETAS] }),
-    nodoHttp(20, 'Contar archivos', x('¿Listar carpetas?') + PASO * 4, { method: 'GET', url: `={{ ${CFG}.supabase_url }}/rest/v1/archivos?select=carpeta_id,estado&eliminado_at=is.null&limit=5000`, ...supabase }, { executeOnce: true, alwaysOutputData: true, onError: 'continueRegularOutput', position: [x('¿Listar carpetas?') + PASO * 4, FILA_CARPETAS] }),
+    nodoHttp(20, 'Contar archivos', x('¿Listar carpetas?') + PASO * 4, { method: 'GET', url: `={{ ${CFG}.supabase_url }}/rest/v1/archivos?select=id,nombre,drive_file_id,carpeta_id,estado&eliminado_at=is.null&limit=5000`, ...supabase }, { executeOnce: true, alwaysOutputData: true, onError: 'continueRegularOutput', position: [x('¿Listar carpetas?') + PASO * 4, FILA_CARPETAS] }),
+    // Borrar en Drive. «Revisar Drive» propone qué se borraría (al pedirlo) o comprueba cada id con el árbol de ahora (al
+    // confirmarlo); solo con lo confirmado y comprobado sigue la rama de la papelera. Con la lista de carpetas, pasa de largo.
+    { ...nodoCode(33, 'Revisar Drive', 0, 'revisar-drive.js'), position: [x('¿Listar carpetas?') + PASO * 5, FILA_CARPETAS] },
+    {
+      parameters: {
+        conditions: {
+          options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+          conditions: [
+            { id: 'a1b2c3d4-0034-4000-8000-000000000001', leftValue: "={{ $json.papelera ? 'si' : 'no' }}", rightValue: 'si', operator: { type: 'string', operation: 'equals' } },
+          ],
+          combinator: 'and',
+        },
+        options: {},
+      },
+      id: id(34),
+      name: '¿Mandar a la papelera?',
+      type: 'n8n-nodes-base.if',
+      typeVersion: 2.2,
+      position: [x('¿Listar carpetas?') + PASO * 6, FILA_CARPETAS],
+    },
+    // Una petición por cosa: a la papelera (se recupera unos 30 días), nunca borrado definitivo. Como en «Reiniciar todo».
+    nodoHttp(
+      35,
+      'Mandar a la papelera',
+      0,
+      {
+        method: 'PATCH',
+        url: "={{ 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent($json.papelera.id) + '?supportsAllDrives=true' }}",
+        ...driveAuth,
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: '={{ JSON.stringify({ trashed: true }) }}',
+        options: RESPUESTA_COMPLETA,
+      },
+      { onError: 'continueRegularOutput', position: [x('¿Listar carpetas?') + PASO * 7, FILA_CARPETAS - 160] },
+    ),
+    // Lo mandado (y lo que cuelga de las carpetas) se anota como eliminado: foto de Vigilar Drive, archivos y carpetas pedidas (función marcar_borrado_drive)
+    nodoHttp(
+      36,
+      'Marcar borrado',
+      0,
+      {
+        method: 'POST',
+        url: `={{ ${CFG}.supabase_url }}/rest/v1/rpc/marcar_borrado_drive`,
+        ...supabase,
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody:
+          "={{ JSON.stringify({ p_ids: $('Revisar Drive').all().map((it, i) => ({ p: it.json.papelera, r: $('Mandar a la papelera').all()[i]?.json })).filter((x) => x.p && x.r && x.r.statusCode >= 200 && x.r.statusCode < 300).flatMap((x) => [x.p.id, ...(x.p.descendientes || [])]) }) }}",
+      },
+      { executeOnce: true, alwaysOutputData: true, onError: 'continueRegularOutput', position: [x('¿Listar carpetas?') + PASO * 8, FILA_CARPETAS - 160] },
+    ),
     nodoCode(10, 'Resultado', x('Resultado'), 'resultado.js'),
     // Constancia del fallo (bloque A de la fase de cierre): si Resultado detectó un error DESPUÉS de Planificar (una escritura o
     // una lectura que falló), lo anota en mensajes.error; sin esto el mensaje quedaba como procesado y sin motivo. Un fallo de
@@ -360,16 +412,16 @@ function construirFlujoBase() {
 
     // Notas de sección: cada una cubre las columnas de sus nodos
     nota(101, x('Configuración') - 40, PASO * 2, 4, '## ① Entrada y configuración\n**Configuración**: el único sitio con valores a mano (modelo, URL de Supabase, espera de archivo).\n**Entrada**: contrato con el núcleo (`mensaje`, `fecha_actual`, `wa_message_id`, `tipo_entrada`). Lee la llamada del flujo de WhatsApp (nodo **Al ser llamado**) o, en una prueba manual, la constante `MENSAJE`.'),
-    nota(102, x('Guardar mensaje') - 40, PASO * 3, 5, '## ② Contexto\nEl mensaje se guarda **antes** de nada (si viene de WhatsApp ya estaba en la cola: se completa su fila): si algo falla después, no se pierde.\nLuego se leen la memoria (términos que el usuario ha enseñado), los archivos recibidos (a1, a2… y, si el usuario respondió a una foto o a su confirmación, cuál es), todos los items pendientes (el modelo se refiere a ellos con `i1`, `i2`… al corregir o completar) y la **pregunta pendiente** reciente, si la hay: su hilo se devuelve al modelo para que entienda la respuesta.'),
-    nota(103, x('Construir petición') - 40, PASO * 2, 6, '## ③ Modelo\nPrompt de `prompts/clasificador.md`, temperatura 0, salida JSON.\nLos comandos y frases fijas (/help, «cómo te llamas», «qué tengo hoy») se saltan el modelo (**¿Hace falta el modelo?**).\n3 intentos con 5 s de espera. Un error no detiene el flujo: llega a Planificar como `{ error }`.'),
-    nota(104, x('Planificar') - 40, PASO * 2, 3, '## ④ Decisión y escritura\n**Planificar** valida (tolerante) y decide qué escribir. Las referencias que cita el modelo deben ser de items pendientes.\n**Escribir en Supabase** ejecuta las escrituras en orden.\nSi algo falla, el mensaje queda con `procesado = false` y el motivo en `error`.'),
-    nota(105, x('Leer consulta') - 40, PASO * 2, 7, '## ⑤ Respuesta\n**Leer consulta** solo trae datos si la intención es consultar.\n**¿Listar carpetas?**: solo con la intención carpetas lee el árbol de Drive (3 niveles) y cuenta los archivos. **Resultado** redacta la lista (solo lo pendiente), el árbol de carpetas o un mensaje honesto si algo falló. Una entrada de `mensajes` por mensaje de WhatsApp.'),
+    nota(102, x('Guardar mensaje') - 40, PASO * 3, 5, '## ② Contexto\nEl mensaje se guarda **antes** de nada (si viene de WhatsApp ya estaba en la cola: se completa su fila): si algo falla después, no se pierde.\nLuego se leen la memoria (términos y datos que el usuario ha contado; /memory la enseña), los archivos recibidos (a1, a2… y, si el usuario respondió a una foto o a su confirmación, cuál es), todos los items pendientes (el modelo se refiere a ellos con `i1`, `i2`… al corregir o completar) y la **pregunta pendiente** reciente, si la hay: su hilo se devuelve al modelo para que entienda la respuesta.'),
+    nota(103, x('Construir petición') - 40, PASO * 2, 6, '## ③ Modelo\nPrompt de `prompts/clasificador.md`, temperatura 0, salida JSON.\nLos comandos y frases fijas (/help, /memory, «cómo te llamas», «qué tengo hoy») y el «sí»/«no» de las confirmaciones se saltan el modelo (**¿Hace falta el modelo?**).\n3 intentos con 5 s de espera. Un error no detiene el flujo: llega a Planificar como `{ error }`.'),
+    nota(104, x('Planificar') - 40, PASO * 2, 3, '## ④ Decisión y escritura\n**Planificar** valida (tolerante) y decide qué escribir. Las referencias que cita el modelo deben ser de items pendientes.\n**Escribir en Supabase** ejecuta las escrituras en orden.\nSi el modelo no responde o falla una escritura, el mensaje queda con `procesado = false` y el motivo en `error`. Si su respuesta no encaja, queda procesado, con el motivo, y se contesta «no te he entendido». Con confianza < 0,7 no se guarda nada: se pregunta.'),
+    nota(105, x('Leer consulta') - 40, PASO * 2, 7, '## ⑤ Respuesta\n**Leer consulta** solo trae datos si la intención es consultar.\n**¿Listar carpetas?**: con la lista de carpetas o al borrar en Drive lee el árbol (3 niveles) y los archivos registrados. **Revisar Drive** propone qué se borraría o, tras el «sí», lo comprueba otra vez; solo eso va a **Mandar a la papelera** (recuperable ~30 días) y **Marcar borrado** lo anota. **Resultado** redacta la lista (solo lo pendiente), el árbol de carpetas o un mensaje honesto si algo falló. Una entrada de `mensajes` por mensaje de WhatsApp.'),
     nota(
       106,
       0,
       900,
       2,
-      '## Antes de ejecutar\n1. Elige la credencial en **Modelo** (Header Auth de Gemini) y en **Guardar mensaje**, **Leer memoria**, **Leer items pendientes**, **Leer pregunta pendiente**, **Leer archivos**, **Leer proyectos**, **Leer avisos**, **Escribir en Supabase**, **Leer consulta** y **Contar archivos** (Supabase API), y la de **Google Drive OAuth2** en **Listar nivel 1**, **Listar nivel 2** y **Listar nivel 3**.\n2. Identificadores: `SUPABASE_URL` y `DRIVE_CARPETA_RAIZ_ID` en el `.env` del servidor (no hace falta tocar **Configuración**). En **Entrada**, el `MENSAJE` de prueba.\n3. Requiere la base de datos instalada (`supabase/instalar.sql`). La cola de mensajes seguidos y el turno viven en el flujo de WhatsApp: este flujo no espera nunca.\n\nLas filas de prueba tienen `wa_message_id` que empieza por `manual-`.',
+      '## Antes de ejecutar\n1. Elige la credencial en **Modelo** (Header Auth de Gemini) y en **Guardar mensaje**, **Leer memoria**, **Leer items pendientes**, **Leer pregunta pendiente**, **Leer archivos**, **Leer proyectos**, **Leer avisos**, **Escribir en Supabase**, **Leer consulta**, **Contar archivos** y **Marcar borrado** (Supabase API), y la de **Google Drive OAuth2** en **Listar nivel 1**, **Listar nivel 2**, **Listar nivel 3** y **Mandar a la papelera**.\n2. Identificadores: `SUPABASE_URL` y `DRIVE_CARPETA_RAIZ_ID` en el `.env` del servidor (no hace falta tocar **Configuración**). En **Entrada**, el `MENSAJE` de prueba.\n3. Requiere la base de datos instalada (`supabase/instalar.sql`, o `supabase/actualizar-1.1.sql` si venías de la 1.0: sin ella, `Marcar borrado` falla y Vigilar Drive avisará lo borrado como si fuera a mano). La cola de mensajes seguidos y el turno viven en el flujo de WhatsApp: este flujo no espera nunca.\n\nLas filas de prueba tienen `wa_message_id` que empieza por `manual-`.',
       // debajo de «Al ser llamado» (y = 200), sin taparlo
       360,
       260,
@@ -389,7 +441,12 @@ function construirFlujoBase() {
   conexiones['Listar nivel 1'] = { main: [[a('Listar nivel 2')]] };
   conexiones['Listar nivel 2'] = { main: [[a('Listar nivel 3')]] };
   conexiones['Listar nivel 3'] = { main: [[a('Contar archivos')]] };
-  conexiones['Contar archivos'] = { main: [[a('Resultado')]] };
+  conexiones['Contar archivos'] = { main: [[a('Revisar Drive')]] };
+  // Borrar en Drive: solo lo confirmado y comprobado va a la papelera; lo demás, directo al resultado
+  conexiones['Revisar Drive'] = { main: [[a('¿Mandar a la papelera?')]] };
+  conexiones['¿Mandar a la papelera?'] = { main: [[a('Mandar a la papelera')], [a('Resultado')]] };
+  conexiones['Mandar a la papelera'] = { main: [[a('Marcar borrado')]] };
+  conexiones['Marcar borrado'] = { main: [[a('Resultado')]] };
   // Tras Resultado: anotar el fallo si lo hubo y entregar siempre la misma salida
   conexiones['Resultado'] = { main: [[a('¿Anotar fallo?')]] };
   conexiones['¿Anotar fallo?'] = { main: [[a('Anotar fallo')], [a('Entregar')]] };

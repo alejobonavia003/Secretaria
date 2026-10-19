@@ -10,12 +10,14 @@ if (!entrada.mensaje || !entrada.fecha_actual) {
   throw new Error('Construir petición: faltan mensaje o fecha_actual (Gemini rechaza un contenido vacío y no se gasta cuota)');
 }
 
-// "Leer memoria" devuelve un item vacío si la tabla no tiene filas: se descartan los que no son términos
-const memoria = $('Leer memoria')
+// "Leer memoria" devuelve un item vacío si la tabla no tiene filas: se descartan los que no son términos. El modelo ve término y
+// significado; "Planificar" recibe además el id (para /memory y /forget)
+const memoriaFilas = $('Leer memoria')
   .all()
   .map((i) => i.json)
   .filter((r) => r && typeof r.termino === 'string' && typeof r.significado === 'string')
-  .map(({ termino, significado }) => ({ termino, significado }));
+  .map(({ id, termino, significado }) => ({ id, termino, significado }));
+const memoria = memoriaFilas.map(({ termino, significado }) => ({ termino, significado }));
 
 const sinAcentos = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
 
@@ -220,6 +222,7 @@ return [
       pedir_nombre: pedirNombre,
       // El nombre actual (para /name y /about)
       nombre_secretaria: nombreSecretaria,
+      memoria_filas: memoriaFilas,
       espera_nombre: esperaNombre,
       // Sin llamada a Gemini: "Planificar" lo contesta con código
       saltar_modelo: saltarModelo,

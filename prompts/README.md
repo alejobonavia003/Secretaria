@@ -11,6 +11,11 @@ Se inserta en el flujo al generarlo (`npm run generar`): no se edita en el JSON 
 - Para cambiar el tipo de algo guardado, el modelo solo devuelve `correccion.convertir_a` (`alarma`, `cita` o `tarea`) y, si el usuario
   la dio, `correccion.cuando`: el código mueve las fechas. El código depende de esos campos, así que un prompt que no los produzca
   deja de convertir.
+- Charla, datos duraderos y el nombre del usuario: la intención `charla` contesta sin guardar nada (el código filtra cualquier
+  respuesta que diga haber hecho algo), y `memoria_nueva` puede acompañar a `guardar`, `charla` o `aclarar` cuando el mensaje cuenta
+  un dato estable del usuario.
+- Para borrar en Drive, el modelo devuelve `borrar_drive` con `{carpeta, archivos, solo_archivos}`: la confirmación y el borrado los
+  hace el código.
 - Los títulos se piden como titulares (2–6 palabras, máximo 40 caracteres): son lo único que sale en los listados.
 - Lo que no necesita interpretación (comandos, frases fijas, aplazamientos simples al responder a un aviso) no llega al modelo.
 

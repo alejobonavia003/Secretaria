@@ -562,6 +562,9 @@ sale en rojo, ábrela: el nodo rojo y su mensaje dicen qué pasa.
       `qué alarmas tengo` → solo las alarmas, con el título corto (responde en segundos: no pasa por el modelo).
 - [ ] `mañana coger la cartera` → pregunta si es alarma, cita o tarea.
 - [ ] `borra todo` → pregunta qué sección; contesta `tareas` → enseña la lista y pregunta; `no` → no borra nada.
+- [ ] `para que lo sepas: trabajo los viernes por la mañana` → lo guarda; `/memory` lo enseña numerado y `/forget 1` lo olvida.
+- [ ] `crea la carpeta Pruebas` y, cuando exista, `borra la carpeta Pruebas` → enseña lo que se borraría; `sí` → va a la papelera de
+      Drive (compruébalo en drive.google.com → Papelera).
 - [ ] Una **foto** → «Guardado en Entrada…» y aparece en `Secretaria/Entrada` de Drive. **Respóndele** (desliza el mensaje) con
       `guárdala en Fotos` → en 1–2 minutos pasa a `Secretaria/Fotos`.
 - [ ] Una **nota de voz** → primero «🎙️ Entendí: …» (una sola vez) y después la respuesta.
@@ -666,8 +669,10 @@ Consultas útiles en Supabase (SQL Editor, solo leen): [`supabase/consultas/`](.
   tranquilo (n8n, Tailscale y Funnel vuelven solos).
 - **Actualizar n8n:** la versión está fijada en `docker-compose.yml`. Haz antes una copia, lee los cambios incompatibles de la nueva
   versión, cambia la etiqueta y `docker compose up -d`.
-- **Actualizar el proyecto:** `git pull` en `/root/Secretaria`, `bash herramientas/servidor/importar-flujos.sh` y vuelve a publicar (11.5).
-  Si cambió `supabase/instalar.sql`, el propio cambio dirá qué ejecutar.
+- **Actualizar el proyecto a una versión nueva:** lee su entrada en [`CHANGELOG.md`](../CHANGELOG.md). En general: haz una copia
+  (15), ejecuta en Supabase el script `supabase/actualizar-X.Y.sql` de **cada** versión que te saltes, en orden (si lo hay), y después
+  `git pull` en `/root/Secretaria`, `bash herramientas/servidor/importar-flujos.sh` y vuelve a publicar los flujos (11.5). La base de
+  datos va **antes** que los flujos: un flujo nuevo con la base de datos antigua falla.
 - **Modelo de Gemini:** la constante `MODELO` de `herramientas/flujo/configuracion.js` y `MODELO_TRANSCRIPCION` de
   `herramientas/flujo-whatsapp/configuracion.js`; después `npm run generar` y reimportar.
 - **Versión de la API de Meta:** `GRAPH_VERSION` en los nodos `Configuración` (hoy `v26.0`). Revísala una vez al año.

@@ -32,7 +32,10 @@ const ecosFallidos = ecos.filter((r) => r && r.error);
 if (ecosFallidos.length > 0) problemas.push(`${ecosFallidos.length} de ${ecos.length} mensajes de «lo que he entendido» no se enviaron (${resumen(ecosFallidos[0].error)})`);
 
 const procesados = filas('Procesar mensaje');
-const malos = procesados.filter((r) => r && (r.error || r.ok === false));
+// Solo un fallo de verdad del flujo principal (fallo_flujo: el modelo no respondió, Supabase o Drive dieron error). «No te he entendido» o
+// «no he encontrado nada que cambiar» llevan un error anotado pero no lo son. Sin el campo (un flujo principal
+// anterior, o el nodo falló entero), como antes: cualquier error.
+const malos = procesados.filter((r) => r && ('fallo_flujo' in r ? r.fallo_flujo === true : r.error || r.ok === false));
 if (malos.length > 0) problemas.push(`el flujo principal no pudo procesar el mensaje (${resumen(malos[0].error ?? 'ok = false')})`);
 
 if (problemas.length > 0) throw new Error(`Secretaria · WhatsApp: ${problemas.join('; ')}`);
