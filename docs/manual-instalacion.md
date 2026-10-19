@@ -562,7 +562,10 @@ sale en rojo, ábrela: el nodo rojo y su mensaje dicen qué pasa.
       `qué alarmas tengo` → solo las alarmas, con el título corto (responde en segundos: no pasa por el modelo).
 - [ ] `mañana coger la cartera` → pregunta si es alarma, cita o tarea.
 - [ ] `borra todo` → pregunta qué sección; contesta `tareas` → enseña la lista y pregunta; `no` → no borra nada.
-- [ ] `para que lo sepas: trabajo los viernes por la mañana` → lo guarda; `/memory` lo enseña numerado y `/forget 1` lo olvida.
+- [ ] `para que lo sepas: Emma es mi hermana` → lo guarda; `/memory` lo enseña numerado y `/forget 1` lo olvida.
+- [ ] `trabajo los viernes de 16 a 20` → lo guarda en tu horario fijo (`/horario` lo enseña). Después, `médico el viernes a las 17`
+      → pregunta si lo apunta igualmente.
+- [ ] Manda seguidos un texto, una foto y otro texto → las tres respuestas llegan en ese orden, cada una citando su mensaje.
 - [ ] `crea la carpeta Pruebas` y, cuando exista, `borra la carpeta Pruebas` → enseña lo que se borraría; `sí` → va a la papelera de
       Drive (compruébalo en drive.google.com → Papelera).
 - [ ] Una **foto** → «Guardado en Entrada…» y aparece en `Secretaria/Entrada` de Drive. **Respóndele** (desliza el mensaje) con
@@ -660,6 +663,7 @@ Consultas útiles en Supabase (SQL Editor), en [`supabase/consultas/`](../supaba
 
 | Archivo | Qué hace |
 |---|---|
+| `ver-version.sql` | Solo lee: qué versión de la base de datos tienes instalada (úsala antes de actualizar). |
 | `ver-errores.sql` | Solo lee: los últimos mensajes, si se procesaron y el error si lo hubo. |
 | `ver-eventos.sql` | Solo lee: los eventos pendientes con su hora de Madrid. |
 | `ver-recordatorios.sql` | Solo lee: las alarmas y qué avisos han salido ya. |

@@ -1,7 +1,7 @@
 // Nodo "Revisar envíos de archivos": sale del bucle "Recorrer envíos" cuando ya se han mandado todos (salida "done", que trae la
-// respuesta de cada envío). Si alguno falló (un 4xx de Meta, por ejemplo) hace fallar la ejecución para que quede en rojo y el flujo
-// "Aviso de fallos" pueda avisar: "Enviar archivo" no corta el flujo ante un error, así que sin esto pasaría desapercibido.
-// Si todo fue bien no devuelve nada.
+// respuesta de cada envío) y resume cómo fue: { archivos_total, archivos_fallidos, archivos_error }. Ya no lanza el error aquí: después
+// hay que anotar lo contestado y soltar el turno (si no, lo siguiente esperaría 10 minutos); lo hace "Comprobar envío" al final, y la
+// ejecución queda en rojo igual que antes para que el flujo "Aviso de fallos" pueda avisar. Devuelve SIEMPRE un item.
 
 const resumen = (e) =>
   String(typeof e === 'string' ? e : (e?.message ?? JSON.stringify(e ?? '')))
@@ -10,7 +10,4 @@ const resumen = (e) =>
 
 const respuestas = $input.all().map((i) => i.json);
 const fallidas = respuestas.filter((r) => r && r.error);
-if (fallidas.length > 0) {
-  throw new Error(`Secretaria · WhatsApp: ${fallidas.length} de ${respuestas.length} mensajes de archivos no se enviaron (${resumen(fallidas[0].error)})`);
-}
-return [];
+return [{ json: { archivos_total: respuestas.length, archivos_fallidos: fallidas.length, archivos_error: fallidas.length > 0 ? resumen(fallidas[0].error) : null } }];

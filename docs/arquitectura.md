@@ -27,8 +27,8 @@ nombre y «Aviso de fallos» como *Error workflow* (`herramientas/comun/importac
 
 | Flujo | Disparo | Qué hace |
 |---|---|---|
-| WhatsApp | Webhook de Meta | Verifica la firma `X-Hub-Signature-256` y el número permitido, descarta duplicados, transcribe audios, sube archivos a Drive, pone los textos en la cola y envía las respuestas en orden. |
-| Procesar mensaje | Llamado por WhatsApp | Lee contexto (memoria, pendientes, pregunta abierta, archivos, proyectos, avisos), llama al modelo si hace falta, valida, escribe en Supabase y redacta la respuesta. |
+| WhatsApp | Webhook de Meta | Verifica la firma `X-Hub-Signature-256` y el número permitido, descarta duplicados, transcribe audios, sube archivos a Drive, registra el orden de llegada de cada mensaje, pone los textos y audios en la cola y contesta todo en ese orden (citando el mensaje si llegaron varios). |
+| Procesar mensaje | Llamado por WhatsApp | Lee contexto (memoria, pendientes, pregunta abierta, archivos, proyectos, avisos, horario fijo), llama al modelo si hace falta, valida, escribe en Supabase y redacta la respuesta. |
 | Sincronizar Calendar | Cada minuto | Lleva a Google Calendar los eventos marcados como pendientes de sincronizar (crear, mover, borrar). |
 | Sincronizar Drive | Cada minuto | Mueve, renombra y crea carpetas en Drive según lo marcado en la base de datos. |
 | Vigilar Calendar / Vigilar Drive | Cada 5 minutos | Detectan lo que se cambia a mano en Calendar o Drive, lo reflejan en la base de datos y avisan. |
@@ -51,11 +51,13 @@ ni `authenticated`: solo la clave secreta (`service_role`) que usa n8n puede lee
 | `mensajes` | Todo lo que llega, tal cual, con su estado (procesado, error, en cola) y la pregunta abierta si la hay. |
 | `items` | Lo clasificado: eventos, tareas, listas y notas, con su proyecto si lo tienen. |
 | `archivos` | Archivos recibidos: id de Drive, carpeta pedida, a qué elemento pertenecen. |
-| `memoria` | Términos que el usuario enseña («BBVA es mi banco»), datos duraderos que cuenta («trabajo los viernes por la mañana»), cómo quiere que se le llame y el nombre de la secretaria. Hasta 50; `/memory` la enseña y `/forget` borra un dato. |
+| `memoria` | Términos que el usuario enseña («BBVA es mi banco»), datos duraderos que cuenta («Emma es mi hermana», «vivo en Granada»), cómo quiere que se le llame y el nombre de la secretaria. Hasta 50; `/memory` la enseña y `/forget` borra un dato. |
 | `proyectos`, `carpetas_pedidas` | Proyectos (activo/cerrado) y carpetas que se piden crear. |
 | `drive_arbol`, `registro_drive`, `vigilantes_estado`, `registro_calendar` | Estado y registro de los vigilantes. |
 | `avisos_enviados` | Qué alarmas y citas iban en cada aviso enviado (para entender las respuestas a un aviso). |
 | `turno` | Fila única: quién está procesando la cola de mensajes. |
+| `llegadas` | Orden de llegada de todos los mensajes (de cualquier tipo), para contestarlos en ese orden. Se vacía sola (2 días). |
+| `horario_fijo` | Horario semanal del usuario: un bloque por día con su título y sus horas. |
 
 **Bandejas de salida:** los cambios hacia Google no se hacen en línea. Un *trigger* marca el elemento (`calendar_pendiente`,
 `drive_pendiente`) y un flujo aparte lo sincroniza cada minuto. Así el mensaje se guarda aunque Google falle, y la sincronización se
@@ -65,6 +67,12 @@ y el id del evento de Calendar se deriva del id del elemento (sin duplicados).
 **Cola de mensajes:** varios mensajes seguidos se procesan juntos y nunca dos a la vez. Cada texto entra en cola; tras una espera breve,
 `reclamar_mensajes()` decide si esta ejecución procesa (toma el turno y se lleva todos los encolados), espera (otra tiene el turno) o no
 hace nada (llegó otro después, que los juntará). El turno caduca solo si una ejecución muere.
+
+**Orden de llegada:** cada mensaje, sea del tipo que sea, se registra al llegar con la hora que da Meta (`registrar_llegadas()`).
+La cola no junta mensajes por encima de uno anterior sin contestar (una foto que aún se sube, un audio que aún se transcribe), y antes
+de contestar una foto, un documento o un aviso, `turno_respuesta()` dice si queda algo anterior pendiente: si es así, espera. Así
+«texto, foto, texto» se contesta en tres pasos y en ese orden. Si el usuario ha mandado varios mensajes, cada respuesta cita el
+suyo. Un mensaje que no llegó a guardarse deja de hacer esperar al cabo de 1 minuto (texto) o 5 (audio).
 
 ## Reglas de comportamiento
 
@@ -81,6 +89,14 @@ hace nada (llegó otro después, que los juntará). El turno caduca solo si una 
   («¿cuáles hay?» enseña las parecidas). Las tareas no preguntan.
 - **Agenda:** un evento no puede solaparse con otro (se pregunta otra hora); en un día con cosas, se enseñan y se pide confirmación.
   Sin duración, se asume una hora y se dice en la respuesta.
+- **Horario fijo:** el modelo convierte «trabajo los viernes de 16 a 20» en bloques (uno por día); si no da horas exactas, pregunta.
+  Una cita que cae dentro de un bloque se pregunta antes de apuntarla («¿La apunto igualmente?»), y el «sí» vale para ese bloque ese
+  día. Las alarmas no se comprueban. `/horario` y `/horario quitar N` se resuelven sin el modelo.
+- **La compra:** una tarea «Comprar pan y huevos» pasa a la lista de la compra por código, un elemento por cosa. Si el mensaje dice
+  un día, pregunta si avisa ese día para ir a comprar; la respuesta («a las 18», «no») se entiende sin el modelo y crea una alarma
+  «Ir a comprar».
+- **Listas sin repetidos:** un elemento que ya está pendiente en la misma lista no se vuelve a guardar (sin distinguir mayúsculas,
+  tildes, artículos ni plural simple); la respuesta dice cuáles ya estaban.
 - **Listados:** solo el título (el prompt pide titulares de 2 a 6 palabras); si hay más contexto se marca con « …» y se ve con
   «completo». Nunca se repite el mensaje original del usuario.
 - **Errores:** si un mensaje falla, el aviso cita hasta 3 líneas suyas (50 caracteres cada una) para que se sepa cuál fue.
@@ -96,6 +112,8 @@ hace nada (llegó otro después, que los juntará). El turno caduca solo si una 
   o con órdenes («guárdala en Fotos/Viajes», «las tres últimas son facturas de la luz»).
 - **Proyectos y carpetas:** no hay listas fijas. Un proyecto se crea al usarlo (si se parece a uno que ya existe, se pregunta antes);
   las carpetas de Drive se crean al pedirlas. Los archivos de un elemento van a `Notas/` salvo que se pida otra carpeta.
+- **Quitar una cosa:** «borra la cita», «quita la alarma de la ropa»: si de ese tipo (y con esas palabras) hay exactamente una, se
+  quita por código, sin el modelo; si hay varias, decide el modelo y pregunta cuál.
 - **Borrar:** «borra todo» nunca borra todo: se reconoce por código y pregunta qué sección (alarmas, tareas, citas, pensamientos,
   cada lista y cada proyecto, con cuántos elementos tiene cada una). Borrar una sección entera o más de un elemento a la vez se
   confirma **siempre**, enseñando la lista de lo que se quitaría; con esa pregunta abierta, el nombre de una sección es esa sección

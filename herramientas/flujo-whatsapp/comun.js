@@ -65,8 +65,10 @@ function extraerMensajes(payload, numeroPermitido) {
         // Si el usuario responde (cita) a un mensaje, Meta puede traer en "context.id" el id del mensaje citado. Con él se
         // sabe a qué archivo se refiere ("guárdala en Fotos"). Vacío si no hay o no es un id válido.
         const contexto = typeof m.context?.id === 'string' && /^[A-Za-z0-9._=+\/-]{1,300}$/.test(m.context.id) ? m.context.id : '';
+        // Hora del mensaje según Meta (segundos Unix, en texto): ordena las respuestas. Vacía si no la trae.
+        const ts = typeof m.timestamp === 'string' && /^\d{9,11}$/.test(m.timestamp) ? m.timestamp : '';
         if (m.type === 'text' && typeof m.text?.body === 'string' && m.text.body.trim() !== '') {
-          salida.push({ wa_message_id: m.id, tipo_entrada: 'texto', mensaje: m.text.body, contexto_id: contexto });
+          salida.push({ wa_message_id: m.id, tipo_entrada: 'texto', mensaje: m.text.body, contexto_id: contexto, ts });
         } else if ((m.type === 'image' || m.type === 'document') && typeof m[m.type]?.id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(m[m.type].id)) {
           // El adjunto se descarga después con este id (la URL de Meta caduca a los 5 minutos). Pie y nombre pueden faltar.
           const a = m[m.type];
@@ -78,6 +80,7 @@ function extraerMensajes(payload, numeroPermitido) {
             filename: typeof a.filename === 'string' ? a.filename : '',
             caption: typeof a.caption === 'string' ? a.caption : '',
             contexto_id: contexto,
+            ts,
           });
         } else if (m.type === 'audio' && typeof m.audio?.id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(m.audio.id)) {
           // Nota de voz o archivo de audio: se descarga con este id y se transcribe; el texto entra como un mensaje normal.
@@ -87,9 +90,10 @@ function extraerMensajes(payload, numeroPermitido) {
             media_id: m.audio.id,
             mime_type: typeof m.audio.mime_type === 'string' ? m.audio.mime_type : '',
             contexto_id: contexto,
+            ts,
           });
         } else if (TIPOS_NO_SOPORTADOS.includes(m.type)) {
-          salida.push({ wa_message_id: m.id, tipo_entrada: 'no_soportado', tipo: m.type });
+          salida.push({ wa_message_id: m.id, tipo_entrada: 'no_soportado', tipo: m.type, ts });
         }
       }
     }
@@ -109,12 +113,12 @@ function limitarRafaga(mensajes) {
   const avisos = [];
   if (textos.length > MAX_MENSAJES_DE_GOLPE) {
     textos.forEach((m) => quitar.add(m));
-    avisos.push({ wa_message_id: textos[0].wa_message_id, tipo_entrada: 'no_soportado', tipo: 'exceso_mensajes', cantidad: textos.length });
+    avisos.push({ wa_message_id: textos[0].wa_message_id, tipo_entrada: 'no_soportado', tipo: 'exceso_mensajes', cantidad: textos.length, ts: textos[0].ts ?? '' });
   }
   if (adjuntos.length > MAX_ADJUNTOS_DE_GOLPE) {
     const sobran = adjuntos.slice(MAX_ADJUNTOS_DE_GOLPE);
     sobran.forEach((m) => quitar.add(m));
-    avisos.push({ wa_message_id: sobran[0].wa_message_id, tipo_entrada: 'no_soportado', tipo: 'exceso_adjuntos', cantidad: sobran.length });
+    avisos.push({ wa_message_id: sobran[0].wa_message_id, tipo_entrada: 'no_soportado', tipo: 'exceso_adjuntos', cantidad: sobran.length, ts: sobran[0].ts ?? '' });
   }
   if (quitar.size === 0) return mensajes;
   return [...mensajes.filter((m) => !quitar.has(m)), ...avisos];
@@ -379,6 +383,11 @@ function cuerpoAvisoArchivo({ para, nombre }) {
   const n = nombreSeguro(nombre) || 'ese archivo';
   return { messaging_product: 'whatsapp', recipient_type: 'individual', to: para, type: 'text', text: { preview_url: false, body: `No he podido mandarte «${n}»: no encuentro el archivo en Drive.` } };
 }
+
+// Id de un mensaje del usuario que se puede citar en la respuesta ("context": { "message_id": "<wamid>" } en la API de Meta). Sin un id
+// válido no se cita (el mensaje sale igual).
+const ID_WHATSAPP = /^[A-Za-z0-9._=+\/-]{1,300}$/;
+const idCitable = (id) => (typeof id === 'string' && ID_WHATSAPP.test(id) ? id : null);
 
 // Lo que se entendió de un audio, para mandarlo ANTES de procesarlo: es lo primero que le llega al usuario. Hasta 500 caracteres.
 const MAX_ECO = 500;

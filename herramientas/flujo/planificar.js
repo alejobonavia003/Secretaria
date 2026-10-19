@@ -15,9 +15,9 @@
 // Las consultas (GET) no pasan por "Escribir en Supabase": n8n no permite una expresión en
 // "Send Body", así que el GET lo ejecuta el nodo "Leer consulta" con meta.consulta_url.
 
-const INTENCIONES = ['guardar', 'consultar', 'corregir', 'completar', 'recordar', 'aclarar', 'descartar', 'charla', 'archivar', 'carpetas', 'cancelar', 'ver_archivos', 'crear_carpeta', 'borrar_drive', 'ayuda', 'proyectos', 'proyecto'];
+const INTENCIONES = ['guardar', 'consultar', 'corregir', 'completar', 'recordar', 'aclarar', 'descartar', 'charla', 'archivar', 'carpetas', 'cancelar', 'ver_archivos', 'crear_carpeta', 'borrar_drive', 'horario', 'ayuda', 'proyectos', 'proyecto'];
 // Intenciones que no crean items (si el modelo devuelve alguno, se ignora)
-const SIN_ITEMS = ['charla', 'archivar', 'carpetas', 'cancelar', 'completar', 'ver_archivos', 'crear_carpeta', 'borrar_drive', 'ayuda', 'proyectos', 'proyecto'];
+const SIN_ITEMS = ['charla', 'horario', 'archivar', 'carpetas', 'cancelar', 'completar', 'ver_archivos', 'crear_carpeta', 'borrar_drive', 'ayuda', 'proyectos', 'proyecto'];
 const NIVELES_CARPETA_MAX = 3; // niveles de una carpeta pedida (Fotos/Viajes/2026)
 const MAX_CARPETAS_PEDIDAS = 10; // carpetas que se pueden pedir en un solo mensaje
 const TIPOS = ['evento', 'tarea', 'lista', 'nota'];
@@ -254,7 +254,7 @@ function lineaMemoria(m) {
 }
 // La lista numerada: el número es el que usa /forget (mismo orden que «Leer memoria»: por término)
 function textoMemoria(filas, pista = false) {
-  if (filas.length === 0) return 'Todavía no recuerdo nada de ti. Si me cuentas algo que deba saber («para que lo sepas: trabajo los viernes por la mañana»), lo guardo.';
+  if (filas.length === 0) return 'Todavía no recuerdo nada de ti. Si me cuentas algo que deba saber («para que lo sepas: Emma es mi hermana»), lo guardo.';
   const lineas = filas.map((m, i) => `${i + 1}. ${lineaMemoria(m)}`);
   return [
     `*Lo que recuerdo* (${filas.length} de ${MAX_MEMORIA})`,
@@ -273,6 +273,37 @@ function buscarEnMemoria(filas, texto) {
 }
 const TEXTO_NOMBRE_NO_SE_OLVIDA = 'Mi nombre no lo olvido (sin él te lo volvería a preguntar). Si quieres otro, dímelo: «te llamas Marta».';
 const textoMemoriaLlena = (termino) => `Mi memoria está llena (${MAX_MEMORIA} datos) y no he guardado «${limpiarTxt(termino)}». Mira /memory y olvida alguno con /forget.`;
+
+// --- Horario fijo semanal ---
+const DIAS_SEMANA = ['', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+const MAX_HORARIO = 40; // bloques guardados como mucho (uno por día y franja)
+const HORA_HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const aMinutos = (h) => {
+  const m = HORA_HHMM.exec(String(h ?? '').trim().slice(0, 5).padStart(5, '0'));
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+};
+const hhmm = (h) => String(h ?? '').trim().slice(0, 5).padStart(5, '0');
+const filasDeHorario = (lista) =>
+  (Array.isArray(lista) ? lista : []).filter(
+    (b) => b && typeof b.id === 'string' && typeof b.titulo === 'string' && Number.isInteger(b.dia_semana) && b.dia_semana >= 1 && b.dia_semana <= 7 && aMinutos(b.hora_inicio) !== null && aMinutos(b.hora_fin) !== null,
+  );
+const lineaHorario = (b) => `${DIAS_SEMANA[b.dia_semana]} de ${hhmm(b.hora_inicio)} a ${hhmm(b.hora_fin)}: ${limpiarTxt(b.titulo)}`;
+// La lista numerada (por día y hora, como la lee «Leer horario»): el número es el de /horario quitar N
+function textoMiHorario(filas, pista = false) {
+  if (filas.length === 0) return 'No tienes horario fijo. Dímelo con días y horas («trabajo los viernes de 16 a 20», «voy a natación lunes y miércoles de 19 a 20») y te avisaré si apuntas una cita que choque.';
+  return [
+    '*Tu horario fijo*',
+    ...filas.map((b, i) => `${i + 1}. ${lineaHorario(b)}`),
+    pista ? 'Dime cuál quito: /horario quitar y su número (por ejemplo /horario quitar 2).' : 'Para quitar uno: /horario quitar y su número (por ejemplo /horario quitar 2).',
+  ].join('\n');
+}
+// Día de la semana (1 = lunes) y minuto del día en Madrid de un instante
+const fmtPartesMadrid = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Madrid', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const ISO_DIA = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+function partesMadrid(ms) {
+  const p = Object.fromEntries(fmtPartesMadrid.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return { dia: ISO_DIA[p.weekday], min: Number(p.hour) * 60 + Number(p.minute) };
+}
 
 const esAlarmaItem = (r) => r.tipo === 'tarea' && Boolean(r.recordar_en) && !r.fecha_limite;
 
@@ -441,7 +472,7 @@ function validarRespuesta(texto, config, refs, refsArchivos = {}, opciones = {})
   let memoriaNueva = null;
   let nombreNuevo = null;
   let nombreUsuario = null;
-  // Un dato duradero del usuario («trabajo los viernes por la mañana», «llámame Ana») puede venir también con guardar,
+  // Un dato duradero del usuario («Emma es mi hermana», «llámame Ana») puede venir también con guardar,
   // charla o aclarar (memoria_nueva junto a lo demás). Ahí nunca puede cambiar el nombre de la secretaria: eso solo con recordar.
   if (datos.intencion !== 'recordar' && datos.memoria_nueva && typeof datos.memoria_nueva === 'object' && ['guardar', 'charla', 'aclarar'].includes(datos.intencion)) {
     let termino = textoONull(datos.memoria_nueva.termino);
@@ -551,6 +582,22 @@ function validarRespuesta(texto, config, refs, refsArchivos = {}, opciones = {})
     if (carpeta || archivoIds.length > 0) borrarDrive = { carpeta, archivo_ids: archivoIds, solo_archivos: Boolean(carpeta) && b.solo_archivos === true };
   }
 
+  // Horario fijo semanal: bloques {titulo, dias (1-7), desde, hasta}; uno por día al guardarlo
+  let horarioNuevo = null;
+  if (datos.intencion === 'horario') {
+    const lista = Array.isArray(datos.horario_nuevo) ? datos.horario_nuevo : [];
+    if (lista.length === 0) fallo('horario: falta horario_nuevo (una lista de {titulo, dias, desde, hasta})');
+    horarioNuevo = [];
+    for (const b of lista.slice(0, 10)) {
+      const titulo = textoONull(b?.titulo);
+      const dias = Array.isArray(b?.dias) ? [...new Set(b.dias.map(Number))].filter((d) => Number.isInteger(d) && d >= 1 && d <= 7) : [];
+      const ini = aMinutos(b?.desde);
+      const fin = aMinutos(b?.hasta);
+      if (!titulo || titulo.length > 60 || dias.length === 0 || ini === null || fin === null || fin <= ini) fallo(`horario_nuevo no válido (título, días 1-7 y horas HH:MM con el fin después del inicio): ${JSON.stringify(b).slice(0, 160)}`);
+      for (const d of dias) horarioNuevo.push({ titulo, dia_semana: d, hora_inicio: hhmm(b.desde), hora_fin: hhmm(b.hasta) });
+    }
+  }
+
   // Crear carpetas vacías ("crea la carpeta Proyectos dentro de Trabajo"): una lista de rutas bajo Secretaria/, con las mismas reglas que
   // la carpeta de archivar. Los espacios alrededor de las barras ("Trabajo / Proyectos") se limpian; sin distinguir mayúsculas ni
   // tildes, una ruta repetida cuenta una sola vez.
@@ -575,7 +622,7 @@ function validarRespuesta(texto, config, refs, refsArchivos = {}, opciones = {})
 
   const consulta = datos.intencion === 'consultar' ? normalizarConsulta(datos.consulta, config, avisos) : null;
 
-  return { datos: { intencion: datos.intencion, items, pregunta, memoriaNueva, nombreNuevo, nombreUsuario, correccion, seleccion, proyecto, consulta, archivos, filtroArchivos, rutasNuevas, borrarDrive, respuestaUsuario }, avisos };
+  return { datos: { intencion: datos.intencion, items, pregunta, memoriaNueva, nombreNuevo, nombreUsuario, correccion, seleccion, proyecto, consulta, archivos, filtroArchivos, rutasNuevas, borrarDrive, horarioNuevo, respuestaUsuario }, avisos };
 }
 
 // --- Archivos: carpeta pedida, referencias y nombres ---
@@ -718,11 +765,12 @@ const solapa = (a, b) => a.ini < b.fin && b.ini < a.fin;
 // decide el modelo (regla 11 del prompt: solo guarda si acepta); el código solo recuerda qué se le planteó en este hilo.
 // Viajan también los LOTES: los elementos
 // que se iba a cancelar o completar de golpe (más de MAX_SIN_CONFIRMAR) o a archivar al cerrar un proyecto, con sus ids reales.
-const MOTIVOS_CODIGO = ['confirmar_agenda', 'solape', 'crear_proyecto', 'confirmar_lote', 'repetido', 'convertir_hora', 'elegir_seccion'];
+const MOTIVOS_CODIGO = ['confirmar_agenda', 'solape', 'crear_proyecto', 'confirmar_lote', 'repetido', 'convertir_hora', 'elegir_seccion', 'confirmar_horario', 'aviso_compra'];
 function confirmacionesDelHilo(hilo) {
   const dias = new Set();
   const proyectos = new Set();
   const repetidos = new Set();
+  const horario = new Set();
   const lotes = [];
   const textos = (v) => (Array.isArray(v) ? v.filter((d) => typeof d === 'string') : []);
   for (const turno of Array.isArray(hilo) ? hilo : []) {
@@ -733,6 +781,7 @@ function confirmacionesDelHilo(hilo) {
       textos(j.dias).forEach((d) => dias.add(d));
       textos(j.proyectos).forEach((p) => proyectos.add(sinAcentos(p)));
       textos(j.repetidos).forEach((t) => repetidos.add(sinAcentos(t)));
+      textos(j.horario).forEach((h) => horario.add(h));
       for (const l of Array.isArray(j.lotes) ? j.lotes : []) {
         if (l && typeof l.accion === 'string' && Array.isArray(l.ids)) lotes.push({ accion: l.accion, ids: textos(l.ids) });
       }
@@ -740,9 +789,130 @@ function confirmacionesDelHilo(hilo) {
       // un turno del modelo que no es JSON no confirma nada
     }
   }
-  return { dias, proyectos, repetidos, lotes };
+  return { dias, proyectos, repetidos, horario, lotes };
 }
 const diasConfirmados = (hilo) => confirmacionesDelHilo(hilo).dias;
+
+// --- La compra ---
+// Todo lo que sea comprar cosas va a la lista de la compra, aunque diga un día («mañana compra pan»): si el modelo lo apunta como tarea
+// «Comprar pan y huevos», el código lo pasa a la lista (un elemento por cosa). Si el mensaje dice un día, después de apuntarlo se pregunta
+// si se le avisa ese día para ir a comprar («¿Te aviso mañana (mié 21) para ir a comprar? Dime a qué hora.»); la respuesta la resuelve el
+// código (respuestaAvisoCompra). Si dice que quiere ir a comprar un día sin decir qué («quiero ir a comprar mañana»), en vez de «¿alarma,
+// cita o tarea?» se pregunta directamente lo del aviso.
+const ES_COMPRA = /\b(?:compr(?:a|ar|o|amos|ad|e|en|as|arme|arte)|la compra|supermercado|super|mercado)\b/;
+const LISTA_COMPRA = 'compra';
+const TITULO_COMPRAR = /^comprar\s+(.+)$/i;
+const ES_IR_A_COMPRAR = /^(?:ir a )?(?:hacer la )?compra(?:r)?$/;
+const capitalizar = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+function aListaDeCompra(items, avisos) {
+  const salida = [];
+  for (const it of items) {
+    const m = it.tipo === 'tarea' && !esFecha(it.recordar_en) ? TITULO_COMPRAR.exec(String(it.titulo).trim()) : null;
+    if (!m || ES_IR_A_COMPRAR.test(sinSignos(it.titulo))) {
+      salida.push(it);
+      continue;
+    }
+    const cosas = m[1].split(/\s*,\s*|\s+(?:y|e)\s+/).map((c) => c.trim()).filter(Boolean);
+    avisos.push(`«${it.titulo}» era una tarea de comprar: pasa a la lista de la compra (${cosas.length})`);
+    for (const c of cosas) {
+      salida.push({ ...it, tipo: 'lista', lista: LISTA_COMPRA, titulo: capitalizar(c), contenido: null, fecha_limite: null, recordar_en: null, fecha_inicio: null, fecha_fin: null });
+    }
+  }
+  return salida;
+}
+// El día que dice el mensaje (hora de Madrid): hoy, mañana, pasado (mañana), un día de la semana (el próximo; si es hoy, el de la semana
+// que viene) o «el (día) 25». Devuelve { dia: 'AAAA-MM-DD', etiqueta } o null.
+const SEMANA = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+function diaDeCompra(mensaje, ahora) {
+  const m = ` ${sinSignos(mensaje ?? '')} `;
+  const [y, mo, d] = diaMadrid(ahora.getTime()).split('-').map(Number);
+  const masDias = (n) => diaMadrid(madridAUtc(y, mo, d + n, 12, 0).getTime());
+  const etiquetaDe = (dia, nombre) => {
+    const [a, b, c] = dia.split('-').map(Number);
+    const corto = diaCorto(madridAUtc(a, b, c, 12, 0).getTime());
+    return nombre ? `${nombre} (${corto})` : `el ${corto}`;
+  };
+  if (/ pasado(?: manana)? /.test(m) && !/ (?:lunes|martes|miercoles|jueves|viernes|sabado|domingo|semana|mes|ano) pasado /.test(m)) {
+    const dia = masDias(2);
+    return { dia, etiqueta: etiquetaDe(dia, 'pasado mañana') };
+  }
+  if (/ manana /.test(m.replace(/ (?:por|de) la manana | esta manana /g, ' '))) {
+    const dia = masDias(1);
+    return { dia, etiqueta: etiquetaDe(dia, 'mañana') };
+  }
+  if (/ hoy | esta tarde | esta noche /.test(m)) {
+    const dia = masDias(0);
+    return { dia, etiqueta: etiquetaDe(dia, 'hoy') };
+  }
+  const ds = / (lunes|martes|miercoles|jueves|viernes|sabado|domingo) /.exec(m);
+  if (ds) {
+    const hoy = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+    const n = ((SEMANA.indexOf(ds[1]) - hoy + 7) % 7) || 7;
+    const dia = masDias(n);
+    return { dia, etiqueta: etiquetaDe(dia) };
+  }
+  const num = / el (?:dia )?(\d{1,2}) /.exec(m);
+  if (num && Number(num[1]) >= 1 && Number(num[1]) <= 31) {
+    const objetivo = Number(num[1]);
+    const n = Array.from({ length: 62 }, (_, i) => i).find((i) => Number(masDias(i).slice(8)) === objetivo);
+    if (n !== undefined) {
+      const dia = masDias(n);
+      return { dia, etiqueta: etiquetaDe(dia) };
+    }
+  }
+  return null;
+}
+// Sin repetidos en las listas: un elemento que ya está pendiente en la MISMA lista (o repetido en el
+// mismo mensaje) no se vuelve a guardar. Iguales sin mayúsculas, tildes, artículos («la leche» = «leche») ni plural simple («huevo» =
+// «huevos», «limón» = «limones»). Devuelve { items, repetidos: [{ titulo, lista }] } (los que ya estaban).
+const ARTICULO_LISTA = /^(?:un|una|unos|unas|el|la|los|las|lo|algo de|mas|otra|otro|otras|otros)\s+/;
+const palabrasLista = (t) => sinAcentos(t).replace(/[^a-z0-9n ]/g, ' ').replace(/\s+/g, ' ').trim().replace(ARTICULO_LISTA, '').split(' ').filter(Boolean);
+const mismaPalabra = (a, b) => a === b || `${a}s` === b || `${b}s` === a || `${a}es` === b || `${b}es` === a;
+function mismoElemento(a, b) {
+  const x = palabrasLista(a);
+  const y = palabrasLista(b);
+  return x.length > 0 && x.length === y.length && x.every((p, i) => mismaPalabra(p, y[i]));
+}
+function quitarRepetidosDeLista(items, pendientes) {
+  const enLista = (Array.isArray(pendientes) ? pendientes : []).filter((r) => r && r.tipo === 'lista' && typeof r.titulo === 'string');
+  const vistos = [];
+  const repetidos = [];
+  const salida = [];
+  for (const it of items) {
+    if (it.tipo !== 'lista') {
+      salida.push(it);
+      continue;
+    }
+    const lista = sinAcentos(it.lista ?? '');
+    // Se enseña el nombre que ya tiene en la lista («Leche»), no como lo escribió ahora («la leche»)
+    const existente = enLista.find((r) => sinAcentos(r.lista ?? '') === lista && mismoElemento(r.titulo, it.titulo))
+      ?? vistos.find((v) => v.lista === lista && mismoElemento(v.titulo, it.titulo));
+    if (existente) repetidos.push({ titulo: existente.titulo, lista: it.lista ?? '' });
+    else {
+      vistos.push({ lista, titulo: it.titulo });
+      salida.push(it);
+    }
+  }
+  return { items: salida, repetidos };
+}
+const enumerar = (xs) => xs.map((t) => limpiarTxt(capitalizar(String(t)))).join(', ');
+// La confirmación cuando el código ha cambiado lo que propuso el modelo (pasar a la lista o quitar repetidos): la frase del modelo ya no vale
+function textoCompraGuardada(items, repetidos, nombreLista) {
+  const deLista = items.filter((it) => it.tipo === 'lista');
+  const otros = items.filter((it) => it.tipo !== 'lista');
+  const enLa = nombreLista === LISTA_COMPRA ? 'la lista de la compra' : `la lista «${limpiarTxt(nombreLista)}»`;
+  const lineas = [];
+  if (deLista.length > 0) lineas.push(`🛒 Apuntado en ${enLa}: ${enumerar(deLista.map((it) => it.titulo))}.`);
+  if (repetidos.length > 0) {
+    const nombres = enumerar(repetidos.map((r) => r.titulo));
+    lineas.push(deLista.length > 0 ? `Ya estaban: ${nombres}.` : otros.length > 0 ? `Ya estaban en ${enLa}: ${nombres}.` : `Ya lo tenías todo en ${enLa}: ${nombres}.`);
+  }
+  if (otros.length > 0) lineas.push(`Apuntado también: ${otros.map((it) => `«${limpiarTxt(it.titulo)}»`).join(', ')}.`);
+  return lineas.join('\n');
+}
+const textoAvisoCompra = (etiqueta) => `¿Te aviso ${etiqueta} para ir a comprar? Dime a qué hora (o «no»).`;
+const turnoAvisoCompra = (aviso, texto) =>
+  JSON.stringify({ intencion: 'aclarar', motivo: 'aviso_compra', origen: 'codigo', aviso_compra: aviso, pregunta: texto, items: [], respuesta_usuario: texto });
 
 // --- Comandos y ayuda ---
 // Los comandos empiezan por «/», se escriben en inglés (/help, /about, /manual…) y su contenido está en español. Los resuelve este código, sin el modelo:
@@ -767,6 +937,7 @@ const COMANDOS = [
   ['name', 'Mi nombre y cómo cambiarlo', 'atajos'],
   ['memory', 'Lo que recuerdo de ti, numerado', 'atajos'],
   ['forget', 'Olvidar un dato de mi memoria: /forget 2 (el número de /memory)', 'atajos'],
+  ['schedule', 'Tu horario fijo (/horario quitar 2 para quitar un bloque)', 'atajos'],
 ];
 // Alias en español, por si se escriben sin pensar (el comando oficial es el inglés)
 const ALIAS_COMANDO = {
@@ -782,6 +953,7 @@ const ALIAS_COMANDO = {
   nombre: 'name',
   memoria: 'memory', recuerdos: 'memory', recuerdas: 'memory',
   olvidar: 'forget', olvida: 'forget', olvidalo: 'forget',
+  horario: 'schedule', horarios: 'schedule',
 };
 
 const TEXTO_AYUDA =
@@ -808,7 +980,8 @@ const textoAbout = (nombre) =>
     '*Además*\n' +
       '• Cada mañana te mando un resumen de lo que tienes.\n' +
       '• Entiendo audios: te digo lo que he entendido antes de actuar.\n' +
-      '• Recuerdo lo que me cuentes de ti («trabajo los viernes»): /memory para verlo y /forget para olvidar algo.\n' +
+      '• Recuerdo lo que me cuentes de ti («Emma es mi hermana»): /memory para verlo y /forget para olvidar algo.\n' +
+      '• Conozco tu horario fijo («trabajo los viernes de 16 a 20») y te pregunto si apuntas una cita que choque: /horario.\n' +
       '• Si cambias algo a mano en Drive o en Google Calendar (borrar, mover, renombrar o crear), lo anoto y te lo cuento.\n' +
       '• Borro carpetas y archivos de Drive si me lo pides: antes te enseño la lista y te pregunto, y van a la papelera.\n\n' +
       'Escribe /help para ver los comandos y /manual para la guía completa.',
@@ -821,7 +994,8 @@ const MANUAL = {
       '*Citas*\n• «dentista el jueves a las 10». Si falta la hora, te la pregunto. Por defecto dura 1 hora; si dura otra cosa: «dura 2 horas».\n' +
       '• Va a tu calendario «Secretaria» y te aviso 30 minutos antes.\n' +
       '• Si ya hay algo a esa hora, no la agendo y te digo con qué choca. Si el día ya tiene cosas, te las enseño y te pregunto si sigo.\n' +
-      '• Cambiar: «pasa el dentista al viernes a las 11». Quitar: «quita la cita del dentista».\n\n' +
+      '• Cambiar: «pasa el dentista al viernes a las 11». Quitar: «quita la cita del dentista».\n' +
+      '• Horario fijo: «trabajo los viernes de 16 a 20», «voy a natación lunes y miércoles de 19 a 20». Si una cita cae dentro, te pregunto antes. /horario para verlo y /horario quitar 2 para quitar un bloque.\n\n' +
       '*Alarmas*\n• Todo lo que ocurre entre ahora y las 02:00 de mañana (por ejemplo «cortarme el pelo en 2 horas») es una alarma 🔔: no va a Google Calendar y te aviso 1 hora antes, 30 minutos antes y a la hora.\n' +
       '• Lo que sea para más adelante es una cita, aunque lo digas de otra manera.',
   },
@@ -882,7 +1056,7 @@ const MANUAL = {
       '• Corregir: «cambia la hora del dentista a las 11», «el título es otro», «mételo en el proyecto Mudanza».\n' +
       '• Añadir detalles sin borrar lo que había: «añade a la tarea del banco que lleve el DNI».\n' +
       '• Completar: «ya compré la leche», «ya entregué el informe». Todo de golpe: «ya hice todas las tareas».\n' +
-      '• Cancelar: «quita la cita de mañana», «olvida lo de la leche». Todo de golpe: «quita todos los pensamientos», «vacía la lista de la compra».\n' +
+      '• Cancelar: «quita la cita de mañana», «olvida lo de la leche». Si solo hay una que encaje, la quito sin preguntar; si hay varias, te pregunto cuál. Todo de golpe: «quita todos los pensamientos», «vacía la lista de la compra».\n' +
       '• Si borras una sección o varias cosas a la vez, siempre te enseño la lista y te pregunto antes; si marcas como hechas más de 3, también. «Borra todo» te pregunta qué sección.\n' +
       '• Ver los detalles de algo: «qué apunté del casero», «enséñame el contenido de la tarea del banco».\n' +
       '• Todo con todos los detalles: «dámelo todo completo» o /pending completo.\n' +
@@ -891,7 +1065,8 @@ const MANUAL = {
   memoria: {
     titulo: 'Lo que recuerdo de ti',
     texto:
-      '• Si me cuentas algo que no cambia («para que lo sepas: trabajo los viernes por la mañana», «Emma es mi hermana»), lo recuerdo y te lo digo con 📌.\n' +
+      '• Si me cuentas algo que no cambia («Emma es mi hermana», «vivo en Granada»), lo recuerdo y te lo digo con 📌.\n' +
+      '• Un horario semanal con días y horas («trabajo los viernes de 16 a 20») no va aquí: va a tu horario fijo (/horario).\n' +
       '• «Llámame Ana»: así te llamaré. «Te llamas Lola»: es mi nombre.\n' +
       '• Ver lo que recuerdo: /memory o «qué sabes de mí» (una lista numerada).\n' +
       '• Olvidar un dato: /forget y su número (/forget 2), o «borra de tu memoria lo de Emma» (te pregunto antes).\n' +
@@ -921,7 +1096,8 @@ const TEXTO_EJEMPLOS =
   '• crea la carpeta Proyectos dentro de Trabajo\n' +
   '• borra la carpeta Fotos/Viajes (te enseño lo que hay y te pregunto)\n' +
   '• llámate Marta (para cambiarme el nombre) · llámame Ana\n' +
-  '• para que lo sepas: trabajo los viernes por la mañana · qué sabes de mí\n\n' +
+  '• para que lo sepas: Emma es mi hermana · qué sabes de mí\n' +
+  '• trabajo los viernes de 16 a 20 (tu horario fijo)\n\n' +
   'Y si no sabes cómo decirlo, dilo como te salga: te preguntaré lo que me falte.';
 
 const textoManualIndice = () =>
@@ -969,6 +1145,7 @@ const FRASES_MEMORIA = new Set([
   'que tienes en la memoria', 'que tienes en tu memoria', 'que hay en tu memoria', 'que hay en la memoria', 'que recuerdas', 'que te acuerdas de mi',
   'ensename tu memoria', 'muestrame tu memoria', 'dime tu memoria', 'tu memoria', 'memoria', 'ver memoria', 'ver tu memoria', 'mi memoria',
 ]);
+const FRASES_HORARIO = new Set(['mi horario', 'que horario tengo', 'cual es mi horario', 'ensename mi horario', 'muestrame mi horario', 'dime mi horario', 'horario', 'ver horario', 'ver mi horario']);
 const OLVIDAR_MEMORIA = /^(?:por favor )?(?:olvida|olvidate|borra|quita|elimina)(?:r|me)? (?:de (?:tu|la) memoria|del? (?:tu|la) memoria|el dato|ese dato|de lo que (?:recuerdas|sabes) de mi) (?:(?:lo )?(?:del|de|que|sobre) )?(.+)$/;
 
 // Las preguntas más corrientes sobre lo pendiente se resuelven aquí con una consulta SIN filtros, igual que /pending y /today: no dependen de que el modelo
@@ -1022,6 +1199,7 @@ function interpretarComando(mensaje, { ahora, nombre } = {}) {
       }
     }
     if (FRASES_MEMORIA.has(f) || FRASES_MEMORIA.has(f.replace(SALUDO_INICIAL, ''))) return { tipo: 'memoria', accion: 'ver' };
+    if (FRASES_HORARIO.has(f) || FRASES_HORARIO.has(f.replace(SALUDO_INICIAL, ''))) return { tipo: 'horario', accion: 'ver' };
     const olvido = OLVIDAR_MEMORIA.exec(f.replace(SALUDO_INICIAL, ''));
     if (olvido) return { tipo: 'memoria', accion: 'olvidar', arg: olvido[1].trim() };
     if (FRASES_AYUDA.has(f)) return { tipo: 'texto', mensajes: [TEXTO_AYUDA], motivo: 'help' };
@@ -1065,6 +1243,11 @@ function interpretarComando(mensaje, { ahora, nombre } = {}) {
       return { tipo: 'memoria', accion: 'ver' };
     case 'forget':
       return arg ? { tipo: 'memoria', accion: 'olvidar', arg } : { tipo: 'memoria', accion: 'ver', pista: true };
+    case 'schedule': {
+      if (arg === '') return { tipo: 'horario', accion: 'ver' };
+      const q = /^(?:quitar|quita|borrar|borra|eliminar|elimina|olvida|olvidar) (\d{1,2})$/.exec(arg);
+      return q ? { tipo: 'horario', accion: 'quitar', n: Number(q[1]) } : { tipo: 'horario', accion: 'ver', pista: true };
+    }
     case 'manual': {
       if (arg === '') return { tipo: 'texto', mensajes: [textoManualIndice()], motivo: 'manual' };
       if (arg === 'todo' || arg === 'todos' || arg === 'completo') {
@@ -1204,12 +1387,12 @@ function pideListarRepetidos(mensaje, hilo) {
 // Si el usuario escribe antes de que le llegue la respuesta, quedan abiertas varias preguntas («¿alarma, cita o tarea?», «¿los quito?»,
 // «¿a qué hora?»). Antes cada pregunta nueva cerraba la anterior y un «sí» acababa contestando a la equivocada. Ahora se leen hasta
 // tres y el mensaje contesta a la que encaja con lo que dice; una orden nueva («borra…», «dame…») no contesta a ninguna y las deja abiertas.
-const SI_NO = /^(?:si|no|vale|ok|okey|dale|venga|claro|adelante|hazlo|perfecto|de acuerdo|correcto|exacto|por supuesto|sip|nop|ni hablar|mejor no|no gracias|cancelalo|dejalo|quitalos|borralos|marcalos|cierralo)\b/;
+const SI_NO = /^(?:si|no|vale|ok|okey|dale|venga|claro|adelante|hazlo|perfecto|de acuerdo|correcto|exacto|por supuesto|sip|nop|ni hablar|mejor no|no gracias|cancelalo|dejalo|quitalos|quitalo|quitala|quitalas|borralos|borralo|borrala|borralas|eliminalo|eliminala|eliminalos|eliminalas|mandalo|mandalos|olvidalo|olvidalos|marcalos|cierralo)\b/;
 const CUANDO = /\d|\b(?:mediodia|medianoche|manana|hoy|pasado|noche|tarde|lunes|martes|miercoles|jueves|viernes|sabado|domingo|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b/;
 const ELIGE_TIPO = /\b(?:alarma|cita|tarea)s?\b/;
 const ELIGE_REPETIDO = /\b(?:cambia|cambiala|cambialo|actualiza|actualizala|modifica|sustituye|reemplaza|anade|anadela|otra|otro|nueva|nuevo|las dos|los dos|ambas|ambos|si|no|cuales|cual)\b/;
 const ORDEN_NUEVA = /^(?:que|cuales|cual|cuantos|cuantas|dame|dime|ensename|muestrame|mis|lista|borra|quita|elimina|recuerdame|apunta|anota|crea|abre|cierra|completa|marca|\/)/;
-const MOTIVOS_SI_NO = ['confirmar_agenda', 'confirmar_lote', 'crear_proyecto', 'confirmar_drive'];
+const MOTIVOS_SI_NO = ['confirmar_agenda', 'confirmar_lote', 'crear_proyecto', 'confirmar_drive', 'confirmar_horario', 'confirmar_memoria'];
 function tipoDePregunta(fila) {
   const motivo = motivoDelHilo(fila.hilo)?.motivo;
   if (MOTIVOS_SI_NO.includes(motivo)) return 'sino';
@@ -1241,10 +1424,86 @@ function siNoSinPregunta(mensaje, hilo) {
   return /^(?:si|no)$/.test(sinSignos(mensaje ?? '')) ? TEXTO_SI_NO_SUELTO : null;
 }
 
+// «Tarea», «cita» o «alarma» suelto SIN pregunta abierta: el usuario contesta a una pregunta que
+// ya se resolvió (los mensajes se cruzaron: «Tarea» a «¿alarma, cita o tarea?» cuando ya estaba apuntada) y el modelo contestaba «No te he
+// entendido…» tras 30 s. Si en los últimos 2 minutos se apuntó algo (reciente: el pendiente más nuevo, con su created_at), se resuelve por
+// código, sin el modelo: mismo tipo → se dice que ya está; otro tipo → se convierte. Sin nada reciente, decide el modelo como siempre.
+// Devuelve null o { ref, pedido, actual, igual, titulo, item }.
+const TIPO_SUELTO = /^(?:pues |mejor |como )?(?:una? )?(tarea|cita|evento|alarma|recordatorio)(?: por favor)?$/;
+const TIPO_PEDIDO = { tarea: 'tarea', cita: 'cita', evento: 'cita', alarma: 'alarma', recordatorio: 'alarma' };
+const VENTANA_TIPO_SUELTO_MS = 2 * 60 * 1000;
+function tipoSuelto(mensaje, hilo, reciente, ahora) {
+  if (Array.isArray(hilo) && hilo.length > 0) return null;
+  const m = TIPO_SUELTO.exec(sinSignos(mensaje ?? ''));
+  if (!m || !reciente || typeof reciente.ref !== 'string') return null;
+  const creado = Date.parse(reciente.created_at);
+  const edad = (ahora instanceof Date ? ahora.getTime() : Date.now()) - creado;
+  if (!Number.isFinite(creado) || edad < 0 || edad > VENTANA_TIPO_SUELTO_MS) return null;
+  const actual = reciente.tipo === 'evento' ? 'cita' : reciente.tipo !== 'tarea' ? null : reciente.recordar_en && !reciente.fecha_limite ? 'alarma' : 'tarea';
+  if (!actual) return null; // una nota o una lista: decide el modelo
+  const pedido = TIPO_PEDIDO[m[1]];
+  return { ref: reciente.ref, pedido, actual, igual: pedido === actual, titulo: String(reciente.titulo ?? ''), item: reciente };
+}
+
+// Respuesta a «¿Te aviso mañana (…) para ir a comprar? Dime a qué hora.» (motivo aviso_compra), por código:
+//   «no» → no se avisa; «a las 18», «sí, a las 6 y media», «18:30», «a las 7 de la tarde» → alarma «Ir a comprar» ese día a esa hora;
+//   «sí» sin hora → se pregunta la hora. Una hora de 1 a 7 sin «de la mañana» se entiende de la tarde («a las 6» → 18:00).
+//   Cualquier otra cosa (una orden nueva, «mejor el jueves»…) no es una respuesta de este tipo: null, y sigue el camino de siempre.
+const NO_AVISO_COMPRA = /^(?:no|nop|no hace falta|no gracias|mejor no|nada|no te preocupes|no avises|sin aviso)$/;
+const SI_AVISO_COMPRA = /^(?:si|vale|ok|venga|claro|por favor|si por favor|si porfa|perfecto|dale)$/;
+const HORA_AVISO_COMPRA = /^(?:(?:si|vale|ok|venga|claro|perfecto|dale) )?(?:avisame )?(?:(?:a|sobre|hacia) (?:las|la) )?(\d{1,2})(?: ?h| (\d{2}))?(?: y (media|cuarto))?(?: (?:de la|por la) (manana|tarde|noche))?(?: por favor)?$/;
+function respuestaAvisoCompra(mensaje, hilo) {
+  const turno = motivoDelHilo(hilo);
+  if (turno?.motivo !== 'aviso_compra' || typeof turno.aviso_compra?.dia !== 'string') return null;
+  const m = sinSignos(mensaje ?? '');
+  if (NO_AVISO_COMPRA.test(m)) return { tipo: 'no' };
+  const h = HORA_AVISO_COMPRA.exec(m);
+  if (h) {
+    let hora = Number(h[1]);
+    let min = h[2] ? Number(h[2]) : h[3] === 'media' ? 30 : h[3] === 'cuarto' ? 15 : 0;
+    if (h[4] === 'tarde' || h[4] === 'noche' ? hora < 12 : !h[4] && hora >= 1 && hora <= 7) hora += 12;
+    if (hora > 23 || min > 59) return null;
+    return { tipo: 'hora', hora, min, dia: turno.aviso_compra.dia, etiqueta: turno.aviso_compra.etiqueta ?? '' };
+  }
+  if (SI_AVISO_COMPRA.test(m)) return { tipo: 'sin_hora', dia: turno.aviso_compra.dia, etiqueta: turno.aviso_compra.etiqueta ?? '' };
+  return null;
+}
+
 // «Borra todo»: nunca se borra todo de golpe. La frase se reconoce aquí, sin el modelo, y se convierte en un
 // cancelar sin sección, que Planificar contesta preguntando qué sección se quiere borrar.
 const BORRAR_TODO = /^(?:por favor )?(?:quiero |puedes |me )?(?:borra(?:r|lo|me)?|elimina(?:r|lo)?|quita(?:r|lo)?|limpia(?:r|lo)?|vacia(?:r|lo)?)(?: lo)? todo(?: lo que tengo| lo pendiente| lo que hay| lo apuntado)?(?: por favor)?$/;
 const pideBorrarTodo = (mensaje) => BORRAR_TODO.test(sinSignos(mensaje ?? ''));
+
+// «Borra la cita», «elimina la tarea del banco», «quita la alarma de la ropa» (con UNA sola cita, el modelo llegaba a contestar
+// «Tienes varias citas de Médico, ¿cuál?»). Se resuelve por código cuando no hay duda: si de ese tipo (y con
+// esas palabras en el título) hay exactamente uno, se quita ese, sin el modelo; si no hay ninguno, se dice; si hay varios, decide el modelo
+// (que pregunta cuál). pendientes: los elementos pendientes con su id (real o referencia corta, el que use quien llama).
+const QUITAR_UNO = /^(?:por favor )?(?:borra|borrame|elimina|eliminame|quita|quitame|cancela|cancelame|anula)(?:r)? (?:la|el|mi) (cita|evento|tarea|alarma|recordatorio|nota|pensamiento|idea)(?: (?:del|de la|de|para|con|sobre) (.+))?$/;
+const TIPO_A_QUITAR = { cita: 'cita', evento: 'cita', tarea: 'tarea', alarma: 'alarma', recordatorio: 'alarma', nota: 'nota', pensamiento: 'nota', idea: 'nota' };
+const NOMBRE_A_QUITAR = { cita: 'ninguna cita', tarea: 'ninguna tarea', alarma: 'ninguna alarma', nota: 'ningún pensamiento' };
+// (los días no se ignoran: «la cita de mañana» con una única cita de la semana que viene no encaja, y decide el modelo)
+const VACIAS_QUITAR = new Set(['del', 'las', 'los', 'una', 'uno', 'que', 'con', 'para', 'esta', 'este', 'esa', 'ese']);
+function quitarConcreto(mensaje, pendientes) {
+  const m = QUITAR_UNO.exec(sinSignos(mensaje ?? ''));
+  if (!m) return null;
+  // Con un número («la cita del 25», «la de las 10») el título no lo lleva y no se puede comprobar: decide el modelo
+  if (m[2] && /\d/.test(m[2])) return null;
+  const clase = TIPO_A_QUITAR[m[1]];
+  const esAlarma = (r) => r.tipo === 'tarea' && Boolean(r.recordar_en) && !r.fecha_limite;
+  const deClase = (Array.isArray(pendientes) ? pendientes : []).filter((r) => {
+    if (!r || typeof r.id !== 'string') return false;
+    if (clase === 'cita') return r.tipo === 'evento';
+    if (clase === 'alarma') return esAlarma(r);
+    if (clase === 'tarea') return r.tipo === 'tarea' && !esAlarma(r);
+    return r.tipo === 'nota';
+  });
+  const palabras = m[2] ? m[2].split(' ').filter((w) => w.length > 2 && !VACIAS_QUITAR.has(w)) : [];
+  const encajan = palabras.length === 0 ? deClase : deClase.filter((r) => palabras.every((w) => sinAcentos(r.titulo ?? '').includes(w)));
+  if (encajan.length === 1) return { id: encajan[0].id };
+  // «No tienes ninguna…» solo si no hay nada pendiente: si hay otras cosas, puede que el usuario llame «tarea» a una alarma (decide el modelo)
+  if ((Array.isArray(pendientes) ? pendientes : []).filter((r) => r && typeof r.id === 'string').length === 0) return { ninguno: `No tienes ${NOMBRE_A_QUITAR[clase]} pendiente.` };
+  return null;
+}
 
 // Respuestas a las preguntas de borrar, resueltas por CÓDIGO (a «¿Qué sección quieres borrar?» se puede contestar
 // «Tareas», que es también el atajo de «enséñame las tareas»; si ese atajo fuera primero, enseñaría el listado):
@@ -1270,8 +1529,8 @@ function seccionElegida(mensaje, hilo) {
   if (r) return { proyecto: r[1] };
   return null;
 }
-const NO_CONFIRMA = /^(?:no|mejor no|no gracias|ni hablar|dejalo|cancela|cancelalo|espera)\b/;
-const SI_CONFIRMA = /^(?:si|vale|ok|okey|dale|venga|claro|adelante|hazlo|por supuesto|de acuerdo|sip|perfecto|correcto|quitalos|quitalo|quitalas|quitala|borralos|borralo|borralas|borrala|eliminalos|eliminalo|eliminala|eliminalas|mandalo|mandalos|marcalos|marcalo|olvidalo|olvidalos)\b/;
+const NO_CONFIRMA = /^(?:no|mejor no|no gracias|ni hablar|dejalo|cancela|cancelalo|espera|olvidalo|olvidate)\b/;
+const SI_CONFIRMA = /^(?:si|vale|ok|okey|dale|venga|claro|adelante|hazlo|por supuesto|de acuerdo|sip|perfecto|correcto|quitalos|quitalo|quitalas|quitala|borralos|borralo|borralas|borrala|eliminalos|eliminalo|eliminala|eliminalas|mandalo|mandalos|marcalos|marcalo)\b/;
 // Lo que se manda a la papelera de Drive: ids de Drive con la forma de siempre, como mucho MAX_PAPELERA
 const ID_DRIVE_PAPELERA = /^[A-Za-z0-9_-]{10,100}$/;
 const MAX_PAPELERA = 50;
@@ -1297,6 +1556,8 @@ function respuestaConfirmacion(mensaje, hilo) {
   if (!papelera && !olvidar && (t?.motivo !== 'confirmar_lote' || !Array.isArray(t.lotes) || t.lotes.length === 0)) return null;
   const m = sinSignos(mensaje ?? '');
   if (!m || m.split(' ').length > 4) return null;
+  // «Olvídalo» es «sí» solo ante «¿Olvido esto?»; ante borrar en Drive o un lote es «déjalo» (revisión del 2026-10-19)
+  if (olvidar && /^olvidalos?\b/.test(m)) return { tipo: 'si', accion: 'olvidar', ids: olvidar };
   if (NO_CONFIRMA.test(m)) return { tipo: 'no' };
   if (!SI_CONFIRMA.test(m)) return null;
   if (papelera) return { tipo: 'si', accion: 'papelera', papelera };
@@ -1416,6 +1677,13 @@ function proyectosNuevos(datos, config) {
     if (typeof p === 'string' && p && !conocidos.has(sinAcentos(p)) && !nuevos.some((n) => sinAcentos(n) === sinAcentos(p))) nuevos.push(p);
   }
   return nuevos;
+}
+
+// «Ya lo tengo apuntado como tarea: «Ir a comprar» (mié 21).» (tipoSuelto con el mismo tipo)
+function textoYaApuntado({ actual, titulo, item }) {
+  const iso = actual === 'cita' ? item.fecha_inicio : actual === 'alarma' ? item.recordar_en : item.fecha_limite;
+  const cuando = !esFecha(iso) ? '' : actual === 'tarea' ? ` (${diaCorto(Date.parse(iso))})` : ` (${diaCorto(Date.parse(iso))}, ${horaCorta(Date.parse(iso))})`;
+  return `Ya lo tengo apuntado como ${actual}: «${limpiarTxt(titulo)}»${cuando}.`;
 }
 
 // --- Cambiar de tipo: tarea, alarma y cita ---
@@ -1592,7 +1860,7 @@ function textoConfirmar(ocupados, propuestos) {
 
 // Devuelve null (se puede continuar) o { motivo, texto, dias }. Al mover un evento sin tocar su fin, desplaza el fin lo
 // mismo para conservar la duración (modifica datos.correccion.cambios).
-function comprobarAgenda({ datos, agenda, hiloPrevio }) {
+function comprobarAgenda({ datos, agenda, hiloPrevio, horario = [] }) {
   const porId = new Map(agenda.map((a) => [a.id, a]));
   const propuestos = [];
 
@@ -1636,6 +1904,24 @@ function comprobarAgenda({ datos, agenda, hiloPrevio }) {
     for (let j = i + 1; j < propuestos.length; j++) if (solapa(p, propuestos[j])) choques.push({ p, e: propuestos[j], entreNuevos: true });
   });
   if (choques.length > 0) return { motivo: 'solape', dias: [], texto: textoSolape(choques, propuestos.length > 1) };
+
+  // Horario fijo: una cita que cae dentro de un bloque se pregunta antes; el «sí» vale para ese bloque ese día
+  const confirmadosHorario = confirmacionesDelHilo(hiloPrevio).horario;
+  const choquesHorario = [];
+  for (const p of propuestos) {
+    const ini = partesMadrid(p.ini);
+    const finMin = diaMadrid(p.fin - 1) === diaMadrid(p.ini) ? partesMadrid(p.fin).min || 24 * 60 : 24 * 60;
+    for (const b of horario) {
+      if (b.dia_semana !== ini.dia || !(ini.min < aMinutos(b.hora_fin) && aMinutos(b.hora_inicio) < finMin)) continue;
+      const clave = `${diaMadrid(p.ini)}|${b.id}`;
+      if (!confirmadosHorario.has(clave)) choquesHorario.push({ p, b, clave });
+    }
+  }
+  if (choquesHorario.length > 0) {
+    const lineas = choquesHorario.map(({ p, b }) => `«${limpiarTxt(p.titulo)}» (${diaCorto(p.ini)}, ${horaCorta(p.ini)}) cae en tu horario: ${lineaHorario(b)}.`);
+    const verbo = datos.intencion === 'corregir' ? (propuestos.length > 1 ? '¿Las muevo igualmente?' : '¿La muevo igualmente?') : propuestos.length > 1 ? '¿Las apunto igualmente?' : '¿La apunto igualmente?';
+    return { motivo: 'confirmar_horario', horario: [...new Set(choquesHorario.map((c) => c.clave))], texto: `${lineas.join('\n')}\n${verbo}` };
+  }
 
   const confirmados = diasConfirmados(hiloPrevio);
   const ocupados = [];
@@ -1698,6 +1984,16 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     };
   };
   if (comando?.tipo === 'memoria' && comando.accion === 'ver') return ayudaFija([textoMemoria(filasMem, comando.pista === true)]);
+  const filasHor = filasDeHorario(contexto.horario);
+  if (comando?.tipo === 'horario' && comando.accion === 'ver') return ayudaFija([textoMiHorario(filasHor, comando.pista === true)]);
+  if (comando?.tipo === 'horario' && comando.accion === 'quitar') {
+    const bloque = filasHor[comando.n - 1];
+    if (!bloque) return ayudaFija([`No tengo el bloque número ${comando.n}.\n\n${textoMiHorario(filasHor, true)}`]);
+    return {
+      peticiones: [marcarMensaje({ procesado: true, error: null }), peticion('quitar un bloque del horario', 'POST', '/rpc/quitar_horario', { p_id: bloque.id }, 'return=representation')],
+      meta: { ok: true, error: null, intencion: 'quitar_horario', avisos: [], respuesta_usuario: '', pregunta: null, consulta_url: urlNeutra, consulta: null, carpetas: false, ahora: ahora.toISOString() },
+    };
+  }
   if (comando?.tipo === 'memoria' && comando.accion === 'olvidar') {
     const arg = String(comando.arg ?? '').trim();
     // «/forget 2»: el número de la lista, sin preguntar (lo que se olvida se dice tal cual)
@@ -1725,8 +2021,44 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
   }
   const sinPregunta = comando || contexto.pedirNombre === true || contexto.esperaNombre === true ? null : siNoSinPregunta(contexto.mensaje, contexto.hiloPrevio);
   if (sinPregunta) return ayudaFija([sinPregunta]);
+  // Respuesta a «¿Te aviso … para ir a comprar?»: no, una hora (alarma «Ir a comprar») o «sí» sin hora (se pregunta)
+  const avisoResp = comando || contexto.pedirNombre === true || contexto.esperaNombre === true ? null : respuestaAvisoCompra(contexto.mensaje, contexto.hiloPrevio);
+  if (avisoResp?.tipo === 'no') {
+    return {
+      peticiones: [
+        ...(contexto.pendienteId ? [peticion('cerrar pregunta anterior', 'PATCH', `/mensajes?id=eq.${encodeURIComponent(contexto.pendienteId)}`, { pregunta_pendiente: false }, 'return=minimal')] : []),
+        marcarMensaje({ procesado: true, error: null }),
+      ],
+      meta: { ok: true, error: null, intencion: 'descartar', avisos: [], respuesta_usuario: 'Vale, sin aviso.', respuesta_fija: true, pregunta: null, consulta_url: urlNeutra, consulta: null, carpetas: false, ahora: ahora.toISOString() },
+    };
+  }
+  if (avisoResp?.tipo === 'sin_hora') {
+    const texto = `¿A qué hora te aviso ${avisoResp.etiqueta || 'ese día'}?`;
+    return {
+      peticiones: [
+        ...(contexto.pendienteId ? [peticion('cerrar pregunta anterior', 'PATCH', `/mensajes?id=eq.${encodeURIComponent(contexto.pendienteId)}`, { pregunta_pendiente: false }, 'return=minimal')] : []),
+        marcarMensaje({ procesado: true, error: null, pregunta: texto, pregunta_pendiente: true, hilo: [{ rol: 'user', texto: contexto.mensaje }, { rol: 'model', texto: turnoAvisoCompra({ dia: avisoResp.dia, etiqueta: avisoResp.etiqueta }, texto) }] }),
+      ],
+      meta: { ok: true, error: null, intencion: 'aclarar', avisos: [], respuesta_usuario: texto, pregunta: texto, consulta_url: urlNeutra, consulta: null, carpetas: false, ahora: ahora.toISOString() },
+    };
+  }
+  if (avisoResp?.tipo === 'hora') {
+    const [a, b, c] = avisoResp.dia.split('-').map(Number);
+    resp = respuestaDeAtajo({ intencion: 'guardar', items: [{ tipo: 'tarea', titulo: 'Ir a comprar', recordar_en: madridAUtc(a, b, c, avisoResp.hora, avisoResp.min).toISOString(), confianza: 1 }] });
+  }
+  // «Tarea» suelto que llega tarde a una pregunta ya resuelta: ya está (mismo tipo) o se convierte (otro tipo), sin el modelo
+  const suelto = comando || contexto.pedirNombre === true || contexto.esperaNombre === true ? null : tipoSuelto(contexto.mensaje, contexto.hiloPrevio, contexto.reciente, ahora);
+  if (suelto?.igual) return ayudaFija([textoYaApuntado(suelto)]);
+  if (suelto) resp = respuestaDeAtajo({ intencion: 'corregir', correccion: { item_ids: [suelto.ref], convertir_a: suelto.pedido, cambios: {} } });
   if (comando?.tipo === 'atajo') resp = respuestaDeAtajo(comando.datos);
   if (!comando && pideBorrarTodo(contexto.mensaje)) resp = respuestaDeAtajo({ intencion: 'cancelar', cancelar: { filtro: {} } });
+  // «Borra la cita» cuando solo hay una (o ninguna): por código, sin el modelo
+  const concreto = comando || elegida || confirmacion || contexto.pedirNombre === true ? null : quitarConcreto(contexto.mensaje, pendientes);
+  if (concreto?.ninguno) return ayudaFija([concreto.ninguno], 'cancelar');
+  if (concreto?.id) {
+    const refDe = new Map(Object.entries(refs).map(([r, id]) => [id, r]));
+    if (refDe.has(concreto.id)) resp = respuestaDeAtajo({ intencion: 'cancelar', cancelar: { item_ids: [refDe.get(concreto.id)] } });
+  }
   if (elegida) resp = respuestaDeAtajo({ intencion: 'cancelar', cancelar: { filtro: elegida } });
   if (confirmacion?.tipo === 'no') {
     return {
@@ -1821,6 +2153,8 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     datos.pregunta = `No estoy segura de haberte entendido y prefiero no apuntar nada mal. He entendido esto:\n${lineas.join('\n')}\n¿Es así? Si no, dímelo de otra forma.`;
     datos.items = [];
     datos.archivos = null;
+    datos.memoriaNueva = null; // de un mensaje que no se ha entendido no se recuerda nada
+    datos.nombreUsuario = null;
   }
   const meta = {
     ok: true,
@@ -1855,6 +2189,40 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
   const cerrarAnterior = () =>
     peticion('cerrar pregunta anterior', 'PATCH', `/mensajes?id=eq.${encodeURIComponent(contexto.pendienteId)}`, { pregunta_pendiente: false }, 'return=minimal');
 
+  // La compra: lo que sea comprar cosas va a la lista de la compra, y si el mensaje dice un día se pregunta si se avisa ese día.
+  // No aplica a la respuesta a la propia pregunta del aviso (avisoResp).
+  const esCompra = !avisoResp && ES_COMPRA.test(sinSignos(contexto.mensaje ?? ''));
+  const diaCompra = esCompra ? diaDeCompra(contexto.mensaje, ahora) : null;
+  const antesDeCompra = datos.intencion === 'guardar' ? datos.items.length : 0;
+  if (esCompra && datos.intencion === 'guardar') datos.items = aListaDeCompra(datos.items, avisos);
+  const pasoALista = datos.intencion === 'guardar' && datos.items.length !== antesDeCompra || (datos.intencion === 'guardar' && avisos.some((a) => a.includes('pasa a la lista de la compra')));
+  const huboCompra = datos.intencion === 'guardar' && datos.items.some((it) => it.tipo === 'lista' && it.lista === LISTA_COMPRA);
+  // Sin repetidos en las listas
+  const repetidosLista = datos.intencion === 'guardar' ? quitarRepetidosDeLista(datos.items, pendientes) : { items: [], repetidos: [] };
+  if (datos.intencion === 'guardar') {
+    datos.items = repetidosLista.items;
+    if (repetidosLista.repetidos.length > 0) avisos.push(`ya estaban en la lista: ${repetidosLista.repetidos.map((r) => r.titulo).join(', ')}`);
+  }
+  if (datos.intencion === 'guardar' && (pasoALista || repetidosLista.repetidos.length > 0)) {
+    const nombreLista = datos.items.find((it) => it.tipo === 'lista')?.lista ?? repetidosLista.repetidos[0]?.lista ?? LISTA_COMPRA;
+    meta.respuesta_usuario = textoCompraGuardada(datos.items, repetidosLista.repetidos, nombreLista);
+  }
+  const tipoPregunta = (p) => /alarma/.test(sinAcentos(p ?? '')) && /cita/.test(sinAcentos(p ?? '')) && /tarea/.test(sinAcentos(p ?? ''));
+  if (diaCompra && datos.intencion === 'aclarar' && tipoPregunta(datos.pregunta)) {
+    // «Quiero ir a comprar mañana» (sin decir qué): en vez de «¿alarma, cita o tarea?», si se le avisa ese día
+    const texto = textoAvisoCompra(diaCompra.etiqueta);
+    return {
+      peticiones: [
+        ...(contexto.pendienteId ? [cerrarAnterior()] : []),
+        marcarMensaje({ procesado: true, error: null, pregunta: texto, pregunta_pendiente: true, hilo: [...(contexto.hiloPrevio ?? []), { rol: 'user', texto: contexto.mensaje }, { rol: 'model', texto: turnoAvisoCompra(diaCompra, texto) }] }),
+      ],
+      meta: { ...meta, intencion: 'aclarar', pregunta: texto, respuesta_usuario: texto },
+    };
+  }
+  if (diaCompra && huboCompra) {
+    meta.aviso_compra = { ...diaCompra, pregunta: textoAvisoCompra(diaCompra.etiqueta) };
+  }
+
   // Ayuda: lo pidió con palabras que no son un comando («no sé cómo usarte»). Se enseña la lista de comandos y no se toca nada (la pregunta pendiente sigue abierta).
   if (datos.intencion === 'ayuda') return ayudaFija([TEXTO_AYUDA]);
 
@@ -1864,6 +2232,23 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     return {
       peticiones: [...(contexto.pendienteId ? [cerrarAnterior()] : []), marcarMensaje({ procesado: true, error: null })],
       meta: { ...meta, respuesta_usuario: respuesta },
+    };
+  }
+
+  // Horario fijo: se guarda cada bloque (uno por día); el mismo bloque repetido no se duplica (restricción única)
+  if (datos.intencion === 'horario') {
+    const nuevos = datos.horarioNuevo.filter((n) => !filasHor.some((b) => b.dia_semana === n.dia_semana && hhmm(b.hora_inicio) === n.hora_inicio && hhmm(b.hora_fin) === n.hora_fin && sinAcentos(b.titulo) === sinAcentos(n.titulo)));
+    if (filasHor.length + nuevos.length > MAX_HORARIO) {
+      const texto = `Tu horario fijo está lleno (${MAX_HORARIO} bloques). Mira /horario y quita alguno con /horario quitar y su número.`;
+      return { peticiones: [marcarMensaje({ procesado: true, error: null })], meta: { ...meta, respuesta_usuario: texto, respuesta_fija: true } };
+    }
+    return {
+      peticiones: [
+        ...(contexto.pendienteId ? [cerrarAnterior()] : []),
+        ...(nuevos.length > 0 ? [peticion('guardar el horario fijo', 'POST', '/horario_fijo?on_conflict=titulo_norm,dia_semana,hora_inicio,hora_fin', nuevos, 'resolution=ignore-duplicates,return=representation')] : []),
+        marcarMensaje({ procesado: true, error: null }),
+      ],
+      meta: { ...meta, horario_nuevo: datos.horarioNuevo, horario_ya_estaba: nuevos.length === 0 },
     };
   }
 
@@ -1952,7 +2337,7 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     bloqueoConversion ??
     comprobarProyectos({ datos, config, hiloPrevio }) ??
     comprobarRepetidos({ datos, pendientes, hiloPrevio }) ??
-    comprobarAgenda({ datos, agenda, hiloPrevio }) ??
+    comprobarAgenda({ datos, agenda, hiloPrevio, horario: filasHor }) ??
     bloqueoSeccion ??
     // Quitar en bloque (una sección entera o más de un elemento) se confirma SIEMPRE, aunque sea poco
     (datos.seleccion ? comprobarLote({ accion: datos.intencion, ids: selIds, porId, hiloPrevio, siempre: datos.intencion === 'cancelar' && (Boolean(datos.seleccion.filtro) || selIds.length > 1) }) : null) ??
@@ -1969,6 +2354,7 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
       proyectos: [...new Set([...previas.proyectos, ...(bloqueo.proyectos ?? []).map(sinAcentos)])],
       lotes: [...previas.lotes, ...(bloqueo.lotes ?? [])],
       repetidos: [...new Set([...previas.repetidos, ...(bloqueo.repetidos ?? [])])],
+      horario: [...new Set([...previas.horario, ...(bloqueo.horario ?? [])])],
     });
     return {
       peticiones: [
@@ -2005,7 +2391,8 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     // Con archivos que cuelgan del item (uno solo, validado), el item y el enlace de los archivos van en UNA petición a la función
     // guardar_con_archivos, dentro de una transacción. Varias peticiones no sirven: "Escribir en Supabase" las lanza
     // a la vez y el enlace llegaba a veces antes de que el item existiera (error de clave foránea).
-    if (!datos.archivos) peticiones.push(peticion('guardar items', 'POST', '/items', filas, 'return=representation'));
+    // Sin nada que guardar (todo estaba ya en la lista) no se escribe nada
+    if (!datos.archivos && filas.length > 0) peticiones.push(peticion('guardar items', 'POST', '/items', filas, 'return=representation'));
     // Horario de cada evento guardado, para decírselo al usuario en la confirmación: así la hora de fin que se asume cuando no
     // la dice (una hora) no pasa en silencio
     const eventos = datos.items
@@ -2138,6 +2525,15 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
       hilo: [...(contexto.hiloPrevio ?? []), { rol: 'user', texto: contexto.mensaje }, { rol: 'model', texto: sinMarcaDeCodigo(texto) }],
     });
   }
+  if (meta.aviso_compra && datos.intencion === 'guardar') {
+    // Se apunta lo de la compra y la pregunta del aviso queda abierta (con el día en el hilo, para resolver la respuesta por código)
+    const { pregunta: texto, ...aviso } = meta.aviso_compra;
+    Object.assign(cuerpoMensaje, {
+      pregunta: texto,
+      pregunta_pendiente: true,
+      hilo: [...(contexto.hiloPrevio ?? []), { rol: 'user', texto: contexto.mensaje }, { rol: 'model', texto: turnoAvisoCompra(aviso, texto) }],
+    });
+  }
   peticiones.push(marcarMensaje(cuerpoMensaje));
 
   // La pregunta anterior queda contestada en cuanto este mensaje se procesa bien (si falló, sigue abierta para reintentar)
@@ -2169,11 +2565,15 @@ const contexto = {
   nombreSecretaria: typeof construccion.nombre_secretaria === 'string' ? construccion.nombre_secretaria : null,
   // La memoria permanente con sus ids (para /memory y /forget) y el tope
   memoria: Array.isArray(construccion.memoria_filas) ? construccion.memoria_filas : [],
+  // El horario fijo
+  horario: Array.isArray(construccion.horario) ? construccion.horario : [],
   // El aviso de alarma o cita al que responde el usuario (referencias cortas) y las alarmas ya sonadas que se pueden reabrir (ids reales)
   citados: Array.isArray(construccion.avisos_citados) ? construccion.avisos_citados : [],
   reabribles: Array.isArray(construccion.reabribles) ? construccion.reabribles : [],
   // Tipo y fechas de lo pendiente y de las alarmas ya sonadas, por referencia corta: de ahí salen las fechas al cambiar de tipo
   fechas: construccion.fechas && typeof construccion.fechas === 'object' ? construccion.fechas : {},
+  // El pendiente más nuevo (referencia corta y cuándo se apuntó): para un «tarea» suelto que llega tarde (tipoSuelto)
+  reciente: construccion.reciente && typeof construccion.reciente === 'object' ? construccion.reciente : null,
 };
 
 // La agenda (eventos y tareas con fecha límite pendientes) llega con las referencias cortas; aquí se pasan a ids reales

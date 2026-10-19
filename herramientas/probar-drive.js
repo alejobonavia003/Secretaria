@@ -410,6 +410,7 @@ async function main() {
     afirmar('"Leer padres" se ejecuta una vez por archivo y pide también el nombre', !por('Leer padres').executeOnce && por('Leer padres').parameters.url.includes('fields=id,name,parents,trashed'));
     afirmar('"Leer pendientes" siempre produce salida', por('Leer pendientes').alwaysOutputData === true);
     const lcp = por('Leer carpetas pendientes');
+    afirmar('"Leer carpetas pendientes": Execute Once (cuelga de «Leer pendientes», que da un item por archivo: sin esto cada carpeta salía repetida)', lcp.executeOnce === true);
     afirmar('"Leer carpetas pendientes": GET a carpetas_pedidas, solo las pendientes, con credencial de Supabase y siempre con salida', lcp.parameters.method === 'GET' && lcp.parameters.url.includes('/rest/v1/carpetas_pedidas?select=id,ruta,updated_at&drive_pendiente=eq.true&eliminada_at=is.null&order=updated_at.asc&limit=') && lcp.parameters.nodeCredentialType === 'supabaseApi' && lcp.alwaysOutputData === true && lcp.onError === undefined, lcp.parameters.url);
     // La URL de "Leer padres", evaluada como lo hará n8n, para un archivo y para una carpeta pedida
     {

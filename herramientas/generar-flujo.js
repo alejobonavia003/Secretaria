@@ -62,7 +62,7 @@ function codigoComandos(planificar = leer(ruta('herramientas', 'flujo', 'planifi
     constante('diaMadrid'),
     constante('NOMBRE_TERMINO'),
     lineas.slice(ini, fin).join('\n'),
-    'return { interpretarComando, interpretarAplazamiento, pideListarRepetidos, elegirPregunta, siNoSinPregunta, pideBorrarTodo, seccionElegida, respuestaConfirmacion };',
+    'return { interpretarComando, interpretarAplazamiento, pideListarRepetidos, elegirPregunta, siNoSinPregunta, pideBorrarTodo, seccionElegida, respuestaConfirmacion, quitarConcreto, tipoSuelto, respuestaAvisoCompra };',
     '})()',
   ].join('\n');
 }
@@ -111,6 +111,7 @@ const ORDEN = [
   'Leer archivos',
   'Leer proyectos',
   'Leer avisos',
+  'Leer horario',
   'Construir petición',
   '¿Hace falta el modelo?',
   'Modelo',
@@ -164,7 +165,7 @@ function construirFlujoBase() {
       x('Leer items pendientes'),
       {
         method: 'GET',
-        url: `={{ ${CFG}.supabase_url }}/rest/v1/items?select=id,tipo,titulo,contenido,lista,estado,fecha_inicio,fecha_fin,fecha_limite,recordar_en,proyecto&estado=eq.pendiente&order=created_at.desc&limit=200`,
+        url: `={{ ${CFG}.supabase_url }}/rest/v1/items?select=id,tipo,titulo,contenido,lista,estado,fecha_inicio,fecha_fin,fecha_limite,recordar_en,proyecto,created_at&estado=eq.pendiente&order=created_at.desc&limit=200`,
         ...supabase,
       },
       { alwaysOutputData: true },
@@ -219,6 +220,14 @@ function construirFlujoBase() {
         specifyBody: 'json',
         jsonBody: "={{ JSON.stringify({ p_wa_message_id: $('Entrada').first().json.contexto_id || '' }) }}",
       },
+      { alwaysOutputData: true, onError: 'continueRegularOutput' },
+    ),
+    // El horario fijo semanal (tabla horario_fijo). Si la tabla aún no existe, falla sin cortar el flujo y no hay horario.
+    nodoHttp(
+      37,
+      'Leer horario',
+      x('Leer horario'),
+      { method: 'GET', url: `={{ ${CFG}.supabase_url }}/rest/v1/horario_fijo?select=id,titulo,dia_semana,hora_inicio,hora_fin&order=dia_semana.asc,hora_inicio.asc,titulo.asc`, ...supabase },
       { alwaysOutputData: true, onError: 'continueRegularOutput' },
     ),
     nodoCode(6, 'Construir petición', x('Construir petición'), 'construir-peticion.js', [
@@ -421,12 +430,19 @@ function construirFlujoBase() {
       0,
       900,
       2,
-      '## Antes de ejecutar\n1. Elige la credencial en **Modelo** (Header Auth de Gemini) y en **Guardar mensaje**, **Leer memoria**, **Leer items pendientes**, **Leer pregunta pendiente**, **Leer archivos**, **Leer proyectos**, **Leer avisos**, **Escribir en Supabase**, **Leer consulta**, **Contar archivos** y **Marcar borrado** (Supabase API), y la de **Google Drive OAuth2** en **Listar nivel 1**, **Listar nivel 2**, **Listar nivel 3** y **Mandar a la papelera**.\n2. Identificadores: `SUPABASE_URL` y `DRIVE_CARPETA_RAIZ_ID` en el `.env` del servidor (no hace falta tocar **Configuración**). En **Entrada**, el `MENSAJE` de prueba.\n3. Requiere la base de datos instalada (`supabase/instalar.sql`, o `supabase/actualizar-1.1.sql` si venías de la 1.0: sin ella, `Marcar borrado` falla y Vigilar Drive avisará lo borrado como si fuera a mano). La cola de mensajes seguidos y el turno viven en el flujo de WhatsApp: este flujo no espera nunca.\n\nLas filas de prueba tienen `wa_message_id` que empieza por `manual-`.',
+      '## Antes de ejecutar\n1. Elige la credencial en **Modelo** (Header Auth de Gemini) y en **Guardar mensaje**, **Leer memoria**, **Leer items pendientes**, **Leer pregunta pendiente**, **Leer archivos**, **Leer proyectos**, **Leer avisos**, **Leer horario**, **Escribir en Supabase**, **Leer consulta**, **Contar archivos** y **Marcar borrado** (Supabase API), y la de **Google Drive OAuth2** en **Listar nivel 1**, **Listar nivel 2**, **Listar nivel 3** y **Mandar a la papelera**.\n2. Identificadores: `SUPABASE_URL` y `DRIVE_CARPETA_RAIZ_ID` en el `.env` del servidor (no hace falta tocar **Configuración**). En **Entrada**, el `MENSAJE` de prueba.\n3. Requiere la base de datos instalada (`supabase/instalar.sql`, o los `supabase/actualizar-*.sql` que te falten si venías de una versión anterior: sin ellos, `Marcar borrado` falla y Vigilar Drive avisará lo borrado como si fuera a mano, y `Leer horario` falla sin cortar el flujo y no hay horario). La cola de mensajes seguidos y el turno viven en el flujo de WhatsApp: este flujo no espera nunca.\n\nLas filas de prueba tienen `wa_message_id` que empieza por `manual-`.',
       // debajo de «Al ser llamado» (y = 200), sin taparlo
       360,
       260,
     ),
   ];
+
+  // Las lecturas van encadenadas (cada una cuelga de la anterior) y n8n ejecuta un nodo UNA VEZ POR CADA ITEM que recibe: sin Execute Once,
+  // «Leer items pendientes» se repetía por cada fila de la memoria (y así en cadena), el modelo veía cada elemento duplicado («Tienes varias
+  // citas de Médico» con una sola) y un mensaje lanzaba cientos de lecturas a Supabase. Ninguna depende
+  // del item que recibe: cada una se ejecuta una sola vez y devuelve todas sus filas.
+  const LECTURAS_UNA_VEZ = ['Guardar mensaje', 'Leer memoria', 'Leer items pendientes', 'Leer pregunta pendiente', 'Leer archivos', 'Leer proyectos', 'Leer avisos', 'Leer horario'];
+  for (const nd of nodos) if (LECTURAS_UNA_VEZ.includes(nd.name)) nd.executeOnce = true;
 
   const conexiones = {};
   const a = (nombre) => ({ node: nombre, type: 'main', index: 0 });

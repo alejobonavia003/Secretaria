@@ -125,7 +125,7 @@ async function main() {
     afirmar('sin número permitido configurado no pasa nada', comun.extraerMensajes(payloadTexto('hola'), '').length === 0 && comun.extraerMensajes(payloadTexto('hola'), undefined).length === 0 && comun.extraerMensajes(payloadTexto('hola'), null).length === 0);
     afirmar('un estado de entrega no produce mensajes', ext(payloadEstado).length === 0);
     afirmar('un texto vacío o de espacios se ignora', ext(payloadTexto('   ')).length === 0);
-    afirmar('una imagen sin id utilizable se marca como no soportada', JSON.stringify(ext(payloadTipo('image', { image: {} }))) === JSON.stringify([{ wa_message_id: 'wamid.image', tipo_entrada: 'no_soportado', tipo: 'image' }]) && ext(payloadTipo('image', { image: { id: 'a b/c' } }))[0].tipo_entrada === 'no_soportado');
+    afirmar('una imagen sin id utilizable se marca como no soportada', JSON.stringify(ext(payloadTipo('image', { image: {} }))) === JSON.stringify([{ wa_message_id: 'wamid.image', tipo_entrada: 'no_soportado', tipo: 'image', ts: '' }]) && ext(payloadTipo('image', { image: { id: 'a b/c' } }))[0].tipo_entrada === 'no_soportado');
     afirmar('un audio, un vídeo y un documento sin id también', ext(payloadTipo('audio'))[0].tipo === 'audio' && ext(payloadTipo('video'))[0].tipo === 'video' && ext(payloadTipo('document'))[0].tipo === 'document');
     afirmar('una reacción se ignora en silencio', ext(payloadTipo('reaction')).length === 0);
     afirmar('un tipo desconocido se ignora', ext(payloadTipo('algo_nuevo')).length === 0);
@@ -227,13 +227,48 @@ async function main() {
     afirmar('un texto se recorta al límite de WhatsApp', (await p([{ mensajes: ['x'.repeat(5000)] }]))[0].texto.length === 4096);
     afirmar('el fallo de un mensaje no tapa los de los demás', (await p([{ mensajes: ['uno'] }, { error: 'x' }, { mensajes: ['tres'] }])).map((x) => x.texto).join('|') === `uno|${comun.MENSAJE_FALLO_CANAL}|tres`);
     await lanza('sin número permitido en el entorno es un error', p([{ mensajes: ['a'] }], {}), 'WHATSAPP_NUMERO_PERMITIDO');
+    // Las respuestas citan el mensaje del usuario al que contestan (context.message_id); solo el primer mensaje de cada respuesta
+    const pj = (input, juntar) => correr(codigo, { input, env: ENV, nodos: { 'Juntar mensajes': juntar } });
+    const citada = await pj([{ ok: true, mensajes: ['Hecho.', 'Segundo'] }], [{ accion: 'procesar', responde_a: 'wamid.1', wa_message_id: 'wamid.3' }]);
+    afirmar('cita: la respuesta del flujo principal cita el mensaje (el primero del grupo) y solo en su primer mensaje', citada[0].responde_a === 'wamid.1' && !('responde_a' in citada[1]), JSON.stringify(citada));
+    afirmar('cita: cada rama cita su mensaje (audio o archivo rechazado, archivo guardado, tipo no soportado)', (await p([{ ok: false, mensajes: ['No.'], responde_a: 'wamid.aud' }]))[0].responde_a === 'wamid.aud' && (await p([{ tipo_entrada: 'no_soportado', tipo: 'sticker', wa_message_id: 'wamid.st' }]))[0].responde_a === 'wamid.st');
+    afirmar('cita: sin id, o con uno raro, la respuesta sale igual pero sin cita', !('responde_a' in (await p([{ mensajes: ['a'] }]))[0]) && !('responde_a' in (await p([{ mensajes: ['a'], responde_a: 'x/../<y>' }]))[0]));
+    const dos = await pj([{ mensajes: ['uno'] }, { mensajes: ['dos'] }], [{ accion: 'procesar', responde_a: 'wamid.A' }, { accion: 'procesar', responde_a: 'wamid.B' }]);
+    afirmar('cita: con dos respuestas en la misma ejecución, cada una lleva la suya', dos[0].responde_a === 'wamid.A' && dos[1].responde_a === 'wamid.B', JSON.stringify(dos));
+    const varios = async (j) => (await pj([{ mensajes: ['a'] }], [{ accion: 'procesar', responde_a: 'wamid.1', ...j }]))[0].varios_mensajes;
+    afirmar('cita: «varios mensajes» si se juntaron varios o si tuvo que esperar a que se contestara otro; uno solo, no', (await varios({ juntados: 2 })) === true && (await varios({ juntados: 1, espero_turno: true })) === true && (await varios({ juntados: 1, espero_turno: false })) === false);
+
+    afirmar('Preparar envío: el primer mensaje de cada respuesta dice qué mensajes contesta (todos los del grupo) y si viene de la cola', citada[0].contesta.join() === 'wamid.3' && citada[0].de_cola === true && !('contesta' in citada[1]), JSON.stringify(citada));
+    const grupo = await pj([{ mensajes: ['a'] }], [{ accion: 'procesar', responde_a: 'wamid.1', wa_ids: ['wamid.1', 'wamid.2', 'x y'] }]);
+    afirmar('Preparar envío: con varios juntados, «contesta» los lleva todos (y descarta los ids raros)', grupo[0].contesta.join() === 'wamid.1,wamid.2');
+    const foto = await p([{ mensajes: ['Guardado'], responde_a: 'wamid.f1' }, { tipo_entrada: 'no_soportado', tipo: 'sticker', wa_message_id: 'wamid.st' }]);
+    afirmar('Preparar envío: una foto o un aviso contesta su propio mensaje y no viene de la cola', foto[0].contesta.join() === 'wamid.f1' && foto[0].de_cola === false && foto[1].contesta.join() === 'wamid.st');
+    const sinId = await pj([{ mensajes: ['Guardado'], responde_a: null }], [{ accion: 'procesar', responde_a: 'wamid.1', wa_ids: ['wamid.1'] }]);
+    afirmar('Preparar envío: una rama de archivos sin id (responde_a nulo) no toma los mensajes de la cola', sinId[0].contesta.length === 0 && sinId[0].de_cola === false && !('responde_a' in sinId[0]));
+    afirmar('Preparar envío: el primer mensaje lleva cuándo empezó a esperar y los archivos pedidos (si los hay)', Number.isFinite(citada[0].desde) && !('envios_archivos' in citada[0]) && (await pj([{ mensajes: ['Te los mando'], envios_archivos: [{ drive_file_id: 'x' }] }], [{ accion: 'procesar', responde_a: 'wamid.1' }]))[0].envios_archivos.length === 1);
+
+    // Turno de respuesta: espera si queda algo anterior sin contestar; cita solo si el usuario ha mandado varios mensajes
+    const turnoR = nodo('turno-respuesta.js');
+    const CONFT = { config: { turno_min: 10 } };
+    const tr = (envios, turno) => correr(turnoR, { input: [turno], nodos: { 'Preparar envío': envios, Configuración: [CONFT] } });
+    const uno = [{ para: NUMERO, texto: 'Hecho.', responde_a: 'wamid.1', varios_mensajes: false, contesta: ['wamid.1'], de_cola: false, desde: Date.now() }, { para: NUMERO, texto: 'Segundo' }];
+    const sinNada = await tr(uno, { accion: 'enviar', despues: false });
+    afirmar('Turno de respuesta: un solo mensaje y nada después → sin cita, sin campos internos, conserva «contesta»', sinNada.length === 2 && sinNada.every((x) => !('responde_a' in x) && !('varios_mensajes' in x) && !('de_cola' in x) && !('desde' in x)) && sinNada[0].contesta.join() === 'wamid.1' && sinNada[0].texto === 'Hecho.', JSON.stringify(sinNada));
+    afirmar('Turno de respuesta: si quedan mensajes posteriores sin contestar → cita, solo el primero', (await tr(uno, { accion: 'enviar', despues: true }))[0].responde_a === 'wamid.1' && !('responde_a' in (await tr(uno, { accion: 'enviar', despues: true }))[1]));
+    afirmar('Turno de respuesta: varios mensajes juntos o llegados mientras contestaba otro → cita', (await tr([{ ...uno[0], varios_mensajes: true }], { accion: 'enviar', despues: false }))[0].responde_a === 'wamid.1');
+    afirmar('Turno de respuesta: varias respuestas a la vez (varias fotos de golpe) → cada una cita la suya', (await tr([{ texto: 'a', responde_a: 'w.A' }, { texto: 'b', responde_a: 'w.B' }], { accion: 'enviar', despues: false })).map((x) => x.responde_a).join() === 'w.A,w.B');
+    afirmar('Turno de respuesta: si la lectura falla, contesta sin esperar y sin cita', (await tr(uno, { error: { message: '500' } })).length === 2 && !('responde_a' in (await tr(uno, { error: { message: '500' } }))[0]));
+    const espera = await tr(uno, { accion: 'esperar', despues: true });
+    afirmar('Turno de respuesta: queda algo anterior sin contestar → espera (un solo item)', espera.length === 1 && espera[0].esperar === true, JSON.stringify(espera));
+    afirmar('Turno de respuesta: tras esperar TURNO_MIN (contado desde Preparar envío), contesta igualmente', (await tr([{ ...uno[0], desde: Date.now() - 11 * 60000 }, uno[1]], { accion: 'esperar', despues: false })).length === 2);
+    afirmar('Turno de respuesta: una respuesta de la cola de texto nunca espera aquí (ya salió en orden)', (await tr([{ ...uno[0], de_cola: true }], { accion: 'esperar', despues: false })).every((x) => !x.esperar));
   }
 
   console.log('Archivos adjuntos: leer del webhook');
   {
     const ext = (p) => comun.extraerMensajes(p, NUMERO);
     const img = ext(payloadTipo('image', { image: { id: '1234567890', mime_type: 'image/jpeg', sha256: 'x', caption: 'factura de la luz' } }));
-    afirmar('una imagen con id: se lee como imagen con su id, tipo y pie', JSON.stringify(img) === JSON.stringify([{ wa_message_id: 'wamid.image', tipo_entrada: 'imagen', media_id: '1234567890', mime_type: 'image/jpeg', filename: '', caption: 'factura de la luz', contexto_id: '' }]), JSON.stringify(img));
+    afirmar('una imagen con id: se lee como imagen con su id, tipo y pie', JSON.stringify(img) === JSON.stringify([{ wa_message_id: 'wamid.image', tipo_entrada: 'imagen', media_id: '1234567890', mime_type: 'image/jpeg', filename: '', caption: 'factura de la luz', contexto_id: '', ts: '' }]), JSON.stringify(img));
     const doc = ext(payloadTipo('document', { document: { id: 'abc_DEF-9', mime_type: 'application/pdf', filename: 'Contrato.pdf', caption: 'ojo' } }));
     afirmar('un documento: se lee con nombre de archivo y pie', doc.length === 1 && doc[0].tipo_entrada === 'documento' && doc[0].filename === 'Contrato.pdf' && doc[0].caption === 'ojo' && doc[0].media_id === 'abc_DEF-9');
     afirmar('sin pie ni tipo: cadenas vacías, nunca undefined', (() => { const m = ext(payloadTipo('image', { image: { id: '55' } }))[0]; return m.caption === '' && m.mime_type === '' && m.filename === ''; })());
@@ -324,6 +359,8 @@ async function main() {
     const fin = await correr(resultado, { input: [{ drive_file_id: 'x', nombre: 'Foto.jpg' }, { drive_file_id: 'y' }, { error: { message: '409' } }], nodos: { '¿Subido?': hechos } });
     afirmar('Resultado archivo: confirma el guardado con el nombre (y avisa del pie)', fin[0].mensajes[0] === comun.MENSAJE_ARCHIVO_GUARDADO('Foto.jpg', false) && fin[1].mensajes[0].includes('«Doc.pdf»') && fin[1].mensajes[0].includes('pies de foto'));
     afirmar('Resultado archivo: si Supabase no registró el archivo, lo dice', fin[2].mensajes[0] === comun.MENSAJE_ARCHIVO_SIN_REGISTRO);
+    const citaArchivo = await correr(resultado, { input: [{ drive_file_id: 'x' }], nodos: { '¿Subido?': [{ ok: true, nombre: 'F.jpg', tiene_pie: false, mensaje: { wa_message_id: 'wamid.foto1' } }] } });
+    afirmar('Resultado archivo: la confirmación citará la foto o el documento que se guardó', citaArchivo[0].responde_a === 'wamid.foto1');
     afirmar('los mensajes de la rama de archivos los entiende Preparar envío', await (async () => { const e = await correr(nodo('preparar-envio.js', true), { input: [{ mensajes: [fin[0].mensajes[0]] }, { ok: false, mensajes: [comun.MENSAJE_ADJUNTO_FALLO] }] }); return e.length === 2 && e.every((x) => x.para === NUMERO) && e[1].texto === comun.MENSAJE_ADJUNTO_FALLO; })());
   }
 
@@ -334,6 +371,7 @@ async function main() {
     const t = ext(conContexto({ type: 'text', text: { body: 'guárdala en Fotos' } }, { from: '1555', id: 'wamid.HBgMCONFIRMA=' }));
     afirmar('una respuesta de texto trae el id del mensaje citado', t.length === 1 && t[0].contexto_id === 'wamid.HBgMCONFIRMA=' && t[0].mensaje === 'guárdala en Fotos', JSON.stringify(t));
     afirmar('un texto sin respuesta lleva contexto_id vacío (nunca undefined)', ext(payloadTexto('hola'))[0].contexto_id === '');
+    afirmar('cada mensaje lleva la hora de Meta (ts) para ordenar las respuestas; sin hora válida, vacía', ext(payloadTexto('hola'))[0].ts === '1760000000' && ext(payloadTipo('image', { image: { id: '9' }, timestamp: '17600x' }))[0].ts === '' && ext(payloadTipo('audio', { audio: { id: '9' }, timestamp: '1760000001' }))[0].ts === '1760000001');
     afirmar('un contexto sin id (reenviado) o con un id raro se ignora', [{ forwarded: true }, { id: 'con espacios' }, { id: 12 }, { id: '' }, { id: 'a"b' }, null, 'texto'].every((c) => ext(conContexto({ type: 'text', text: { body: 'x' } }, c))[0].contexto_id === ''));
     afirmar('una imagen también puede ser una respuesta', ext(conContexto({ type: 'image', image: { id: '99' } }, { id: 'wamid.X' }))[0].contexto_id === 'wamid.X');
 
@@ -422,8 +460,9 @@ async function main() {
     afirmar('el eco: «🎙️ Entendí: «…»» al número, en una línea', eco.type === 'text' && eco.to === NUMERO && eco.text.body === '🎙️ Entendí: «Mañana a las diez dentista»' && eco.messaging_product === 'whatsapp', JSON.stringify(eco));
     const largo = comun.cuerpoEco({ para: NUMERO, texto: 'palabra '.repeat(200) });
     afirmar('un eco largo se recorta a 500 caracteres', largo.text.body.length < 530 && largo.text.body.endsWith('…»'));
-    const nodoEco = await correr(nodo('mensaje-eco.js', true), { input: [{ ok: true, mensaje: 'Compra leche', wa_message_id: 'wamid.A1', tipo_entrada: 'audio' }] });
-    afirmar('Mensaje de eco: un cuerpo por audio transcrito', nodoEco.length === 1 && nodoEco[0].cuerpo.text.body === '🎙️ Entendí: «Compra leche»');
+    const nodoEco = await correr(nodo('mensaje-eco.js', true), { input: [{ accion: 'procesar', mensaje: 'Compra leche\ny pan', ecos: ['Compra leche', 'mañana dentista'] }] });
+    afirmar('Mensaje de eco: un cuerpo por cada audio del grupo, en orden', nodoEco.length === 2 && nodoEco[0].cuerpo.text.body === '🎙️ Entendí: «Compra leche»' && nodoEco[1].cuerpo.text.body === '🎙️ Entendí: «mañana dentista»');
+    afirmar('Mensaje de eco: sin audios en el grupo no devuelve nada (la rama termina)', (await correr(nodo('mensaje-eco.js', true), { input: [{ accion: 'procesar', mensaje: 'hola', ecos: [] }] })).length === 0 && (await correr(nodo('mensaje-eco.js', true), { input: [{ accion: 'procesar', mensaje: 'hola' }] })).length === 0);
     let lanzoEco = false;
     try { await correr(nodo('mensaje-eco.js', true), { input: [{ mensaje: 'x' }], env: {} }); } catch (e) { lanzoEco = /WHATSAPP_NUMERO_PERMITIDO/.test(e.message); }
     afirmar('Mensaje de eco: sin el número permitido en el entorno, lanza un error', lanzoEco);
@@ -437,17 +476,12 @@ async function main() {
     const enviarEco = flujoEco.nodes.find((x) => x.name === 'Enviar lo entendido');
     afirmar('Enviar lo entendido: POST a /messages con el cuerpo del eco, dos intentos y sin cortar el flujo', enviarEco.parameters.method === 'POST' && enviarEco.parameters.url.endsWith('/messages') && enviarEco.parameters.jsonBody === '={{ JSON.stringify($json.cuerpo) }}' && enviarEco.retryOnFail === true && enviarEco.onError === 'continueRegularOutput');
     afirmar('lo transcrito entra en la cola: ¿Transcrito? -> Entrada del audio -> Preparar cola', flujoEco.connections['¿Transcrito?'].main[0][0].node === 'Entrada del audio' && flujoEco.connections['Entrada del audio'].main[0][0].node === 'Preparar cola');
-    // El eco sale de «En cola», que solo deja pasar lo que de verdad se guardó: un audio que Meta entrega dos veces a la vez solo se guarda
-    // una (wa_message_id es único), así que «Entendí» sale una sola vez
-    const salidasEnCola = flujoEco.connections['En cola'].main[0].map((d) => d.node);
-    afirmar('En cola -> (¿Es un audio? y Esperar a más mensajes); el eco solo para audios -> Mensaje de eco -> Enviar lo entendido', JSON.stringify(salidasEnCola) === JSON.stringify(['¿Es un audio?', 'Esperar a más mensajes']) && flujoEco.connections['¿Es un audio?'].main[0][0].node === 'Mensaje de eco' && flujoEco.connections['¿Es un audio?'].main[1].length === 0 && flujoEco.connections['Mensaje de eco'].main[0][0].node === 'Enviar lo entendido' && !flujoEco.connections['Enviar lo entendido'], JSON.stringify(salidasEnCola));
-    const posEco = flujoEco.nodes.find((x) => x.name === '¿Es un audio?').position;
-    const posEspera = flujoEco.nodes.find((x) => x.name === 'Esperar a más mensajes').position;
-    afirmar('la rama del eco está ENCIMA de la espera (n8n ejecuta primero la de arriba): «Entendí» sale antes que la respuesta', posEco[1] < posEspera[1]);
-    const ecoDeCola = await correr(nodo('mensaje-eco.js', true), { input: [{ id: 'u1', wa_message_id: 'wamid.A1', tipo_entrada: 'audio', texto_original: 'Compra pan' }] });
-    afirmar('Mensaje de eco con la fila de la cola: usa el texto guardado', ecoDeCola[0].cuerpo.text.body === '🎙️ Entendí: «Compra pan»');
-    const esAudioCola = flujoEco.nodes.find((x) => x.name === '¿Es un audio?');
-    afirmar('¿Es un audio?: compara tipo_entrada con «audio»', esAudioCola.parameters.conditions.conditions[0].rightValue === 'audio' && esAudioCola.parameters.conditions.conditions[0].leftValue === '={{ $json.tipo_entrada }}');
+    // El eco sale al tocarle el turno al audio (al reclamarlo): respeta el orden de llegada y sale una vez aunque Meta repita el audio
+    afirmar('el eco sale al tocarle el turno: ¿Procesar? -> (Mensaje de eco y Procesar mensaje) -> Enviar lo entendido; En cola solo espera', JSON.stringify(flujoEco.connections['¿Procesar?'].main[0].map((d) => d.node)) === JSON.stringify(['Mensaje de eco', 'Procesar mensaje']) && JSON.stringify(flujoEco.connections['En cola'].main[0].map((d) => d.node)) === JSON.stringify(['Esperar a más mensajes']) && flujoEco.connections['Mensaje de eco'].main[0][0].node === 'Enviar lo entendido' && !flujoEco.connections['Enviar lo entendido'] && !flujoEco.nodes.some((x) => x.name === '¿Es un audio?'));
+    const posEco = flujoEco.nodes.find((x) => x.name === 'Mensaje de eco').position;
+    const posProc = flujoEco.nodes.find((x) => x.name === 'Procesar mensaje').position;
+    afirmar('la rama del eco está ENCIMA de Procesar mensaje (n8n ejecuta primero la de arriba): «Entendí» sale antes que la respuesta', posEco[1] < posProc[1]);
+    afirmar('el eco no cita el audio', !('context' in nodoEco[0].cuerpo) && !('context' in eco));
     afirmar('Comprobar envío revisa también el eco', nodo('comprobar-envio.js').includes("filas('Enviar lo entendido')"));
     afirmar('Procesar mensaje ya no se alcanza desde el audio sin pasar por el eco', !['Leer transcripción', '¿Transcrito?'].some((n) => flujoEco.connections[n].main.flat().some((d) => d.node === 'Procesar mensaje')));
   }
@@ -461,6 +495,7 @@ async function main() {
     afirmar('Comprobar audio: un audio válido sigue con su wa_message_id, tipo y contexto', bien[0].ok === true && bien[0].wa_message_id === 'wamid.A1' && bien[0].mime_type === 'audio/ogg' && bien[0].contexto_id === 'wamid.C', JSON.stringify(bien[0]));
     const malo = await correr(comprobar, { input: [{ error: { message: '401' } }], nodos: { Configuración: [{ config: cfg }], '¿Es audio?': [entrada] } });
     afirmar('Comprobar audio: si Meta falla, un mensaje honesto y nada más', malo[0].ok === false && malo[0].mensajes[0] === comun.MENSAJE_AUDIO_FALLO);
+    afirmar('Comprobar audio: el aviso citará el audio rechazado', malo[0].responde_a === 'wamid.A1');
 
     // Preparar transcripción: lee el binario con el ayudante de n8n y arma el cuerpo
     const preparar = nodo('preparar-transcripcion.js', true);
@@ -486,6 +521,7 @@ async function main() {
     afirmar('Leer transcripción: lo entendido entra como un mensaje de tipo audio, con su id y su contexto', ok[0].ok === true && ok[0].mensaje === 'Mañana a las diez dentista' && ok[0].tipo_entrada === 'audio' && ok[0].wa_message_id === 'wamid.A1' && ok[0].contexto_id === 'wamid.C', JSON.stringify(ok[0]));
     const fallo = await correrConBinario(leer, { input: [{ error: { message: '500' } }], nodos: { 'Comprobar audio': [bien[0]] } });
     afirmar('Leer transcripción: si Gemini falla, aviso honesto y no pasa al flujo principal', fallo[0].ok === false && fallo[0].mensajes[0] === comun.MENSAJE_AUDIO_TRANSCRIPCION_FALLO && !('mensaje' in fallo[0]));
+    afirmar('Leer transcripción: el aviso de fallo citará el audio', fallo[0].responde_a === 'wamid.A1');
     const vacio = await correrConBinario(leer, { input: [{ candidates: [{ content: { parts: [{ text: '[inaudible]' }] } }] }], nodos: { 'Comprobar audio': [bien[0]] } });
     afirmar('Leer transcripción: un audio inaudible pide repetirlo', vacio[0].ok === false && vacio[0].mensajes[0] === comun.MENSAJE_AUDIO_INAUDIBLE);
 
@@ -544,18 +580,18 @@ async function main() {
     // ---- Preparar archivos a enviar: la secuencia ordenada (cabecera, sus archivos, siguiente cabecera…) ----
     const preparar = nodo('preparar-archivos-envio.js', true);
     const principal = (envios) => [{ ok: true, mensajes: ['Te mando archivos:'], envios_archivos: envios }];
-    const sec = await correr(preparar, { input: principal([
+    const sec = await correr(preparar, { input: [{}], nodos: { 'Turno de respuesta': principal([
       { drive_file_id: idA, nombre: 'a.jpg', tipo_mime: 'image/jpeg', ruta: 'Fotos' },
       { drive_file_id: idB, nombre: 'b.jpg', tipo_mime: 'image/jpeg', ruta: 'Fotos' },
       { drive_file_id: idC, nombre: 'Contrato.pdf', tipo_mime: 'application/pdf', ruta: 'Trabajo/Informes' },
-    ]) });
+    ]) } });
     afirmar('Preparar archivos a enviar: la secuencia es cabecera, sus archivos, cabecera, sus archivos (así llegan en ese orden)', sec.map((x) => (x.tipo === 'cabecera' ? 'C:' + x.ruta + ':' + x.total : 'A:' + x.nombre)).join('|') === 'C:Fotos:2|A:a.jpg|A:b.jpg|C:Trabajo/Informes:1|A:Contrato.pdf', JSON.stringify(sec));
     afirmar('cada archivo de la secuencia lleva id, nombre, tipo y carpeta', sec[1].drive_file_id === idA && sec[1].tipo_mime === 'image/jpeg' && sec[1].ruta === 'Fotos' && sec[4].tipo_mime === 'application/pdf');
-    afirmar('sin archivos que mandar (lo normal) la rama termina', (await correr(preparar, { input: [{ ok: true, mensajes: ['hola'], envios_archivos: [] }, { ok: true, mensajes: ['hola'] }, {}] })).length === 0);
-    const raros = await correr(preparar, { input: principal([{ drive_file_id: 'a b/c', nombre: 'x', ruta: 'Fotos' }, null, { nombre: 'sin id' }, { drive_file_id: idA, ruta: 'Fotos' }]) });
+    afirmar('sin archivos que mandar (lo normal) la rama termina', (await correr(preparar, { input: [{}], nodos: { 'Turno de respuesta': [{ ok: true, mensajes: ['hola'], envios_archivos: [] }, { ok: true, mensajes: ['hola'] }, {}] } })).length === 0);
+    const raros = await correr(preparar, { input: [{}], nodos: { 'Turno de respuesta': principal([{ drive_file_id: 'a b/c', nombre: 'x', ruta: 'Fotos' }, null, { nombre: 'sin id' }, { drive_file_id: idA, ruta: 'Fotos' }]) } });
     afirmar('ids no válidos y elementos raros se descartan, y no dejan una cabecera huérfana', raros.length === 2 && raros[0].tipo === 'cabecera' && raros[0].total === 1 && raros[1].drive_file_id === idA && raros[1].nombre === '');
-    afirmar('solo ids no válidos: no queda nada (ni cabecera)', (await correr(preparar, { input: principal([{ drive_file_id: 'a b/c', ruta: 'Fotos' }]) })).length === 0);
-    const muchos = await correr(preparar, { input: principal(Array.from({ length: 25 }, (_, i) => ({ drive_file_id: 'ID_DRIVE_' + String(i).padStart(4, '0'), nombre: 'f' + i, ruta: 'Fotos' }))) });
+    afirmar('solo ids no válidos: no queda nada (ni cabecera)', (await correr(preparar, { input: [{}], nodos: { 'Turno de respuesta': principal([{ drive_file_id: 'a b/c', ruta: 'Fotos' }]) } })).length === 0);
+    const muchos = await correr(preparar, { input: [{}], nodos: { 'Turno de respuesta': principal(Array.from({ length: 25 }, (_, i) => ({ drive_file_id: 'ID_DRIVE_' + String(i).padStart(4, '0'), nombre: 'f' + i, ruta: 'Fotos' }))) } });
     afirmar('nunca se mandan más de 20 archivos aunque el flujo principal devolviera más (21 items: 20 archivos y una cabecera)', muchos.filter((x) => x.tipo === 'archivo').length === 20 && muchos.length === 21);
 
     // ---- Mensaje de cabecera ----
@@ -629,6 +665,8 @@ async function main() {
     const bien = { 'Procesar mensaje': [{ ok: true, error: null, mensajes: ['Hecho.'] }] };
     afirmar('todo bien: no devuelve nada y no falla', (await comprobar(bien)).length === 0);
     afirmar('rama de archivos (no pasó por Procesar mensaje): no falla por eso', (await comprobar({})).length === 0);
+    await lanza('si no se pudo anotar lo contestado, lo avisa', comprobar({ 'Marcar contestados': [{ error: { message: '404 función no existe' } }] }), 'no se pudo anotar como contestado');
+    afirmar('Marcar contestados sin error no avisa', (await comprobar({ 'Marcar contestados': [{}] })).length === 0);
     await lanza('un envío rechazado por Meta hace fallar la ejecución con el error', comprobar(bien, [{ envio_error: 'The access token has expired', id_error: null }]), '1 de 1 mensajes no se enviaron (The access token has expired');
     await lanza('si solo falla uno de varios lo cuenta', comprobar(bien, [{ envio_error: null }, { envio_error: 'x' }, { envio_error: null }]), '1 de 3 mensajes no se enviaron');
     await lanza('el flujo principal con ok = false hace fallar la ejecución', comprobar({ 'Procesar mensaje': [{ ok: false, error: 'Error del modelo: HTTP 401' }] }), 'el flujo principal no pudo procesar el mensaje (Error del modelo: HTTP 401)');
@@ -638,6 +676,8 @@ async function main() {
     afirmar('«no te he entendido» (ok = false, error anotado, fallo_flujo = false) no hace saltar el aviso de fallos', (await comprobar({ 'Procesar mensaje': [{ ok: false, error: 'Respuesta no válida: x', fallo_flujo: false }] })).length === 0);
     afirmar('«no he encontrado nada que cambiar» tampoco', (await comprobar({ 'Procesar mensaje': [{ ok: false, error: 'La actualización no afectó a ningún item', fallo_flujo: false }] })).length === 0);
     await lanza('un fallo de verdad (fallo_flujo = true) sí', comprobar({ 'Procesar mensaje': [{ ok: false, error: 'Error del modelo: HTTP 503', fallo_flujo: true }] }), 'Error del modelo: HTTP 503');
+    await lanza('si «Anotar fallo» no pudo guardar el error o la pregunta (anotado = false), avisa', comprobar({ 'Procesar mensaje': [{ ok: true, fallo_flujo: false, anotado: false }] }), 'Anotar fallo');
+    afirmar('anotado = null (nada que anotar) o true: sin aviso', (await comprobar({ 'Procesar mensaje': [{ ok: true, anotado: null }, { ok: true, anotado: true }] })).length === 0);
     const largo = await comprobar({ 'Procesar mensaje': [{ ok: true }] });
     afirmar('un ok = true sin más no es un fallo', largo.length === 0);
     try {
@@ -700,6 +740,13 @@ async function main() {
     const [j1] = await juntar([tres], { 'En cola': [{ id: 'm3' }] });
     afirmar('procesar: junta los textos en orden, uno por línea, sin los vacíos; el mensaje propio es el último', j1.accion === 'procesar' && j1.mensaje === 'Mañana dentista\na las 11' && j1.wa_message_id === 'wamid.3' && j1.mensaje_id === 'm3' && j1.juntados === 3 && j1.tipo_entrada === 'texto');
     afirmar('procesar: conserva la cita a una foto de un mensaje anterior', j1.contexto_id === 'wamid.foto');
+    afirmar('procesar: la respuesta citará el PRIMER mensaje del grupo', j1.responde_a === 'wamid.1');
+    afirmar('procesar: a la primera no ha esperado turno', j1.espero_turno === false);
+    afirmar('procesar: lleva todos los ids del grupo (para marcarlos como contestados) y ningún eco si no hay audios', j1.wa_ids.join() === 'wamid.1,wamid.2,wamid.3' && j1.ecos.length === 0);
+    const [jAudio] = await juntar([{ accion: 'procesar', mensajes: [{ id: 'a1', wa_message_id: 'wamid.a', tipo_entrada: 'audio', texto: 'compra leche' }, { id: 'a2', wa_message_id: 'wamid.b', tipo_entrada: 'texto', texto: 'y pan' }] }], { 'En cola': [{ id: 'a2' }] });
+    afirmar('procesar: el eco de cada audio del grupo (lo manda «Mensaje de eco» en su turno)', jAudio.ecos.join() === 'compra leche');
+    const [jEspero] = await juntar([tres], { 'Esperar turno': [{ mensaje_id: 'm3' }] }, 2);
+    afirmar('procesar tras esperar el turno: lo marca (llegó mientras se contestaba otro)', jEspero.accion === 'procesar' && jEspero.espero_turno === true);
     const [j2] = await juntar([{ accion: 'procesar', mensajes: [{ id: 'a1', wa_message_id: 'wamid.a', tipo_entrada: 'audio', texto: 'hola' }] }]);
     afirmar('un audio solo: tipo audio y sin cita', j2.tipo_entrada === 'audio' && j2.contexto_id === '' && j2.mensaje === 'hola');
     afirmar('nada: no devuelve nada (lo procesa otra ejecución y esta no contesta)', (await juntar([{ accion: 'nada', motivo: 'hay_uno_posterior' }])).length === 0);
@@ -729,6 +776,8 @@ async function main() {
     afirmar('Soltar turno: pasa los envíos tal cual con el turno del mensaje procesado', soltar.length === 2 && soltar.every((x) => x.soltar_turno === 'm3') && soltar[1].envio_error === 'x');
     const sinTurno = await correr(nodo('soltar-turno.js'), { input: [{ envio_error: null }] });
     afirmar('Soltar turno: sin cola en esta ejecución (un archivo), turno vacío', sinTurno[0].soltar_turno === '');
+    const conContesta = await correr(nodo('soltar-turno.js'), { input: [{ envio_error: null }], nodos: { 'Turno de respuesta': [{ texto: 'a', contesta: ['w1', 'w2'] }, { texto: 'b' }, { texto: 'c', contesta: ['w2', 'w3'] }] } });
+    afirmar('Soltar turno: junta (sin repetir) los mensajes contestados para «Marcar contestados»', conContesta[0].contestados.join() === 'w1,w2,w3' && sinTurno[0].contestados.length === 0, JSON.stringify(conContesta));
 
     const base = nodo('configuracion.js').replace('TU-PROYECTO', 'abcdefgh').replace('TU-PHONE-NUMBER-ID', '123456789012').replace('TU-ID-DE-ENTRADA', '1AbCdEfGhIjKlMnOp');
     const [c] = await correr(base);
@@ -742,7 +791,7 @@ async function main() {
     const texto = JSON.stringify(flujo);
     const por = (n) => flujo.nodes.find((x) => x.name === n);
     const trabajo = flujo.nodes.filter((x) => x.type !== 'n8n-nodes-base.stickyNote');
-    afirmar('66 nodos de trabajo y 8 notas', trabajo.length === 66 && flujo.nodes.length === 74, `${trabajo.length}/${flujo.nodes.length}`);
+    afirmar('72 nodos de trabajo y 8 notas', trabajo.length === 72 && flujo.nodes.length === 80, `${trabajo.length}/${flujo.nodes.length}`);
     afirmar('nombres e ids únicos', new Set(flujo.nodes.map((x) => x.name)).size === flujo.nodes.length && new Set(flujo.nodes.map((x) => x.id)).size === flujo.nodes.length);
     afirmar('las conexiones solo nombran nodos existentes', Object.entries(flujo.connections).every(([o, c]) => por(o) && c.main.flat().every((d) => por(d.node))));
     afirmar('zona Europe/Madrid', flujo.settings.timezone === 'Europe/Madrid');
@@ -762,15 +811,15 @@ async function main() {
     afirmar('texto va a la cola y lo demás a ¿Es archivo?', flujo.connections['¿Es texto?'].main[0][0].node === 'Preparar cola' && flujo.connections['¿Es texto?'].main[1][0].node === '¿Es archivo?');
     // Cola de mensajes: en este flujo, no en el principal
     const sigue = (o, n = 0) => flujo.connections[o].main[n].map((d) => d.node).join();
-    afirmar('cola: Preparar cola -> Guardar en cola -> En cola -> Esperar a más mensajes -> Reclamar mensajes -> Juntar mensajes -> ¿Procesar?', sigue('Preparar cola') === 'Guardar en cola' && sigue('Guardar en cola') === 'En cola' && sigue('En cola') === '¿Es un audio?,Esperar a más mensajes' && sigue('Esperar a más mensajes') === 'Reclamar mensajes' && sigue('Reclamar mensajes') === 'Juntar mensajes' && sigue('Juntar mensajes') === '¿Procesar?');
-    afirmar('cola: procesar va a Procesar mensaje (única entrada); esperar vuelve a reclamar tras Esperar turno; lo demás termina', sigue('¿Procesar?') === 'Procesar mensaje' && sigue('¿Procesar?', 1) === '¿Esperar turno?' && sigue('¿Esperar turno?') === 'Esperar turno' && sigue('¿Esperar turno?', 1) === '' && sigue('Esperar turno') === 'Reclamar mensajes' && Object.entries(flujo.connections).filter(([, c]) => c.main.flat().some((d) => d.node === 'Procesar mensaje')).map(([o]) => o).join() === '¿Procesar?');
+    afirmar('cola: Preparar cola -> Guardar en cola -> En cola -> Esperar a más mensajes -> Reclamar mensajes -> Juntar mensajes -> ¿Procesar?', sigue('Preparar cola') === 'Guardar en cola' && sigue('Guardar en cola') === 'En cola' && sigue('En cola') === 'Esperar a más mensajes' && sigue('Esperar a más mensajes') === 'Reclamar mensajes' && sigue('Reclamar mensajes') === 'Juntar mensajes' && sigue('Juntar mensajes') === '¿Procesar?');
+    afirmar('cola: procesar va al eco y a Procesar mensaje (única entrada); esperar vuelve a reclamar tras Esperar turno; lo demás termina', sigue('¿Procesar?') === 'Mensaje de eco,Procesar mensaje' && sigue('¿Procesar?', 1) === '¿Esperar turno?' && sigue('¿Esperar turno?') === 'Esperar turno' && sigue('¿Esperar turno?', 1) === '' && sigue('Esperar turno') === 'Reclamar mensajes' && Object.entries(flujo.connections).filter(([, c]) => c.main.flat().some((d) => d.node === 'Procesar mensaje')).map(([o]) => o).join() === '¿Procesar?');
     afirmar('cola: las dos esperas son nodos Wait en segundos, con la configuración', ['Esperar a más mensajes', 'Esperar turno'].every((n) => por(n).type === 'n8n-nodes-base.wait' && por(n).parameters.unit === 'seconds' && /espera_(agrupar|turno)_s/.test(por(n).parameters.amount) && por(n).webhookId));
     afirmar('cola: Guardar en cola inserta la fila preparada y no corta el flujo (un reenvío choca y se descarta en En cola)', por('Guardar en cola').parameters.url.endsWith('/rest/v1/mensajes') && por('Guardar en cola').parameters.jsonBody === '={{ JSON.stringify($json) }}' && por('Guardar en cola').onError === 'continueRegularOutput');
-    afirmar('cola: Reclamar mensajes usa el id en cola o el de la vuelta y el turno de la configuración; si falla, la ejecución falla', por('Reclamar mensajes').parameters.url.endsWith('/rest/v1/rpc/reclamar_mensajes') && por('Reclamar mensajes').parameters.jsonBody.includes('$json.mensaje_id || $json.id') && por('Reclamar mensajes').parameters.jsonBody.includes('turno_min') && por('Reclamar mensajes').onError === undefined);
-    afirmar('turno: se suelta DESPUÉS de mandar las respuestas (done -> Soltar turno -> ¿Soltar turno? -> Liberar turno -> Comprobar envío)', sigue('Recorrer mensajes') === 'Soltar turno' && sigue('Soltar turno') === '¿Soltar turno?' && sigue('¿Soltar turno?') === 'Liberar turno' && sigue('¿Soltar turno?', 1) === 'Comprobar envío' && sigue('Liberar turno') === 'Comprobar envío');
+    afirmar('cola: Reclamar mensajes usa el id en cola o el de la vuelta y el turno de la configuración; si falla, la ejecución falla', por('Reclamar mensajes').parameters.url.endsWith('/rest/v1/rpc/reclamar_mensajes') && por('Reclamar mensajes').parameters.jsonBody.includes('$json.mensaje_id || $json.id') && por('Reclamar mensajes').parameters.jsonBody.includes('turno_min') && por('Reclamar mensajes').parameters.jsonBody.includes("p_mismos: $('Quitar duplicados').all()") && por('Reclamar mensajes').onError === undefined);
+    afirmar('turno: se suelta DESPUÉS de mandar las respuestas y los archivos (done -> Soltar turno -> ¿Mandar archivos? -> Marcar contestados -> ¿Soltar turno? -> Liberar turno -> Comprobar envío)', sigue('Recorrer mensajes') === 'Soltar turno' && sigue('Soltar turno') === '¿Mandar archivos?' && sigue('¿Mandar archivos?', 1) === 'Marcar contestados' && sigue('Marcar contestados') === '¿Soltar turno?' && por('¿Soltar turno?').parameters.conditions.conditions[0].leftValue.includes("$('Soltar turno').first().json.soltar_turno") && sigue('¿Soltar turno?') === 'Liberar turno' && sigue('¿Soltar turno?', 1) === 'Comprobar envío' && sigue('Liberar turno') === 'Comprobar envío');
     afirmar('turno: Liberar turno una vez, sin cortar el flujo, con el id de Soltar turno', por('Liberar turno').parameters.url.endsWith('/rest/v1/rpc/liberar_turno') && por('Liberar turno').executeOnce === true && por('Liberar turno').onError === 'continueRegularOutput' && por('Liberar turno').parameters.jsonBody.includes("$('Soltar turno').first().json.soltar_turno"));
     afirmar('cola: los nodos de Supabase nuevos llevan la credencial predefinida', ['Guardar en cola', 'Reclamar mensajes', 'Liberar turno'].every((n) => por(n).parameters.nodeCredentialType === 'supabaseApi'));
-    afirmar('Procesar mensaje y los tipos no soportados convergen en Preparar envío, y luego el bucle de envío', flujo.connections['Procesar mensaje'].main[0][0].node === 'Preparar envío' && flujo.connections['Preparar envío'].main[0][0].node === 'Recorrer mensajes');
+    afirmar('Procesar mensaje y los tipos no soportados convergen en Preparar envío, y luego el bucle de envío', flujo.connections['Procesar mensaje'].main[0][0].node === 'Preparar envío' && flujo.connections['Preparar envío'].main[0][0].node === '¿Me toca contestar?' && flujo.connections['¿Esperar para contestar?'].main[1][0].node === 'Recorrer mensajes');
     const pm = por('Procesar mensaje');
     afirmar('Procesar mensaje: un mensaje por llamada, espera al resultado y no corta el envío si falla', pm.type === 'n8n-nodes-base.executeWorkflow' && pm.parameters.mode === 'each' && pm.parameters.options.waitForSubWorkflow === true && pm.onError === 'continueRegularOutput');
     afirmar('Procesar mensaje: apunta al id fijo del flujo principal', pm.parameters.workflowId.mode === 'id' && pm.parameters.workflowId.value === IDS['procesar-mensaje.json']);
@@ -779,8 +828,12 @@ async function main() {
     const env = por('Enviar WhatsApp');
     afirmar('Enviar WhatsApp: POST a graph.facebook.com con la versión y el número de Configuración', env.parameters.method === 'POST' && env.parameters.url.includes('graph.facebook.com') && env.parameters.url.includes('graph_version') && env.parameters.url.includes('phone_number_id') && env.parameters.url.endsWith('/messages'));
     afirmar('Enviar WhatsApp: credencial Header Auth que se elige a mano, con reintento y sin cortar', env.parameters.authentication === 'genericCredentialType' && env.parameters.genericAuthType === 'httpHeaderAuth' && env.retryOnFail === true && env.onError === 'continueRegularOutput');
+    const cuerpoDe = (json) => JSON.parse(new Function('$json', `return ${env.parameters.jsonBody.slice(3, -2)}`)(json));
+    const conCita = cuerpoDe({ para: NUMERO, texto: 'Hecho.', responde_a: 'wamid.1' });
+    const sinCita = cuerpoDe({ para: NUMERO, texto: 'Hecho.' });
+    afirmar('Enviar WhatsApp: con responde_a manda context.message_id (respuesta citada); sin él, el cuerpo de siempre', conCita.context?.message_id === 'wamid.1' && conCita.text.body === 'Hecho.' && !('context' in sinCita) && sinCita.to === NUMERO, JSON.stringify([conCita, sinCita]));
     afirmar('Enviar WhatsApp: cuerpo de texto con el formato de la API de Meta', ['messaging_product', 'whatsapp', 'recipient_type', 'individual', "type: 'text'", 'preview_url', 'body'].every((k) => env.parameters.jsonBody.includes(k)));
-    afirmar('Procesar mensaje cuelga también de la rama de envío de archivos, DESPUÉS de la que contesta (el texto llega primero)', flujo.connections['Procesar mensaje'].main[0].map((d) => d.node).join() === 'Preparar envío,Preparar archivos a enviar' && por('Preparar archivos a enviar').position[1] > por('Preparar envío').position[1]);
+    afirmar('los archivos pedidos se mandan DESPUÉS del texto y ANTES de soltar el turno: Soltar turno -> ¿Mandar archivos? (sí: Preparar archivos a enviar; no: Marcar contestados); Revisar envíos de archivos -> Marcar contestados', flujo.connections['Procesar mensaje'].main[0].map((d) => d.node).join() === 'Preparar envío' && flujo.connections['Soltar turno'].main[0][0].node === '¿Mandar archivos?' && flujo.connections['¿Mandar archivos?'].main[0][0].node === 'Preparar archivos a enviar' && flujo.connections['¿Mandar archivos?'].main[1][0].node === 'Marcar contestados' && flujo.connections['Revisar envíos de archivos'].main[0][0].node === 'Marcar contestados' && por('¿Mandar archivos?').parameters.conditions.conditions[0].leftValue.includes("$('Turno de respuesta').all()"));
     const bucle = por('Recorrer envíos');
     afirmar('Recorrer envíos: Loop Over Items de 1 en 1 (cada elemento se procesa entero antes del siguiente) que recibe la secuencia de Preparar archivos a enviar', bucle.type === 'n8n-nodes-base.splitInBatches' && bucle.parameters.batchSize === 1 && flujo.connections['Preparar archivos a enviar'].main[0][0].node === 'Recorrer envíos');
     afirmar('Recorrer envíos: done (índice 0) -> Revisar envíos de archivos; loop (índice 1) -> ¿Es cabecera?', flujo.connections['Recorrer envíos'].main[0][0].node === 'Revisar envíos de archivos' && flujo.connections['Recorrer envíos'].main[1][0].node === '¿Es cabecera?', JSON.stringify(flujo.connections['Recorrer envíos']));
@@ -797,12 +850,15 @@ async function main() {
     afirmar('Subir a WhatsApp: POST multipart a /media con messaging_product, type y el binario "data" como file', sw.parameters.method === 'POST' && sw.parameters.url.endsWith('/media') && sw.parameters.url.includes('phone_number_id') && sw.parameters.contentType === 'multipart-form-data' && camposSw.find((c) => c.name === 'messaging_product').value === 'whatsapp' && camposSw.find((c) => c.name === 'type').value.includes('.mime') && camposSw.find((c) => c.name === 'file').parameterType === 'formBinaryData' && camposSw.find((c) => c.name === 'file').inputDataFieldName === 'data' && sw.parameters.genericAuthType === 'httpHeaderAuth' && sw.onError === 'continueRegularOutput', JSON.stringify(sw.parameters));
     const ea = por('Enviar archivo');
     afirmar('Enviar archivo: POST a /messages con el cuerpo preparado, dos intentos y sin cortar el flujo', ea.parameters.method === 'POST' && ea.parameters.url.endsWith('/messages') && ea.parameters.jsonBody === '={{ JSON.stringify($json.cuerpo) }}' && ea.retryOnFail === true && ea.maxTries === 2 && ea.onError === 'continueRegularOutput');
-    afirmar('Revisar envíos de archivos: es un Code que cierra el bucle', por('Revisar envíos de archivos').type === 'n8n-nodes-base.code' && por('Revisar envíos de archivos').parameters.jsCode.includes('throw new Error'));
+    afirmar('Revisar envíos de archivos: es un Code que cierra el bucle y no lanza (lo avisa Comprobar envío, después de soltar el turno)', por('Revisar envíos de archivos').type === 'n8n-nodes-base.code' && !por('Revisar envíos de archivos').parameters.jsCode.includes('throw new Error'));
     const revisar = nodo('revisar-envios-archivos.js');
-    afirmar('Revisar envíos de archivos: si todos se enviaron no hace nada', (await correr(revisar, { input: [{ messages: [{ id: 'wamid.1' }] }, { messages: [{ id: 'wamid.2' }] }] })).length === 0);
+    const bienRev = await correr(revisar, { input: [{ messages: [{ id: 'wamid.1' }] }, { messages: [{ id: 'wamid.2' }] }] });
+    afirmar('Revisar envíos de archivos: si todos se enviaron, un resumen sin fallos (siempre un item)', bienRev.length === 1 && bienRev[0].archivos_total === 2 && bienRev[0].archivos_fallidos === 0);
+    const malRev = await correr(revisar, { input: [{ messages: [{ id: 'wamid.1' }] }, { error: { message: 'Request failed with status code 400' } }] });
+    afirmar('Revisar envíos de archivos: si alguno falló, lo resume', malRev[0].archivos_fallidos === 1 && malRev[0].archivos_error.includes('status code 400'));
     let falloRevision = '';
-    try { await correr(revisar, { input: [{ messages: [{ id: 'wamid.1' }] }, { error: { message: 'Request failed with status code 400' } }] }); } catch (e) { falloRevision = e.message; }
-    afirmar('Revisar envíos de archivos: si alguno falló, lanza un error que dice cuántos y por qué (queda en rojo)', falloRevision.includes('1 de 2 mensajes de archivos no se enviaron') && falloRevision.includes('status code 400'), falloRevision);
+    try { await correr(nodo('comprobar-envio.js'), { input: [{}], nodos: { 'Soltar turno': [{ envio_error: null }], 'Revisar envíos de archivos': malRev } }); } catch (e) { falloRevision = e.message; }
+    afirmar('Comprobar envío: si algún archivo no se envió, lanza un error que dice cuántos y por qué (queda en rojo)', falloRevision.includes('1 de 2 mensajes de archivos no se enviaron') && falloRevision.includes('status code 400'), falloRevision);
     afirmar('Comprobar envío ya no revisa Enviar archivo (lo hace el bucle)', !por('Comprobar envío').parameters.jsCode.includes("filas('Enviar archivo')"));
     afirmar('las notas explican la rama de envío y sus credenciales', flujo.nodes.some((x) => x.type === 'n8n-nodes-base.stickyNote' && x.parameters.content.includes('Mandar archivos al usuario') && x.parameters.content.includes('Leer datos de Drive') && x.parameters.content.includes('Subir a WhatsApp')));
     const esAudio = por('¿Es audio?');
@@ -834,7 +890,13 @@ async function main() {
     afirmar('el token de WhatsApp solo se envía a graph.facebook.com o a la URL validada por Comprobar adjunto', [leer, desc, env].every((x) => x.parameters.genericAuthType === 'httpHeaderAuth') && por('Comprobar adjunto').parameters.jsCode.includes('planificarAdjunto') && por('Comprobar adjunto').parameters.jsCode.includes('function urlAdjuntoValida'));
     const anot = por('Anotar confirmación');
     const gid = por('Guardar id de la confirmación');
-    afirmar('Preparar envío -> Recorrer mensajes (Loop Over Items de 1 en 1) -> Enviar WhatsApp -> Anotar confirmación -> ¿Guardar id?', flujo.connections['Preparar envío'].main[0][0].node === 'Recorrer mensajes' && por('Recorrer mensajes').type === 'n8n-nodes-base.splitInBatches' && por('Recorrer mensajes').parameters.batchSize === 1 && flujo.connections['Recorrer mensajes'].main[1][0].node === 'Enviar WhatsApp' && flujo.connections['Enviar WhatsApp'].main[0][0].node === 'Anotar confirmación' && flujo.connections['Anotar confirmación'].main[0][0].node === '¿Guardar id?');
+    const toca = por('¿Me toca contestar?');
+    afirmar('¿Me toca contestar?: RPC turno_respuesta con los mensajes que se contestan y TURNO_MIN, una vez, sin cortar el flujo', toca.parameters.method === 'POST' && toca.parameters.url.endsWith('/rest/v1/rpc/turno_respuesta') && toca.parameters.jsonBody.includes("$('Preparar envío').all()") && toca.parameters.jsonBody.includes('contesta') && toca.parameters.jsonBody.includes('turno_min') && toca.parameters.jsonBody.includes("p_mismos: $('Quitar duplicados').all()") && toca.parameters.nodeCredentialType === 'supabaseApi' && toca.executeOnce === true && toca.alwaysOutputData === true && toca.onError === 'continueRegularOutput');
+    afirmar('Preparar envío -> ¿Me toca contestar? -> Turno de respuesta -> ¿Esperar para contestar? (sí: Esperar para contestar -> vuelve a preguntar; no: Recorrer mensajes) -> Enviar WhatsApp -> Anotar confirmación -> ¿Guardar id?', sigue('Preparar envío') === '¿Me toca contestar?' && sigue('¿Me toca contestar?') === 'Turno de respuesta' && sigue('Turno de respuesta') === '¿Esperar para contestar?' && sigue('¿Esperar para contestar?') === 'Esperar para contestar' && sigue('¿Esperar para contestar?', 1) === 'Recorrer mensajes' && sigue('Esperar para contestar') === '¿Me toca contestar?' && por('Esperar para contestar').type === 'n8n-nodes-base.wait' && por('Esperar para contestar').parameters.amount.includes('espera_turno_s') && por('Recorrer mensajes').type === 'n8n-nodes-base.splitInBatches' && por('Recorrer mensajes').parameters.batchSize === 1 && flujo.connections['Recorrer mensajes'].main[1][0].node === 'Enviar WhatsApp' && flujo.connections['Enviar WhatsApp'].main[0][0].node === 'Anotar confirmación' && flujo.connections['Anotar confirmación'].main[0][0].node === '¿Guardar id?');
+    const reg = por('Registrar llegadas');
+    afirmar('Registrar llegadas: RPC con TODOS los mensajes (de Quitar duplicados: con Execute Once el nodo solo recibe el primero), una vez, sin cortar el flujo, en la rama de ARRIBA de Quitar duplicados', reg.parameters.url.endsWith('/rest/v1/rpc/registrar_llegadas') && !reg.parameters.jsonBody.includes('$input') && ["$('Quitar duplicados').all()", 'wa_message_id', 'ts', 'tipo_entrada'].every((k) => reg.parameters.jsonBody.includes(k)) && reg.executeOnce === true && reg.onError === 'continueRegularOutput' && sigue('Quitar duplicados') === 'Registrar llegadas,¿Es texto?' && reg.position[1] < por('¿Es texto?').position[1] && !flujo.connections['Registrar llegadas']);
+    const marcar = por('Marcar contestados');
+    afirmar('Marcar contestados: RPC con los contestados de Soltar turno, una vez, sin cortar el flujo', marcar.parameters.url.endsWith('/rest/v1/rpc/marcar_contestados') && marcar.parameters.jsonBody.includes("$('Soltar turno').first().json.contestados") && marcar.executeOnce === true && marcar.alwaysOutputData === true && marcar.onError === 'continueRegularOutput');
     afirmar('¿Guardar id?: sí guarda el id y cierra; no cierra directamente; Cerrar envío vuelve al bucle', por('¿Guardar id?').type === 'n8n-nodes-base.if' && flujo.connections['¿Guardar id?'].main[0][0].node === 'Guardar id de la confirmación' && flujo.connections['¿Guardar id?'].main[1][0].node === 'Cerrar envío' && flujo.connections['Guardar id de la confirmación'].main[0][0].node === 'Cerrar envío' && flujo.connections['Cerrar envío'].main[0][0].node === 'Recorrer mensajes');
     const comp = por('Comprobar envío');
     afirmar('Comprobar envío va tras la salida «done» del bucle (cuando ya se han enviado todos y soltado el turno), no del envío', flujo.connections['Recorrer mensajes'].main[0].map((d) => d.node).join() === 'Soltar turno' && flujo.connections['Enviar WhatsApp'].main[0].every((d) => d.node !== 'Comprobar envío') && comp.type === 'n8n-nodes-base.code');

@@ -2,7 +2,7 @@
 
 [![Pruebas](https://github.com/gguillex/Secretaria/actions/workflows/pruebas.yml/badge.svg)](https://github.com/gguillex/Secretaria/actions/workflows/pruebas.yml)
 [![Licencia: MIT](https://img.shields.io/badge/licencia-MIT-blue.svg)](LICENSE)
-![Versión 1.1.0](https://img.shields.io/badge/versión-1.1.0-informational)
+![Versión 1.2.0](https://img.shields.io/badge/versión-1.2.0-informational)
 ![n8n 2.41.6](https://img.shields.io/badge/n8n-2.41.6-EA4B71)
 ![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933)
 ![Gemini](https://img.shields.io/badge/IA-Gemini-4285F4)
@@ -33,10 +33,16 @@ Pensado para **una sola persona**: tú. Corre en un servidor pequeño propio, co
 - **Archivos:** los organiza en carpetas de Drive a petición («guárdala en Fotos/Viajes») y te los devuelve por WhatsApp. También
   borra carpetas y archivos («borra la carpeta Fotos/Viajes», «vacía la carpeta Facturas»): enseña la lista y solo los manda a la
   papelera de Drive (recuperable unos 30 días) si le dices que sí.
-- **Memoria:** recuerda lo que le cuentas que dura («trabajo los viernes por la mañana», «Emma es mi hermana») y cómo quieres que te
+- **Memoria:** recuerda lo que le cuentas que dura («Emma es mi hermana», «vivo en Granada») y cómo quieres que te
   llame («llámame Ana»). `/memory` enseña lo que recuerda (hasta 50 datos) y `/forget 2` olvida el segundo; si se lo pides con palabras
   («olvida lo de Emma»), pregunta antes.
+- **Horario fijo semanal** («trabajo los viernes de 16 a 20»): si apuntas una cita que cae dentro, pregunta antes. `/horario` lo
+  enseña y `/horario quitar N` quita un bloque.
+- **La compra:** lo que sea comprar va a la lista de la compra aunque digas un día, sin repetir lo que ya está, y pregunta si te avisa
+  ese día para ir a comprar.
 - **Charla breve:** a un saludo o un «gracias» contesta con naturalidad, sin guardar nada.
+- **Todo en orden:** contesta textos, audios, fotos y documentos en el orden en que llegaron; si mandas varios seguidos, cada
+  respuesta cita el mensaje al que contesta.
 - **Resumen diario** a las 7:00 (con los proyectos en viñetas) y recordatorio de archivos sin clasificar.
 - **No adivina:** si no entiende un mensaje o no está segura, pregunta o te dice que no te ha entendido, en vez de guardar algo mal.
   El aviso de fallos solo llega cuando falla algo de verdad, y dice qué mensaje era.
@@ -56,7 +62,9 @@ Pensado para **una sola persona**: tú. Corre en un servidor pequeño propio, co
 | Una nota de voz | Te dice «🎙️ Entendí: …» y la trata como si la hubieras escrito. |
 | «borra todo» | Pregunta qué sección y, antes de borrar, te enseña la lista y pide confirmación. |
 | «borra la carpeta Fotos/Viajes» | Enseña lo que se borraría y, si dices «sí», lo manda a la papelera de Drive. |
-| «para que lo sepas: trabajo los viernes por la mañana» · `/memory` | Lo recuerda para entender lo que le pidas después; `/memory` lo enseña. |
+| «para que lo sepas: Emma es mi hermana» · `/memory` | Lo recuerda para entender lo que le pidas después; `/memory` lo enseña. |
+| «trabajo los viernes de 16 a 20» · `/horario` | Lo guarda como horario fijo; si luego apuntas una cita que cae dentro, pregunta antes. |
+| «mañana compra pan y leche» | Lo apunta en la lista de la compra (sin repetir lo que ya estaba) y pregunta si te avisa mañana para ir a comprar. |
 
 ## Cómo está hecha
 

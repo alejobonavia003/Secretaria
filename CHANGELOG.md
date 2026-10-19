@@ -2,6 +2,42 @@
 
 Formato: cada versión dice qué cambia para quien la usa y qué hay que hacer para actualizar una instalación existente.
 
+## 1.2.0 · 2026-10-19
+
+### Novedades
+
+- **Horario fijo semanal** («trabajo los viernes de 16 a 20»): si apuntas una cita que cae dentro, pregunta antes de apuntarla.
+  `/horario` lo enseña y `/horario quitar N` quita un bloque. Si no das horas exactas, pregunta de qué hora a qué hora.
+- **Todo se contesta en el orden de llegada**, también fotos, documentos y audios: «texto, foto, texto» recibe tres respuestas en ese
+  orden. Si mandas varios mensajes seguidos, cada respuesta cita el mensaje al que contesta.
+- **La compra:** lo que sea comprar va a la lista de la compra aunque digas un día («mañana compra pan»), y pregunta si te avisa ese
+  día para ir a comprar («a las 18» crea la alarma; «no», nada).
+- **Listas sin repetidos:** lo que ya está pendiente en la misma lista no se vuelve a apuntar; la respuesta dice qué ya estaba.
+
+### Cambios
+
+- «Borra la cita», «quita la alarma de la ropa»: si solo hay una que encaje, la quita sin preguntar.
+- Un «tarea», «cita» o «alarma» suelto que llega justo después de apuntar algo se resuelve sin el modelo (lo deja como está o lo
+  convierte).
+- El «🎙️ Entendí: …» de un audio sale justo antes de su respuesta.
+- Olvidar un dato de la memoria con palabras pide un «sí» o un «no» que se entiende sin el modelo.
+- **Más rápido:** las lecturas de Supabase del flujo principal se hacen una sola vez por mensaje (antes podían repetirse por cada
+  dato de la memoria).
+- Nueva consulta `supabase/consultas/ver-version.sql`: dice qué versión de la base de datos tienes instalada.
+
+### Para actualizar desde la 1.1
+
+1. Haz una copia de n8n (parte 15 del manual).
+2. En el SQL Editor de Supabase, ejecuta [`supabase/actualizar-1.2.sql`](supabase/actualizar-1.2.sql) **una vez** y comprueba con
+   `supabase/comprobar-instalacion.sql` (10 filas con `ok = true`). Crea dos tablas (`horario_fijo` y `llegadas`) y cambia la
+   función de la cola de mensajes; no toca tus datos.
+3. En el servidor: `git pull`, `bash herramientas/servidor/importar-flujos.sh` y vuelve a publicar los flujos (parte 11.5 del manual).
+   La base de datos va **antes** que los flujos: **sin el paso 2, la secretaria deja de contestar** (el flujo de WhatsApp llama a la
+   función de la cola con un parámetro que la 1.1 no tiene).
+
+Si vienes de la 1.0, ejecuta antes `supabase/actualizar-1.1.sql` (y después este). `supabase/consultas/ver-version.sql` te dice cuál
+tienes.
+
 ## 1.1.0 · 2026-10-19
 
 ### Novedades

@@ -87,6 +87,7 @@
         160
       ],
       "alwaysOutputData": true,
+      "executeOnce": true,
       "credentials": {
         "supabaseApi": {
           "id": null,

@@ -4,12 +4,13 @@
 with
 tablas_esperadas(nombre) as (
   values ('mensajes'), ('items'), ('memoria'), ('archivos'), ('carpetas_pedidas'), ('drive_arbol'), ('registro_drive'),
-         ('vigilantes_estado'), ('registro_calendar'), ('proyectos'), ('turno'), ('avisos_enviados')
+         ('vigilantes_estado'), ('registro_calendar'), ('proyectos'), ('turno'), ('avisos_enviados'), ('horario_fijo'), ('llegadas')
 ),
 funciones_esperadas(nombre) as (
   values ('guardar_con_archivos'), ('salud_sistema'), ('resumen_proyectos'),
          ('reclamar_mensajes'), ('liberar_turno'), ('anadir_contenido'), ('contexto_avisos'),
-         ('marcar_borrado_drive'), ('olvidar_memoria')
+         ('marcar_borrado_drive'), ('olvidar_memoria'), ('quitar_horario'),
+         ('registrar_llegadas'), ('turno_respuesta'), ('marcar_contestados'), ('llegada_perdida')
 ),
 tablas as (
   select c.relname as nombre, c.relrowsecurity as rls
@@ -25,8 +26,8 @@ disparadores as (
   select t.tgname from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace
   where n.nspname = 'public' and not t.tgisinternal
 )
-select 1 as paso, 'existen las 12 tablas' as comprobacion,
-       (select count(*) from tablas_esperadas e where e.nombre in (select nombre from tablas)) = 12 as ok,
+select 1 as paso, 'existen las 14 tablas' as comprobacion,
+       (select count(*) from tablas_esperadas e where e.nombre in (select nombre from tablas)) = 14 as ok,
        coalesce((select string_agg(e.nombre, ', ') from tablas_esperadas e where e.nombre not in (select nombre from tablas)), '') as detalle
 union all
 select 2, 'RLS activado en todas las tablas',
@@ -43,8 +44,8 @@ select 4, 'service_role puede leer y escribir (lo usa n8n)',
        coalesce((select string_agg(nombre, ', ') from tablas t
                  where not has_table_privilege('service_role', 'public.' || t.nombre, 'select, insert, update, delete')), '')
 union all
-select 5, 'existen las 9 funciones que llama n8n',
-       (select count(*) from funciones_esperadas e where e.nombre in (select nombre from funciones)) = 9,
+select 5, 'existen las 14 funciones que llama n8n',
+       (select count(*) from funciones_esperadas e where e.nombre in (select nombre from funciones)) = 14,
        coalesce((select string_agg(e.nombre, ', ') from funciones_esperadas e where e.nombre not in (select nombre from funciones)), '')
 union all
 select 6, 'solo service_role ejecuta esas funciones',

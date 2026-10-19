@@ -1,7 +1,7 @@
 // Nodo "Preparar registro": tras subir el archivo a Drive, deja listas las dos filas de Supabase (mensajes y archivos).
 // Si la subida falló (no hay descarga, Drive rechazó el archivo…) no se registra nada y se avisa con un mensaje honesto.
 //   subido    { ok: true, nombre, tiene_pie, mensaje: {...}, archivo: {...} }
-//   fallido   { ok: false, mensajes: [texto] }   (sigue directo a "Preparar envío")
+//   fallido   { ok: false, mensajes: [texto], responde_a }   (sigue directo a "Preparar envío")
 
 /*__COMUN__*/
 
@@ -12,7 +12,7 @@ $input.all().forEach((item, i) => {
   const plan = $('Comprobar adjunto').itemMatching(i).json;
   const subida = item.json && !item.json.error ? item.json : null;
   const r = registroDeSubida({ plan, subida });
-  salida.push({ json: r.ok ? r : { ok: false, mensajes: [r.texto] }, pairedItem: { item: i } });
+  salida.push({ json: r.ok ? r : { ok: false, mensajes: [r.texto], responde_a: plan.wa_message_id ?? null }, pairedItem: { item: i } });
 });
 
 return salida;

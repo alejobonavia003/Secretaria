@@ -110,7 +110,9 @@ function construirFlujoBase() {
         url: `={{ ${CFG}.supabase_url }}/rest/v1/carpetas_pedidas?select=id,ruta,updated_at&drive_pendiente=eq.true&eliminada_at=is.null&order=updated_at.asc&limit={{ ${CFG}.lote }}`,
         ...supabase,
       },
-      { alwaysOutputData: true },
+      // Una sola vez: cuelga de «Leer pendientes», que da un item por archivo; sin esto se repetía por cada archivo pendiente y cada carpeta
+      // pedida salía varias veces (podía crearse duplicada en Drive). Revisión del 2026-10-19.
+      { alwaysOutputData: true, executeOnce: true },
     ),
     nodoCode(5, 'Preparar', [PASO * 3, 0], 'preparar.js'),
     // Un GET por archivo: sus padres reales en Drive, para calcular removeParents. Para un elemento que es una carpeta pedida

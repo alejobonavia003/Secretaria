@@ -33,7 +33,8 @@ const itemsPendientes = $('Leer items pendientes')
   .map((i) => i.json)
   .filter((r) => r && typeof r.id === 'string')
   .map((r, n) => {
-    const { id, ...resto } = r;
+    // created_at no se le enseña al modelo (el prompt no cambia): solo sirve para «reciente», abajo
+    const { id, created_at: _creado, ...resto } = r;
     refs[`i${n + 1}`] = id;
     if (typeof resto.contenido === 'string') {
       const c = resto.contenido.replace(/\s+/g, ' ').trim();
@@ -67,6 +68,20 @@ const conRef = (it) => {
   itemsPendientes.push({ id: ref, ...Object.fromEntries(Object.entries(resto).filter(([, v]) => v !== null && v !== undefined)) });
   return ref;
 };
+// Horario fijo semanal: con try, por si el flujo aún no tiene el nodo; si la tabla no existe (base de datos sin actualizar), la lectura falla y no hay horario
+const DIAS_SEMANA = ['', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+let horario = [];
+try {
+  horario = $('Leer horario')
+    .all()
+    .map((i) => i.json)
+    .filter((b) => b && typeof b.id === 'string' && typeof b.titulo === 'string' && Number.isInteger(b.dia_semana) && typeof b.hora_inicio === 'string' && typeof b.hora_fin === 'string')
+    .map(({ id, titulo, dia_semana, hora_inicio, hora_fin }) => ({ id, titulo, dia_semana, hora_inicio: hora_inicio.slice(0, 5), hora_fin: hora_fin.slice(0, 5) }));
+} catch (e) {
+  horario = [];
+}
+const horarioPrompt = horario.map((b) => `${DIAS_SEMANA[b.dia_semana] ?? b.dia_semana} ${b.hora_inicio}-${b.hora_fin} ${b.titulo}`);
+
 const avisoCitado = (leidoAvisos?.citados ?? []).filter(valido).map((it) => ({
   ref: conRef(it), tipo: it.tipo, aviso: it.aviso, titulo: it.titulo, estado: it.estado,
   recordar_en: it.recordar_en ?? null, fecha_inicio: it.fecha_inicio ?? null, fecha_fin: it.fecha_fin ?? null,
@@ -75,6 +90,13 @@ const recientes = (Array.isArray(leidoAvisos?.recientes) ? leidoAvisos.recientes
 recientes.forEach(conRef);
 // Las alarmas ya sonadas («hechas») que se pueden reabrir al darles otra hora: solo las del aviso citado y las recientes
 const reabribles = [...new Set([...(leidoAvisos?.citados ?? []), ...recientes].filter((it) => valido(it) && it.tipo === 'tarea' && it.estado === 'hecho').map((it) => it.id))];
+
+// El pendiente más nuevo (la lectura viene ordenada por created_at, el primero es i1), con cuándo se apuntó: un «tarea» suelto que llega
+// tarde a una pregunta ya resuelta se contesta por código si se apuntó algo hace menos de 2 minutos (tipoSuelto, en planificar.js)
+const primeroLeido = $('Leer items pendientes').all().map((i) => i.json).find((r) => r && typeof r.id === 'string');
+const reciente = primeroLeido && typeof primeroLeido.created_at === 'string'
+  ? { ref: 'i1', tipo: primeroLeido.tipo, titulo: primeroLeido.titulo, recordar_en: primeroLeido.recordar_en ?? null, fecha_limite: primeroLeido.fecha_limite ?? null, fecha_inicio: primeroLeido.fecha_inicio ?? null, created_at: primeroLeido.created_at }
+  : null;
 
 // Para "Planificar": lo justo de cada pendiente para resolver "todas las tareas", "todos los pensamientos"… y nombrar lo que se va a tocar
 // (sin las alarmas ya sonadas: «quita todas las alarmas» no debe contar las que ya pasaron)
@@ -139,7 +161,7 @@ const archivoCitado = citado ? (Object.entries(refsArchivos).find(([, id]) => id
 // Pueden estar abiertas hasta tres preguntas a la vez (el usuario escribe antes de que le llegue la respuesta): el mensaje contesta a la
 // que encaja con lo que dice, y una orden nueva («borra…», «dame…») no contesta a ninguna y las deja abiertas.
 // Las funciones son la MISMA sección de planificar.js, que el generador inserta aquí; no editar aquí.
-const { interpretarComando, interpretarAplazamiento, pideListarRepetidos, elegirPregunta, siNoSinPregunta, pideBorrarTodo, seccionElegida, respuestaConfirmacion } = __COMANDOS__;
+const { interpretarComando, interpretarAplazamiento, pideListarRepetidos, elegirPregunta, siNoSinPregunta, pideBorrarTodo, seccionElegida, respuestaConfirmacion, quitarConcreto, tipoSuelto, respuestaAvisoCompra } = __COMANDOS__;
 const hiloCoherente = (h) =>
   h.length >= 2 && h.length % 2 === 0 && h.every((t, i) => t?.rol === (i % 2 === 0 ? 'user' : 'model') && typeof t.texto === 'string' && t.texto !== '');
 const todas = $('Leer pregunta pendiente')
@@ -179,7 +201,10 @@ const saltarModelo =
   (!esperaNombre && siNoSinPregunta(entrada.mensaje, hiloPrevio) !== null) ||
   (!pedirNombre && pideBorrarTodo(entrada.mensaje)) ||
   seccionElegida(entrada.mensaje, hiloPrevio) !== null ||
-  respuestaConfirmacion(entrada.mensaje, hiloPrevio) !== null;
+  respuestaConfirmacion(entrada.mensaje, hiloPrevio) !== null ||
+  (!pedirNombre && quitarConcreto(entrada.mensaje, pendientes) !== null) ||
+  (!pedirNombre && !esperaNombre && tipoSuelto(entrada.mensaje, hiloPrevio, reciente, new Date()) !== null) ||
+  (!pedirNombre && !esperaNombre && respuestaAvisoCompra(entrada.mensaje, hiloPrevio) !== null);
 
 // Si responde a un aviso, el modelo recibe delante del mensaje de qué alarma o cita se trata (solo en ese caso: el resto de mensajes
 // le llegan igual que siempre). Así «muévela al viernes a las 9» sabe a qué se refiere.
@@ -198,6 +223,7 @@ const sistema = PROMPT
   .split('{{fecha_actual}}').join(entrada.fecha_actual)
   .split('{{proyectos}}').join(proyectosActivos.length > 0 ? proyectosActivos.join(', ') : '(ninguno todavía)')
   .split('{{memoria}}').join(JSON.stringify(memoria))
+  .split('{{horario}}').join(JSON.stringify(horarioPrompt))
   .split('{{nombre_secretaria}}').join(nombreSecretaria ?? '(todavía no te ha puesto nombre)')
   .split('{{pregunta_pendiente}}').join(preguntaPendiente)
   .split('{{ultimos_items}}').join(JSON.stringify(itemsPendientes))
@@ -212,6 +238,7 @@ return [
       proyectos,
       refs,
       pendientes,
+      reciente,
       // Referencias cortas de archivos (a1, a2…) -> id real, y su nombre actual y fecha de recepción (para renombrarlos)
       refs_archivos: refsArchivos,
       archivos_info: infoArchivos,
@@ -223,6 +250,8 @@ return [
       // El nombre actual (para /name y /about)
       nombre_secretaria: nombreSecretaria,
       memoria_filas: memoriaFilas,
+      // El horario fijo (para avisar si una cita cae dentro y para /horario)
+      horario,
       espera_nombre: esperaNombre,
       // Sin llamada a Gemini: "Planificar" lo contesta con código
       saltar_modelo: saltarModelo,

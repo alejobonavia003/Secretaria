@@ -1,4 +1,4 @@
--- VACÍA TODOS LOS DATOS de las once tablas del proyecto: avisos_enviados (qué iba en cada aviso), mensajes, items, proyectos, memoria (incluido el nombre de la secretaria), archivos, carpetas_pedidas,
+-- VACÍA TODOS LOS DATOS de las trece tablas del proyecto: avisos_enviados (qué iba en cada aviso), llegadas (el orden de los mensajes), mensajes, items, proyectos, memoria (incluido el nombre de la secretaria), horario_fijo, archivos, carpetas_pedidas,
 -- drive_arbol y registro_drive (la foto y el historial de «Vigilar Drive») y vigilantes_estado y registro_calendar (el estado y el historial de «Vigilar Calendar»),
 -- y suelta el turno de la cola de mensajes (la tabla turno conserva su única fila).
 -- IRREVERSIBLE: no hay copia. Conserva el esquema, las funciones, los triggers y los índices.
@@ -9,9 +9,11 @@
 -- truncate no dispara los triggers por fila: no se marca nada para Calendar ni Drive.
 -- Tras esto, el primer mensaje que mandes por WhatsApp te preguntará cómo quieres llamar a la secretaria.
 -- Ejecútalo entero, una vez. Termina con una tabla de recuentos: todos deben ser 0.
-truncate table public.avisos_enviados, public.mensajes, public.items, public.proyectos, public.memoria, public.archivos, public.carpetas_pedidas, public.drive_arbol, public.registro_drive, public.vigilantes_estado, public.registro_calendar;
+truncate table public.avisos_enviados, public.llegadas, public.mensajes, public.items, public.proyectos, public.memoria, public.horario_fijo, public.archivos, public.carpetas_pedidas, public.drive_arbol, public.registro_drive, public.vigilantes_estado, public.registro_calendar;
 update public.turno set mensaje_id = null, hasta = null;
 select (select count(*) from public.avisos_enviados) as avisos_enviados,
+  (select count(*) from public.llegadas) as llegadas,
+  (select count(*) from public.horario_fijo) as horario_fijo,
   (select count(*) from public.mensajes) as mensajes,
   (select count(*) from public.items) as items,
   (select count(*) from public.proyectos) as proyectos,

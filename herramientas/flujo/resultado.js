@@ -626,6 +626,23 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
         mensajes = partir(formatearArchivos(lecturas, meta.consulta_archivos));
       }
     }
+  } else if (meta.intencion === 'horario' && !meta.respuesta_fija) {
+    // Horario fijo: lo que se pidió guardar, agrupado por franja («viernes y lunes de 16:00 a 20:00: Trabajo»)
+    const DIAS = ['', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+    const grupos = new Map();
+    for (const b of Array.isArray(meta.horario_nuevo) ? meta.horario_nuevo : []) {
+      const k = `${b.hora_inicio}|${b.hora_fin}|${b.titulo}`;
+      if (!grupos.has(k)) grupos.set(k, { ...b, dias: [] });
+      grupos.get(k).dias.push(DIAS[b.dia_semana]);
+    }
+    const lineas = [...grupos.values()].map((g) => `• ${g.dias.join(', ').replace(/, ([^,]*)$/, ' y $1')} de ${g.hora_inicio} a ${g.hora_fin}: ${limpiar(g.titulo)}`);
+    mensajes = [meta.horario_ya_estaba
+      ? `Eso ya estaba en tu horario fijo:\n${lineas.join('\n')}`
+      : `🗓️ Apuntado en tu horario fijo:\n${lineas.join('\n')}\nSi apuntas una cita que caiga dentro, te preguntaré antes. /horario para verlo.`];
+  } else if (meta.intencion === 'quitar_horario') {
+    const DIAS = ['', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
+    const q = escrituras.find((e) => e && e.borrado === true && typeof e.titulo === 'string');
+    mensajes = [q ? `🗑️ Quitado de tu horario: ${DIAS[q.dia_semana] ?? ''} de ${q.hora_inicio} a ${q.hora_fin}: ${limpiar(q.titulo)}.` : 'Ese bloque ya no estaba en tu horario. Escribe /horario para verlo.'];
   } else if (meta.intencion === 'olvidar_memoria') {
     // Lo que de verdad se borró (olvidar_memoria devuelve el dato); si ya no estaba, se dice
     const borrados = escrituras.filter((e) => e && e.borrado === true && typeof e.termino === 'string');
@@ -695,6 +712,8 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
       : '';
     const recuerdo = meta.intencion === 'recordar' ? '' : [textoRecuerdo(meta), textoLlena(meta)].filter(Boolean).join('\n');
     mensajes = [(alarmas.length > 0 ? [recordatorios, horario, nota, nuevos, recuerdo] : [movida || confirmacion, horario, recordatorios, nuevos, recuerdo]).filter(Boolean).join('\n')];
+    // La compra con un día: tras apuntarlo, la pregunta del aviso (queda abierta en el mensaje)
+    if (meta.intencion === 'guardar' && meta.aviso_compra?.pregunta && error === null) mensajes.push(meta.aviso_compra.pregunta);
   }
 
   // Constancia en la base de datos: si Planificar ya dejó el motivo en el mensaje (meta.ok falso) no hace falta repetirlo; en

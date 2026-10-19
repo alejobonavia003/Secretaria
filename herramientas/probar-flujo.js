@@ -63,13 +63,13 @@ const REFS = { i1: 'a1-uuid', i2: 'b2-uuid', i3: 'c3-uuid' };
 
 // "pendienteId" e "hiloPrevio": la pregunta anterior que este mensaje contesta y el hilo guardado hasta ella
 // (lo que "Construir petición" le pasa a "Planificar"). "mensaje" es el texto de este mensaje (nodo "Entrada").
-const planificar = (resp, { mensajeId = 'm-1', config = CONFIG, refs = {}, pendienteId = null, hiloPrevio = [], mensaje = 'mensaje de prueba', agenda = [], refsArchivos = {}, infoArchivos = {}, pedirNombre = false, esperaNombre = false, nombreSecretaria = null, pendientes = [], proyectos = [], avisosCitados = [], reabribles = [], fechas = {}, memoria = [] } = {}) =>
+const planificar = (resp, { mensajeId = 'm-1', config = CONFIG, refs = {}, pendienteId = null, hiloPrevio = [], mensaje = 'mensaje de prueba', agenda = [], refsArchivos = {}, infoArchivos = {}, pedirNombre = false, esperaNombre = false, nombreSecretaria = null, pendientes = [], proyectos = [], avisosCitados = [], reabribles = [], fechas = {}, memoria = [], horario = [], reciente = null } = {}) =>
   correr(nodo('planificar.js'), {
     input: [resp],
     nodos: {
       Configuración: [{ config }],
       'Guardar mensaje': [{ id: mensajeId }],
-      'Construir petición': [{ refs: { ...Object.fromEntries(pendientes.map((x) => [x.id, x.id])), ...refs }, agenda, pendiente_id: pendienteId, hilo_previo: hiloPrevio, refs_archivos: refsArchivos, archivos_info: infoArchivos, pedir_nombre: pedirNombre, espera_nombre: esperaNombre, nombre_secretaria: nombreSecretaria, memoria_filas: memoria, pendientes, proyectos, avisos_citados: avisosCitados, reabribles, fechas }],
+      'Construir petición': [{ refs: { ...Object.fromEntries(pendientes.map((x) => [x.id, x.id])), ...refs }, agenda, pendiente_id: pendienteId, hilo_previo: hiloPrevio, refs_archivos: refsArchivos, archivos_info: infoArchivos, pedir_nombre: pedirNombre, espera_nombre: esperaNombre, nombre_secretaria: nombreSecretaria, memoria_filas: memoria, horario, pendientes, proyectos, avisos_citados: avisosCitados, reabribles, fechas, reciente }],
       Entrada: [{ mensaje }],
       'Juntar mensajes': [{ mensaje }],
     },
@@ -414,6 +414,8 @@ async function main() {
     const dudoso = await planificar(respuesta({ intencion: 'guardar', items: [itemBase({ titulo: 'Llamar a Juan', confianza: 0.5 }), itemBase({ titulo: 'Pan', tipo: 'lista', lista: 'compra', confianza: 0.95 })], respuesta_usuario: 'Apuntado.' }), { mensaje: 'juan pan' });
     const pd = dudoso.find((x) => x.etiqueta === 'actualizar mensaje');
     afirmar('confianza baja: no guarda nada (ni lo seguro del mismo mensaje) y pregunta enseñando lo entendido', !dudoso.some((x) => x.url.endsWith('/items')) && pd.meta.intencion === 'aclarar' && pd.cuerpo.pregunta_pendiente === true && pd.meta.pregunta.startsWith('No estoy segura de haberte entendido y prefiero no apuntar nada mal. He entendido esto:\n• tarea: «Llamar a Juan»\n• lista: «Pan»') && pd.meta.avisos.some((a) => a.includes('confianza baja')), JSON.stringify(pd.meta));
+    const dudosoMem = await planificar(respuesta({ intencion: 'guardar', items: [itemBase({ confianza: 0.4 })], memoria_nueva: { termino: 'algo', significado: 'raro' } }), { mensaje: 'x' });
+    afirmar('confianza baja: tampoco recuerda nada de ese mensaje', dudosoMem.every((x) => x.etiqueta !== 'guardar memoria'));
     const justo = await planificar(respuesta({ intencion: 'guardar', items: [itemBase({ confianza: 0.7 })] }));
     afirmar('confianza 0,7 (el umbral): se guarda', justo.some((x) => x.etiqueta === 'guardar items'));
     const sinConf = await planificar(respuesta({ intencion: 'guardar', items: [itemBase({ confianza: undefined })] }));
@@ -870,6 +872,37 @@ async function main() {
       afirmar('un «Si» suelto sin ninguna pregunta abierta no llama al modelo', a12.saltar_modelo === true && a12.pendiente_id === null);
       const f1 = await planificar(respuesta({ intencion: 'guardar', items: [] }), { mensaje: 'Si', hiloPrevio: [] });
       afirmar('… y se contesta con un texto fijo, sin escribir nada', f1.length === 1 && f1[0].meta.respuesta_usuario.startsWith('No tengo ninguna pregunta pendiente') && f1[0].meta.ok === true && f1[0].etiqueta === 'actualizar mensaje', JSON.stringify(f1[0].meta));
+      // «Tarea» suelto que llega tarde a una pregunta ya resuelta: por código si se apuntó algo hace < 2 min
+      const hace30s = new Date(Date.now() - 30000).toISOString();
+      const irCompra = { id: 'u-ir', tipo: 'tarea', titulo: 'Ir a comprar', estado: 'pendiente', fecha_limite: '2026-10-21T21:59:59Z', created_at: hace30s };
+      const t1 = (await montar([{ termino: 'nombre de la secretaria', significado: 'Lola' }], { ...entrada, mensaje: 'Tarea' }, [irCompra, { id: 'u-viejo', tipo: 'nota', titulo: 'x', estado: 'pendiente', created_at: '2026-10-01T10:00:00Z' }]))[0];
+      afirmar('«Tarea» suelto con algo apuntado hace 30 s: no llama al modelo y pasa el pendiente más nuevo (i1) con su hora de alta', t1.saltar_modelo === true && t1.reciente.ref === 'i1' && t1.reciente.created_at === hace30s && t1.reciente.titulo === 'Ir a comprar', JSON.stringify(t1.reciente));
+      afirmar('… y la hora de alta (created_at) no entra en el prompt (el prompt no cambia)', !t1.cuerpo.systemInstruction.parts[0].text.includes('created_at') && !t1.cuerpo.systemInstruction.parts[0].text.includes(hace30s));
+      const t2 = (await montar([{ termino: 'nombre de la secretaria', significado: 'Lola' }], { ...entrada, mensaje: 'Tarea' }, [{ ...irCompra, created_at: new Date(Date.now() - 10 * 60000).toISOString() }]))[0];
+      afirmar('«Tarea» suelto sin nada apuntado en los últimos 2 minutos: decide el modelo, como antes', t2.saltar_modelo !== true);
+      const t3 = (await montar([{ termino: 'nombre de la secretaria', significado: 'Lola' }], { ...entrada, mensaje: 'Tarea' }, [irCompra], [P1]))[0];
+      afirmar('«Tarea» con una pregunta abierta del tipo: contesta a la pregunta (no es suelto)', t3.pendiente_id === 'q-tipo');
+      const recTarea = { ref: 'i1', tipo: 'tarea', titulo: 'Ir a comprar', fecha_limite: '2026-10-21T21:59:59Z', recordar_en: null, fecha_inicio: null, created_at: hace30s };
+      const aclara = respuesta({ intencion: 'aclarar', items: [], pregunta: 'No te he entendido: ¿quieres ver tus tareas pendientes o apuntar una nueva?' });
+      const y1 = await planificar(aclara, { mensaje: 'Tarea', reciente: recTarea, refs: { i1: 'u-ir' } });
+      afirmar('… Planificar: mismo tipo → «Ya lo tengo apuntado como tarea: «Ir a comprar» (…)» sin tocar nada', y1.length === 1 && y1[0].meta.respuesta_usuario.startsWith('Ya lo tengo apuntado como tarea: «Ir a comprar» (') && y1[0].meta.ok === true && !y1[0].meta.pregunta, JSON.stringify(y1[0].meta));
+      const y2 = await planificar(aclara, { mensaje: 'como cita', reciente: recTarea, refs: { i1: 'u-ir' }, fechas: { i1: { tipo: 'tarea', titulo: 'Ir a comprar', fecha_limite: recTarea.fecha_limite, recordar_en: null, fecha_inicio: null, fecha_fin: null } } });
+      afirmar('… otro tipo sin hora (tarea → cita): pregunta la hora por código', y2.some((x) => x.meta?.pregunta && x.meta.pregunta.includes('necesito la hora')), JSON.stringify(y2.map((x) => x.meta?.respuesta_usuario)));
+      const recCita = { ref: 'i1', tipo: 'evento', titulo: 'Médico', fecha_inicio: '2026-10-23T15:00:00Z', recordar_en: null, fecha_limite: null, created_at: hace30s };
+      const y3 = await planificar(aclara, { mensaje: 'tarea', reciente: recCita, refs: { i1: 'u-medico' }, fechas: { i1: { tipo: 'evento', titulo: 'Médico', fecha_inicio: recCita.fecha_inicio, fecha_fin: '2026-10-23T16:00:00Z', recordar_en: null, fecha_limite: null } } });
+      const cambio = y3.find((x) => x.url && x.url.includes('u-medico') && x.metodo === 'PATCH');
+      afirmar('… otro tipo (cita → tarea): la convierte (PATCH a tarea con el día como fecha límite)', Boolean(cambio) && cambio.cuerpo.tipo === 'tarea' && Boolean(cambio.cuerpo.fecha_limite), JSON.stringify(y3.map((x) => [x.etiqueta, x.metodo, x.url, x.cuerpo])));
+      const y4 = await planificar(aclara, { mensaje: 'alarma', reciente: { ...recTarea, recordar_en: '2026-10-19T19:00:00Z', fecha_limite: null }, refs: { i1: 'u-ir' } });
+      afirmar('… una alarma y «alarma»: ya está, con su día y hora', y4[0].meta.respuesta_usuario.startsWith('Ya lo tengo apuntado como alarma: «Ir a comprar» (') && y4[0].meta.respuesta_usuario.includes(':'));
+      const y5 = await planificar(aclara, { mensaje: 'Tarea', reciente: { ...recTarea, created_at: new Date(Date.now() - 5 * 60000).toISOString() }, refs: { i1: 'u-ir' } });
+      afirmar('… pasados 2 minutos, Planificar usa lo del modelo (como antes)', y5.some((x) => x.meta?.pregunta && x.meta.pregunta.startsWith('No te he entendido')));
+      const y6 = await planificar(aclara, { mensaje: 'nota', reciente: recTarea, refs: { i1: 'u-ir' } });
+      afirmar('… «nota» u otra palabra no entra en el caso (decide el modelo)', !y6[0].meta.respuesta_usuario.startsWith('Ya lo tengo'));
+      const PAV = { id: 'q-aviso', pregunta: '¿Te aviso mañana (mié 21) para ir a comprar? Dime a qué hora (o «no»).', hilo: [{ rol: 'user', texto: 'mañana compra pan' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', motivo: 'aviso_compra', origen: 'codigo', aviso_compra: { dia: '2026-10-21', etiqueta: 'mañana (mié 21)' }, pregunta: 'x', items: [] }) }] };
+      const av1 = await ver('a las 18', [PAV]);
+      afirmar('la respuesta a la pregunta del aviso de la compra («a las 18») no llama al modelo', av1.saltar_modelo === true && av1.pendiente_id === 'q-aviso');
+      const av2 = await ver('compra también leche', [PAV]);
+      afirmar('… una orden nueva sí llama al modelo', av2.saltar_modelo !== true);
       const f2 = await planificar(respuesta({ intencion: 'guardar', items: [] }), { mensaje: 'no', hiloPrevio: P2.hilo, pendienteId: 'q-lote' });
       afirmar('con una pregunta abierta, el «no» sigue su camino', !f2[0].meta.respuesta_usuario.startsWith('No tengo ninguna pregunta pendiente'));
       const a13 = await ver('vale', []);
@@ -878,9 +911,20 @@ async function main() {
         afirmar(`«${frase}» no llama al modelo`, (await ver(frase, [])).saltar_modelo === true);
       }
       afirmar('«olvida lo de la leche» sí va al modelo (es quitar una tarea, no la memoria)', (await ver('olvida lo de la leche', [])).saltar_modelo !== true);
+      afirmar('«borra la cita» sin ninguna cita no llama al modelo (lo contesta el código)', (await ver('borra la cita', [])).saltar_modelo === true);
+      afirmar('/horario y «qué horario tengo» no llaman al modelo', (await ver('/horario', [])).saltar_modelo === true && (await ver('qué horario tengo', [])).saltar_modelo === true);
       const PM = { id: 'q-mem', pregunta: '¿Olvido esto?', hilo: [{ rol: 'user', texto: 'borra de tu memoria lo de Emma' }, { rol: 'model', texto: modelo({ motivo: 'confirmar_memoria', origen: 'codigo', olvidar: ['00000000-0000-4000-8000-000000000001'] }) }] };
       const sm = await ver('sí', [PM]);
       afirmar('el «sí» a olvidar un dato contesta esa pregunta y no llama al modelo', sm.saltar_modelo === true && sm.pendiente_id === 'q-mem');
+      // Con otra pregunta abierta más reciente (de tipo libre), el «sí» va a la de sí/no: la de olvidar, la de borrar en Drive o la del horario
+      const PLibre = { id: 'q-libre', pregunta: '¿De qué es la cita?', hilo: [{ rol: 'user', texto: 'mañana a las 10 tengo una cita' }, { rol: 'model', texto: modelo({ intencion: 'aclarar', pregunta: '¿De qué es la cita?' }) }] };
+      const PD = { id: 'q-drive', pregunta: 'Voy a mandar a la papelera… ¿Lo mando?', hilo: [{ rol: 'user', texto: 'borra la carpeta X' }, { rol: 'model', texto: modelo({ motivo: 'confirmar_drive', origen: 'codigo', papelera: [{ tipo: 'carpeta', id: 'carpeta-x-0001', nombre: 'X' }] }) }] };
+      const PH = { id: 'q-hor', pregunta: '… ¿La apunto igualmente?', hilo: [{ rol: 'user', texto: 'médico el viernes' }, { rol: 'model', texto: modelo({ motivo: 'confirmar_horario', horario: ['2026-10-16|h1'] }) }] };
+      afirmar('«bórralo» a la pregunta de borrar en Drive la contesta (no es una orden nueva sin contexto)', (await ver('bórralo', [PD])).pendiente_id === 'q-drive');
+      afirmar('«elimínalo» a «¿Olvido esto?» también', (await ver('elimínalo', [PM])).pendiente_id === 'q-mem');
+      for (const [P, nombre] of [[PM, 'olvidar un dato'], [PD, 'borrar en Drive'], [PH, 'el horario']]) {
+        afirmar(`«sí» con dos preguntas abiertas: va a la de ${nombre}, no a la libre`, (await ver('sí', [PLibre, P])).pendiente_id === P.id);
+      }
     }
 
     const dem = { mensaje: 'a\nb\nc', wa_message_id: 'wamid.D', tipo_entrada: 'texto', demasiados: true, aviso_demasiados: 'Me has mandado 9 mensajes seguidos…', fecha_actual: 'x' };
@@ -1295,6 +1339,213 @@ async function main() {
     afirmar('un nombre del usuario no válido es un error de validación', esError(await pc({ intencion: 'recordar', memoria_nueva: { termino: 'nombre del usuario', significado: '<script>' } })));
   }
 
+  console.log('Horario fijo semanal');
+  {
+    const TRABAJO = { id: 'h-trabajo', titulo: 'Trabajo', dia_semana: 5, hora_inicio: '16:00', hora_fin: '20:00' };
+    const VOLUNTARIADO = { id: 'h-volu', titulo: 'Voluntariado', dia_semana: 1, hora_inicio: '09:00', hora_fin: '14:00' };
+    const res = async (plan, escrituras = [{}]) => (await correr(nodo('resultado.js'), { input: [{}], nodos: { Planificar: [{ meta: plan.find((x) => x.etiqueta === 'actualizar mensaje').meta }], 'Escribir en Supabase': escrituras } }))[0];
+    const ph = (horario_nuevo, extra = {}) => planificar(respuesta({ intencion: 'horario', items: [], horario_nuevo, respuesta_usuario: 'Hecho.' }), extra);
+
+    // Guardarlo
+    const g1 = await ph([{ titulo: 'Trabajo', dias: [5], desde: '16:00', hasta: '20:00' }]);
+    const post = g1.find((x) => x.etiqueta === 'guardar el horario fijo');
+    afirmar('«trabajo los viernes de 16 a 20»: un bloque (viernes = 5), sin duplicar (restricción única)', post && post.url.endsWith('/horario_fijo?on_conflict=titulo_norm,dia_semana,hora_inicio,hora_fin') && post.prefer.includes('ignore-duplicates') && JSON.stringify(post.cuerpo) === JSON.stringify([{ titulo: 'Trabajo', dia_semana: 5, hora_inicio: '16:00', hora_fin: '20:00' }]), JSON.stringify(post));
+    const r1 = await res(g1, [{ id: 'x' }, {}]);
+    afirmar('la respuesta dice qué ha quedado y que avisará', r1.mensajes[0] === '🗓️ Apuntado en tu horario fijo:\n• viernes de 16:00 a 20:00: Trabajo\nSi apuntas una cita que caiga dentro, te preguntaré antes. /horario para verlo.', r1.mensajes[0]);
+    const g2 = await ph([{ titulo: 'Voluntariado', dias: [1, 3, 3], desde: '9:00', hasta: '14:00' }]);
+    afirmar('varios días: un bloque por día (sin repetir) y la hora con dos cifras', g2.find((x) => x.etiqueta === 'guardar el horario fijo').cuerpo.map((b) => `${b.dia_semana} ${b.hora_inicio}`).join() === '1 09:00,3 09:00');
+    afirmar('… y la respuesta los agrupa', (await res(g2, [{ id: 'x' }])).mensajes[0].includes('• lunes y miércoles de 09:00 a 14:00: Voluntariado'));
+    for (const malo of [{ titulo: 'Trabajo', dias: [5], desde: '20:00', hasta: '16:00' }, { titulo: 'Trabajo', dias: [8], desde: '16:00', hasta: '20:00' }, { titulo: 'Trabajo', dias: [5], desde: 'tarde', hasta: '20:00' }, { titulo: '', dias: [5], desde: '16:00', hasta: '20:00' }]) {
+      afirmar(`horario no válido (${JSON.stringify(malo).slice(0, 60)}): «no te he entendido», sin guardar nada`, esError(await ph([malo])));
+    }
+    const ya = await ph([{ titulo: 'trabajo', dias: [5], desde: '16:00', hasta: '20:00' }], { horario: [TRABAJO] });
+    afirmar('un bloque que ya está: no se escribe y se dice', ya.every((x) => x.etiqueta !== 'guardar el horario fijo') && (await res(ya)).mensajes[0].startsWith('Eso ya estaba en tu horario fijo'));
+
+    const lleno = Array.from({ length: 40 }, (_, i) => ({ id: `h-${i}`, titulo: `Bloque ${i}`, dia_semana: (i % 7) + 1, hora_inicio: '08:00', hora_fin: '09:00' }));
+    const gl = await ph([{ titulo: 'Gimnasio', dias: [2], desde: '19:00', hasta: '20:00' }], { horario: lleno });
+    const rl = await res(gl);
+    afirmar('horario lleno: no guarda y lo dice (no «Apuntado» con la lista vacía)', gl.every((x) => x.etiqueta !== 'guardar el horario fijo') && rl.mensajes[0].startsWith('Tu horario fijo está lleno (40 bloques)'), rl.mensajes[0]);
+
+    // El aviso al apuntar una cita
+    const cita = (ini, fin, titulo = 'Médico') => respuesta({ intencion: 'guardar', items: [{ tipo: 'evento', titulo, fecha_inicio: ini, fecha_fin: fin, confianza: 0.95 }], respuesta_usuario: 'Apuntado.' });
+    const c1 = await planificar(cita('2026-10-16T17:00:00+02:00', '2026-10-16T18:00:00+02:00'), { horario: [TRABAJO, VOLUNTARIADO], mensaje: 'médico el viernes a las 17' });
+    const q1 = c1.find((x) => x.etiqueta === 'actualizar mensaje');
+    afirmar('una cita el viernes a las 17 con «Trabajo» de 16 a 20: no se apunta y se pregunta, como con un día ocupado', !c1.some((x) => x.etiqueta === 'guardar items') && q1.cuerpo.pregunta_pendiente === true && q1.meta.bloqueo === 'confirmar_horario' && q1.meta.pregunta === '«Médico» (vie 16 oct, 17:00) cae en tu horario: viernes de 16:00 a 20:00: Trabajo.\n¿La apunto igualmente?', JSON.stringify(q1.meta.pregunta));
+    const hilo = q1.cuerpo.hilo;
+    afirmar('la pregunta lleva el bloque y el día que se han planteado', JSON.stringify(JSON.parse(hilo.at(-1).texto).horario) === JSON.stringify(['2026-10-16|h-trabajo']));
+    const si = await planificar(cita('2026-10-16T17:00:00+02:00', '2026-10-16T18:00:00+02:00'), { horario: [TRABAJO], mensaje: 'sí', hiloPrevio: hilo, pendienteId: 'p-1' });
+    afirmar('con el «sí» (el modelo repite el guardar) se apunta y no se vuelve a preguntar', si.some((x) => x.etiqueta === 'guardar items') && !si.some((x) => x.cuerpo?.pregunta_pendiente === true), JSON.stringify(si.map((x) => x.etiqueta)));
+    const fuera = [
+      ['fuera del bloque (21:00)', '2026-10-16T21:00:00+02:00', '2026-10-16T22:00:00+02:00'],
+      ['otro día (jueves 17:00)', '2026-10-15T17:00:00+02:00', '2026-10-15T18:00:00+02:00'],
+      ['acaba justo cuando empieza el bloque (15:00-16:00)', '2026-10-16T15:00:00+02:00', '2026-10-16T16:00:00+02:00'],
+      ['empieza justo cuando acaba (20:00)', '2026-10-16T20:00:00+02:00', '2026-10-16T21:00:00+02:00'],
+    ];
+    for (const [nombre, ini, fin] of fuera) {
+      const p = await planificar(cita(ini, fin), { horario: [TRABAJO] });
+      afirmar(`${nombre}: se apunta sin preguntar`, p.some((x) => x.etiqueta === 'guardar items') && !p.some((x) => x.meta?.bloqueo === 'confirmar_horario'));
+    }
+    const pisa = await planificar(cita('2026-10-16T15:30:00+02:00', '2026-10-16T16:30:00+02:00'), { horario: [TRABAJO] });
+    afirmar('una cita que pisa el principio del bloque (15:30-16:30): se pregunta', pisa.some((x) => x.meta?.bloqueo === 'confirmar_horario'));
+    const otroDia = await planificar(cita('2026-10-23T17:00:00+02:00', '2026-10-23T18:00:00+02:00'), { horario: [TRABAJO], mensaje: 'sí', hiloPrevio: hilo, pendienteId: 'p-1' });
+    afirmar('el «sí» vale para ese viernes: otro viernes se vuelve a preguntar', otroDia.some((x) => x.meta?.bloqueo === 'confirmar_horario'));
+    const mover = await planificar(respuesta({ intencion: 'corregir', items: [], correccion: { item_ids: ['i1'], cambios: { fecha_inicio: '2026-10-16T18:00:00+02:00' } } }), {
+      horario: [TRABAJO], refs: { i1: 'ev-1' }, agenda: [{ id: 'ev-1', tipo: 'evento', titulo: 'Dentista', fecha_inicio: '2026-10-15T10:00:00+02:00', fecha_fin: '2026-10-15T11:00:00+02:00' }],
+      pendientes: [{ id: 'ev-1', tipo: 'evento', titulo: 'Dentista', fecha_inicio: '2026-10-15T10:00:00+02:00', fecha_fin: '2026-10-15T11:00:00+02:00' }], mensaje: 'pasa el dentista al viernes a las 18',
+    });
+    afirmar('mover una cita a dentro del bloque: «¿La muevo igualmente?»', mover.find((x) => x.etiqueta === 'actualizar mensaje').meta.pregunta?.endsWith('¿La muevo igualmente?'), JSON.stringify(mover.map((x) => x.meta?.pregunta)));
+    const alarma = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'tarea', titulo: 'Llamar', recordar_en: '2026-10-16T17:00:00+02:00', confianza: 0.9 }] }), { horario: [TRABAJO] });
+    afirmar('una alarma (no es una cita) no se pregunta', alarma.some((x) => x.etiqueta === 'guardar items'));
+
+    // Ver y quitar
+    const sinModelo = { error: { message: 'no debería usarse el modelo' } };
+    for (const frase of ['/horario', '/schedule', 'qué horario tengo', 'mi horario']) {
+      const v = await planificar(sinModelo, { mensaje: frase, horario: [VOLUNTARIADO, TRABAJO] });
+      afirmar(`«${frase}»: la lista numerada, sin el modelo`, v[0].meta.mensajes_fijos?.[0].startsWith('*Tu horario fijo*\n1. lunes de 09:00 a 14:00: Voluntariado\n2. viernes de 16:00 a 20:00: Trabajo\n'), JSON.stringify(v[0].meta.mensajes_fijos));
+    }
+    const vacio = await planificar(sinModelo, { mensaje: '/horario' });
+    afirmar('sin horario: lo dice y explica cómo dárselo', vacio[0].meta.mensajes_fijos[0].startsWith('No tienes horario fijo.'));
+    const q2 = await planificar(sinModelo, { mensaje: '/horario quitar 2', horario: [VOLUNTARIADO, TRABAJO] });
+    const rpc = q2.find((x) => x.etiqueta === 'quitar un bloque del horario');
+    afirmar('/horario quitar 2: quita ese bloque por su id', rpc && rpc.url.endsWith('/rpc/quitar_horario') && rpc.cuerpo.p_id === 'h-trabajo');
+    const rq = await res(q2, [{}, { borrado: true, titulo: 'Trabajo', dia_semana: 5, hora_inicio: '16:00', hora_fin: '20:00' }]);
+    afirmar('y dice exactamente cuál quitó', rq.mensajes[0] === '🗑️ Quitado de tu horario: viernes de 16:00 a 20:00: Trabajo.', rq.mensajes[0]);
+    const q9 = await planificar(sinModelo, { mensaje: '/horario quitar 9', horario: [VOLUNTARIADO] });
+    afirmar('/horario quitar de un número que no existe: lo dice', q9[0].meta.mensajes_fijos[0].startsWith('No tengo el bloque número 9.'));
+  }
+
+  console.log('La compra: a la lista aunque diga un día, y pregunta si avisa');
+  {
+    const res = (meta) => correr(nodo('resultado.js'), { input: [{ id: 'x' }], nodos: { Planificar: [{ meta }], 'Escribir en Supabase': [{ id: 'x' }] } });
+    const manana = new Date(Date.now() + 86400000);
+    const fl = new Date(Date.UTC(manana.getUTCFullYear(), manana.getUTCMonth(), manana.getUTCDate(), 21, 59, 59)).toISOString();
+    // El modelo lo apunta como tarea «Comprar pan y huevos» con el día: pasa a la lista de la compra y pregunta el aviso
+    const g1 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'tarea', titulo: 'Comprar pan y huevos', fecha_limite: fl, confianza: 0.95 }], respuesta_usuario: 'Apuntado.' }), { mensaje: 'mañana compra pan y huevos' });
+    const post1 = g1.find((x) => x.etiqueta === 'guardar items');
+    afirmar('«mañana compra pan y huevos» apuntado como tarea: pasa a la lista de la compra, un elemento por cosa y sin fecha', Boolean(post1) && post1.cuerpo.length === 2 && post1.cuerpo.every((f) => f.tipo === 'lista' && f.lista === 'compra' && f.fecha_limite === null) && post1.cuerpo.map((f) => f.titulo).join() === 'Pan,Huevos', JSON.stringify(post1?.cuerpo));
+    const marca1 = g1.find((x) => x.etiqueta === 'actualizar mensaje');
+    const turno1 = JSON.parse(marca1.cuerpo.hilo.at(-1).texto);
+    afirmar('… y deja abierta la pregunta del aviso, con el día en el hilo', marca1.cuerpo.pregunta_pendiente === true && marca1.cuerpo.pregunta.startsWith('¿Te aviso mañana (') && turno1.motivo === 'aviso_compra' && /^\d{4}-\d{2}-\d{2}$/.test(turno1.aviso_compra.dia), JSON.stringify(marca1.cuerpo));
+    const r1 = (await res(g1[0].meta))[0];
+    afirmar('Resultado: primero lo apuntado y después, en otro mensaje, la pregunta del aviso', r1.mensajes.length === 2 && r1.mensajes[1].startsWith('¿Te aviso mañana ('), JSON.stringify(r1.mensajes));
+    // Ya en la lista y sin día: no pregunta
+    const g2 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'lista', lista: 'compra', titulo: 'Pan' }, { tipo: 'lista', lista: 'compra', titulo: 'Huevos' }], respuesta_usuario: 'Apuntado en la compra.' }), { mensaje: 'quiero comprar pan y huevos' });
+    afirmar('«quiero comprar pan y huevos» (sin día): a la lista y sin pregunta', g2.find((x) => x.etiqueta === 'guardar items').cuerpo.length === 2 && !g2.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo.pregunta_pendiente);
+    const g3 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'lista', lista: 'compra', titulo: 'Leche' }] }), { mensaje: 'el viernes comprar leche' });
+    afirmar('«el viernes comprar leche»: pregunta para el viernes', g3.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo.pregunta.startsWith('¿Te aviso el vie '), g3.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo.pregunta);
+    const g4 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'lista', lista: 'compra', titulo: 'Leche' }] }), { mensaje: 'Bueno pasado compra leche' });
+    afirmar('«pasado»: pasado mañana', g4.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo.pregunta.startsWith('¿Te aviso pasado mañana ('));
+    const g5 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'tarea', titulo: 'Llamar al banco', fecha_limite: fl }] }), { mensaje: 'mañana llamar al banco' });
+    afirmar('lo que no es comprar no se toca ni pregunta', g5.find((x) => x.etiqueta === 'guardar items').cuerpo[0].tipo === 'tarea' && !g5.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo.pregunta_pendiente);
+    const g6 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'tarea', titulo: 'Comprar pan', recordar_en: new Date(Date.now() + 3 * 3600000).toISOString() }] }), { mensaje: 'recuérdame a las 20 comprar pan' });
+    afirmar('una alarma de comprar («recuérdame a las 20 comprar pan») se queda como alarma', g6.find((x) => x.etiqueta === 'guardar items').cuerpo[0].tipo === 'tarea');
+    // «Quiero ir a comprar mañana»: en vez de «¿alarma, cita o tarea?», el aviso
+    const g7 = await planificar(respuesta({ intencion: 'aclarar', items: [], pregunta: '¿Lo apunto como alarma (te aviso a una hora), cita (en el calendario) o tarea?' }), { mensaje: 'Quiero ir a comprar mañana' });
+    const m7 = g7.find((x) => x.etiqueta === 'actualizar mensaje');
+    afirmar('«Quiero ir a comprar mañana»: pregunta si avisa (no «¿alarma, cita o tarea?»)', m7.cuerpo.pregunta.startsWith('¿Te aviso mañana (') && JSON.parse(m7.cuerpo.hilo.at(-1).texto).motivo === 'aviso_compra' && g7[0].meta.pregunta === m7.cuerpo.pregunta, JSON.stringify(m7.cuerpo.pregunta));
+    // Las respuestas, por código
+    const dia = turno1.aviso_compra.dia;
+    const hiloAviso = marca1.cuerpo.hilo;
+    const sinModelo = { error: 'no se llamó al modelo y el mensaje no es un comando' };
+    const resp = (mensaje) => planificar(sinModelo, { mensaje, hiloPrevio: hiloAviso, pendienteId: 'q-aviso' });
+    const horaDe = (plan) => {
+      const it = plan.find((x) => x.etiqueta === 'guardar items')?.cuerpo?.[0];
+      if (!it) return null;
+      const f = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(it.recordar_en));
+      const p = Object.fromEntries(f.map((x) => [x.type, x.value]));
+      return { titulo: it.titulo, tipo: it.tipo, dia: `${p.year}-${p.month}-${p.day}`, hora: `${p.hour}:${p.minute}` };
+    };
+    const h1 = horaDe(await resp('a las 18'));
+    afirmar('«a las 18»: alarma «Ir a comprar» ese día a las 18:00', h1 && h1.titulo === 'Ir a comprar' && h1.tipo === 'tarea' && h1.dia === dia && h1.hora === '18:00', JSON.stringify(h1));
+    afirmar('«sí, a las 6 y media» → 18:30; «a las 9 de la mañana» → 09:00; «19:15» → 19:15', horaDe(await resp('sí, a las 6 y media'))?.hora === '18:30' && horaDe(await resp('a las 9 de la mañana'))?.hora === '09:00' && horaDe(await resp('19:15'))?.hora === '19:15');
+    const cierra = (await resp('a las 18')).find((x) => x.etiqueta === 'cerrar pregunta anterior');
+    afirmar('… y cierra la pregunta del aviso', Boolean(cierra) && cierra.url.includes('q-aviso'));
+    const no = await resp('no');
+    afirmar('«no»: «Vale, sin aviso.», cierra la pregunta y no apunta nada', no[0].meta.respuesta_usuario === 'Vale, sin aviso.' && no.some((x) => x.etiqueta === 'cerrar pregunta anterior') && !no.some((x) => x.etiqueta === 'guardar items'));
+    const si = await resp('sí');
+    const msi = si.find((x) => x.etiqueta === 'actualizar mensaje');
+    afirmar('«sí» sin hora: pregunta la hora y deja la pregunta abierta con el mismo día', msi.cuerpo.pregunta.startsWith('¿A qué hora te aviso mañana (') && JSON.parse(msi.cuerpo.hilo.at(-1).texto).aviso_compra.dia === dia);
+    const otra = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'lista', lista: 'compra', titulo: 'Leche' }] }), { mensaje: 'añade leche', hiloPrevio: hiloAviso, pendienteId: 'q-aviso' });
+    afirmar('otra cosa («añade leche») no es la respuesta: sigue el camino de siempre (lo del modelo)', otra.find((x) => x.etiqueta === 'guardar items')?.cuerpo[0].titulo === 'Leche');
+  }
+
+  console.log('Sin repetidos en las listas');
+  {
+    const res = (meta, escrituras = [{ id: 'x' }]) => correr(nodo('resultado.js'), { input: [{ id: 'x' }], nodos: { Planificar: [{ meta }], 'Escribir en Supabase': escrituras } });
+    const enLista = [
+      { id: 'p-pan', tipo: 'lista', lista: 'compra', titulo: 'Pan' },
+      { id: 'p-leche', tipo: 'lista', lista: 'compra', titulo: 'Leche' },
+      { id: 'p-huevos', tipo: 'lista', lista: 'compra', titulo: 'Huevos' },
+      { id: 'p-cargador', tipo: 'lista', lista: 'viaje', titulo: 'Cargador' },
+    ];
+    const lista = (...titulos) => titulos.map((t) => ({ tipo: 'lista', lista: 'compra', titulo: t }));
+    const guardar = (items, mensaje = 'compra pan leche y miel', pendientes = enLista) => planificar(respuesta({ intencion: 'guardar', items, respuesta_usuario: 'Apuntado: pan, leche y miel en la lista de la compra.' }), { mensaje, pendientes });
+    const posted = (plan) => plan.find((x) => x.etiqueta === 'guardar items')?.cuerpo?.map((f) => f.titulo) ?? null;
+    const p1 = await guardar(lista('Pan', 'Leche', 'Miel'));
+    afirmar('«pan, leche y miel» con pan y leche ya en la lista: solo se guarda la miel', JSON.stringify(posted(p1)) === '["Miel"]', JSON.stringify(posted(p1)));
+    afirmar('… y la confirmación la redacta el código (la del modelo ya no vale)', p1[0].meta.respuesta_usuario === '🛒 Apuntado en la lista de la compra: Miel.\nYa estaban: Pan, Leche.', p1[0].meta.respuesta_usuario);
+    const r1 = (await res(p1[0].meta))[0];
+    afirmar('… Resultado la entrega tal cual', r1.mensajes[0] === '🛒 Apuntado en la lista de la compra: Miel.\nYa estaban: Pan, Leche.', JSON.stringify(r1.mensajes));
+    const p2 = await guardar(lista('la leche', 'huevo', 'PAN'));
+    afirmar('todo repetido (sin mayúsculas, artículos ni plural): no se escribe nada y lo dice', posted(p2) === null && p2[0].meta.respuesta_usuario === 'Ya lo tenías todo en la lista de la compra: Leche, Huevos, Pan.', p2[0].meta.respuesta_usuario);
+    const r2 = (await res(p2[0].meta))[0];
+    afirmar('… Resultado contesta sin error aunque no se haya escrito nada', r2.ok === true && r2.mensajes[0].startsWith('Ya lo tenías todo'), JSON.stringify(r2));
+    const p3 = await guardar(lista('Limones', 'Plátano'), 'compra limones y plátano', [{ id: 'a', tipo: 'lista', lista: 'compra', titulo: 'limón' }, { id: 'b', tipo: 'lista', lista: 'compra', titulo: 'Plátanos' }]);
+    afirmar('«limones» = «limón» y «plátano» = «Plátanos»', posted(p3) === null, JSON.stringify(posted(p3)));
+    const p4 = await guardar([{ tipo: 'lista', lista: 'compra', titulo: 'Cargador' }], 'compra un cargador');
+    afirmar('lo que está en OTRA lista (viaje) sí se añade a la de la compra', JSON.stringify(posted(p4)) === '["Cargador"]');
+    const p5 = await guardar(lista('Pan', 'pan', 'Sal'), 'compra pan, pan y sal', []);
+    afirmar('repetido dentro del mismo mensaje: una sola vez', JSON.stringify(posted(p5)) === '["Pan","Sal"]' && p5[0].meta.respuesta_usuario.includes('Ya estaban: Pan.'));
+    const p6 = await guardar(lista('Miel'), 'compra miel', enLista);
+    afirmar('sin repetidos ni cambios, la confirmación del modelo se respeta', p6[0].meta.respuesta_usuario === 'Apuntado: pan, leche y miel en la lista de la compra.');
+    const p7 = await guardar([{ tipo: 'evento', titulo: 'Dentista', fecha_inicio: new Date(Date.now() + 3 * 86400000).toISOString() }, ...lista('Leche')], 'dentista el jueves a las 10 y compra leche');
+    afirmar('una cita y algo repetido: se guarda la cita y dice que lo otro ya estaba', JSON.stringify(posted(p7)) === '["Dentista"]' && p7[0].meta.respuesta_usuario === 'Ya estaban en la lista de la compra: Leche.\nApuntado también: «Dentista».', p7[0].meta.respuesta_usuario);
+    const p8 = await guardar([{ tipo: 'lista', lista: 'viaje', titulo: 'cargador' }], 'para el viaje llevar cargador');
+    afirmar('en otras listas tampoco se repite (y nombra esa lista)', posted(p8) === null && p8[0].meta.respuesta_usuario === 'Ya lo tenías todo en la lista «viaje»: Cargador.', p8[0].meta.respuesta_usuario);
+    const g1 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'tarea', titulo: 'Comprar pan y huevos', confianza: 0.95 }], respuesta_usuario: 'Apuntada la tarea «Comprar pan y huevos».' }), { mensaje: 'compra pan y huevos' });
+    afirmar('una tarea «Comprar…» pasada a la lista: la confirmación ya no dice «tarea»', g1[0].meta.respuesta_usuario === '🛒 Apuntado en la lista de la compra: Pan, Huevos.', g1[0].meta.respuesta_usuario);
+  }
+
+  console.log('Quitar una cosa concreta por código');
+  {
+    // Una sola cita «Médico» y una tarea; el modelo llegaba a contestar «Tienes varias citas de Médico, ¿cuál?»
+    const medico = { id: 'it-medico', tipo: 'evento', titulo: 'Médico', fecha_inicio: '2026-10-23T15:00:00Z', fecha_fin: '2026-10-23T16:00:00Z' };
+    const seguro = { id: 'it-seguro', tipo: 'tarea', titulo: 'Llamar al seguro del coche' };
+    const banco = { id: 'it-banco', tipo: 'tarea', titulo: 'Ir al banco' };
+    const ropa = { id: 'it-ropa', tipo: 'tarea', titulo: 'Sacar la ropa', recordar_en: '2026-10-10T18:00:00Z' };
+    const inventa = respuesta({ intencion: 'aclarar', items: [], pregunta: 'Tienes varias citas de Médico guardadas. ¿Cuál de ellas quieres eliminar?' });
+    const q = (mensaje, pendientes) => planificar(inventa, { mensaje, pendientes });
+    const quitaSolo = (plan, id) => {
+      const c = plan.find((x) => x.etiqueta.startsWith('cancelar') || x.url.includes('/items?id='));
+      return Boolean(c) && c.url.includes(encodeURIComponent(id)) && plan.every((x) => !x.meta || x.meta.intencion === 'cancelar') && !plan.some((x) => x.cuerpo?.pregunta_pendiente);
+    };
+    const p1 = await q('Elimina la cita', [medico, seguro]);
+    afirmar('«Elimina la cita» con UNA cita: la quita por código, sin preguntar (aunque el modelo se invente que hay varias)', quitaSolo(p1, 'it-medico'), JSON.stringify(p1.map((x) => [x.etiqueta, x.url])));
+    const p2 = await q('Borra la cita del médico', [medico, seguro]);
+    afirmar('«Borra la cita del médico»: la misma, sin tildes ni mayúsculas', quitaSolo(p2, 'it-medico'));
+    const p3 = await q('borra la tarea del banco', [medico, seguro, banco]);
+    afirmar('«borra la tarea del banco» con dos tareas: la que encaja por el título', quitaSolo(p3, 'it-banco'));
+    const p4 = await q('quita la alarma', [medico, seguro, ropa]);
+    afirmar('«quita la alarma» con una alarma: esa (no la tarea)', quitaSolo(p4, 'it-ropa'));
+    const p5 = await q('borra la alarma', []);
+    afirmar('sin nada pendiente: lo dice, sin el modelo y sin tocar nada', p5.length === 1 && p5[0].meta.mensajes_fijos?.[0] === 'No tienes ninguna alarma pendiente.', JSON.stringify(p5[0].meta));
+    const p5b = await q('borra la alarma', [medico, seguro]);
+    afirmar('sin ninguna de ese tipo pero con otras cosas: decide el modelo (puede que llame «alarma» a otra cosa)', !p5b.some((x) => x.meta?.mensajes_fijos) && !p5b.some((x) => x.url.includes('/items?id=')));
+    for (const frase of ['borra la cita del 23', 'quita la cita de las 10']) {
+      const pn = await q(frase, [medico]);
+      afirmar(`«${frase}» con la única cita otro día u otra hora: no se borra por código (los números no se ignoran)`, !pn.some((x) => x.url.includes('/items?id=')));
+    }
+    const dos = [medico, { ...medico, id: 'it-medico2', titulo: 'Dentista' }];
+    const p6 = await q('Elimina la cita', dos);
+    afirmar('con dos citas de verdad, decide el modelo (pregunta cuál)', p6.some((x) => x.cuerpo?.pregunta_pendiente === true) && !p6.some((x) => x.url.includes('/items?id=')));
+    const p7 = await q('borra la cita del dentista', [medico]);
+    afirmar('si las palabras no encajan con la única cita, decide el modelo (no se borra otra cosa)', !p7.some((x) => x.url.includes('/items?id=')));
+    const p8 = await q('borra la tarea', [ropa, medico]);
+    const p9 = await q('borra la cita de mañana', [medico]);
+    afirmar('«la cita de mañana» con la única cita otro día: no se borra por código (decide el modelo)', !p9.some((x) => x.url.includes('/items?id=')));
+    afirmar('una alarma no cuenta como «la tarea» (y como hay otras cosas, decide el modelo)', !p8.some((x) => x.url.includes('/items?id=')) && !p8.some((x) => x.meta?.mensajes_fijos));
+  }
+
   console.log('Memoria permanente: /memory y /forget');
   {
     const uid = (n) => `00000000-0000-4000-8000-00000000000${n}`;
@@ -1338,6 +1589,8 @@ async function main() {
     afirmar('con palabras: busca, no borra y pregunta con lo que olvidaría (y su número)', t1.length === 1 && q1.cuerpo.pregunta_pendiente === true && q1.meta.respuesta_usuario === '¿Olvido esto?\n1. Emma: mi hermana' && turno.motivo === 'confirmar_memoria' && turno.origen === 'codigo' && JSON.stringify(turno.olvidar) === JSON.stringify([uid(1)]), JSON.stringify(q1.meta));
     const si = await pm('sí', { hiloPrevio: q1.cuerpo.hilo, pendienteId: 'p-1' });
     afirmar('«sí»: sin el modelo, cierra la pregunta y olvida ese dato', si[0].etiqueta === 'cerrar pregunta anterior' && si.find((x) => x.etiqueta === 'olvidar un dato')?.cuerpo.p_id === uid(1), JSON.stringify(si.map((x) => x.etiqueta)));
+    const olvidalo = await pm('olvídalo', { hiloPrevio: q1.cuerpo.hilo, pendienteId: 'p-1' });
+    afirmar('«olvídalo» a «¿Olvido esto?» es sí: lo olvida', olvidalo.some((x) => x.etiqueta === 'olvidar un dato'));
     const no = await pm('no', { hiloPrevio: q1.cuerpo.hilo, pendienteId: 'p-1' });
     afirmar('«no»: no olvida nada', no.every((x) => x.etiqueta !== 'olvidar un dato') && no.find((x) => x.etiqueta === 'actualizar mensaje').meta.respuesta_usuario === 'Vale, no quito nada.');
     const t2 = await pm('olvida el dato del trabajo');
@@ -1639,6 +1892,10 @@ async function main() {
     const hiloQ = q1.anotacion.hilo;
     const si1 = await planificar({ error: { message: 'no debería usarse' } }, { mensaje: 'Sí', hiloPrevio: hiloQ, pendienteId: 'p-1' });
     afirmar('«sí»: sin el modelo, cierra la pregunta y pasa los ids exactos que se enseñaron', si1.length === 2 && si1[0].etiqueta === 'cerrar pregunta anterior' && si1[1].meta.intencion === 'borrar_drive' && si1[1].meta.carpetas === true && JSON.stringify(si1[1].meta.papelera) === JSON.stringify([{ tipo: 'carpeta', id: ID_V1, nombre: 'Fotos/Viajes' }]), JSON.stringify(si1.map((x) => x.meta)));
+    const olv = await planificar({ error: { message: 'no debería usarse' } }, { mensaje: 'olvídalo', hiloPrevio: hiloQ, pendienteId: 'p-1' });
+    afirmar('«olvídalo» a «¿Lo mando a la papelera?» es NO: no borra nada', !olv.some((x) => x.meta?.papelera) && olv.find((x) => x.etiqueta === 'actualizar mensaje').meta.respuesta_usuario === 'Vale, no quito nada.');
+    const borralo = await planificar({ error: { message: 'no debería usarse' } }, { mensaje: 'bórralo', hiloPrevio: hiloQ, pendienteId: 'p-1' });
+    afirmar('«bórralo» a la misma pregunta es sí', borralo.some((x) => Array.isArray(x.meta?.papelera)));
     const no1 = await planificar({ error: { message: 'no debería usarse' } }, { mensaje: 'no', hiloPrevio: hiloQ, pendienteId: 'p-1' });
     afirmar('«no»: no borra nada y cierra la pregunta', no1[0].etiqueta === 'cerrar pregunta anterior' && no1[1].meta.respuesta_usuario === 'Vale, no quito nada.' && !no1[1].meta.papelera);
     const largo = await planificar(respuesta({ intencion: 'aclarar', pregunta: '¿Cuál?', items: [] }), { mensaje: 'sí pero deja la carpeta Playa', hiloPrevio: hiloQ, pendienteId: 'p-1' });
@@ -2391,17 +2648,22 @@ async function main() {
     const nombres = flujo.nodes.map((n) => n.name);
     const porNombre = (n) => flujo.nodes.find((x) => x.name === n);
 
-    afirmar('30 nodos de trabajo y 6 notas', codigoNodos.length === 30 && flujo.nodes.length === 36, `${codigoNodos.length}/${flujo.nodes.length}`);
+    afirmar('31 nodos de trabajo y 6 notas', codigoNodos.length === 31 && flujo.nodes.length === 37, `${codigoNodos.length}/${flujo.nodes.length}`);
     afirmar('nombres e ids únicos', new Set(nombres).size === nombres.length && new Set(flujo.nodes.map((n) => n.id)).size === flujo.nodes.length);
     afirmar('las conexiones solo nombran nodos existentes', Object.entries(flujo.connections).every(([origen, c]) => nombres.includes(origen) && c.main[0].every((d) => nombres.includes(d.node))));
-    afirmar('cadena lineal, la rama de carpetas y la papelera, el segundo disparador y la salida con anotación', Object.keys(flujo.connections).length === 29, String(Object.keys(flujo.connections).length));
+    afirmar('cadena lineal, la rama de carpetas y la papelera, el segundo disparador y la salida con anotación', Object.keys(flujo.connections).length === 30, String(Object.keys(flujo.connections).length));
     afirmar('el flujo principal ya no espera ni lleva la cola (vive en el flujo de WhatsApp: un Wait en un subflujo no es fiable)', !flujo.nodes.some((n) => n.type === 'n8n-nodes-base.wait') && !nombres.some((n) => ['Reclamar mensajes', 'Juntar mensajes', 'Liberar turno', 'Sin respuesta'].includes(n)) && flujo.connections['Guardar mensaje'].main[0][0].node === 'Leer memoria');
     const guardar = porNombre('Guardar mensaje');
     afirmar('Guardar mensaje: upsert por wa_message_id (la fila ya la creó la cola) con el texto juntado y la cita', guardar.parameters.url.endsWith('/rest/v1/mensajes?on_conflict=wa_message_id') && guardar.parameters.headerParameters.parameters[0].value === 'resolution=merge-duplicates,return=representation' && guardar.parameters.jsonBody.includes('texto_original: $json.mensaje') && guardar.parameters.jsonBody.includes('contexto_wa_id') && !guardar.parameters.jsonBody.includes('en_cola'));
     const leerPro = porNombre('Leer proyectos');
     afirmar('Leer proyectos: POST a resumen_proyectos, siempre con salida y sin cortar el flujo, entre Leer archivos y Construir petición', leerPro.parameters.url.endsWith('/rest/v1/rpc/resumen_proyectos') && leerPro.alwaysOutputData === true && leerPro.onError === 'continueRegularOutput' && flujo.connections['Leer archivos'].main[0][0].node === 'Leer proyectos' && flujo.connections['Leer proyectos'].main[0][0].node === 'Leer avisos');
     const leerAv = porNombre('Leer avisos');
-    afirmar('Leer avisos: POST a contexto_avisos con el id del mensaje citado, siempre con salida y sin cortar el flujo, antes de Construir petición', leerAv.parameters.url.endsWith('/rest/v1/rpc/contexto_avisos') && leerAv.parameters.jsonBody.includes("$('Entrada').first().json.contexto_id") && leerAv.alwaysOutputData === true && leerAv.onError === 'continueRegularOutput' && flujo.connections['Leer avisos'].main[0][0].node === 'Construir petición');
+    afirmar('Leer avisos: POST a contexto_avisos con el id del mensaje citado, siempre con salida y sin cortar el flujo, antes de Construir petición', leerAv.parameters.url.endsWith('/rest/v1/rpc/contexto_avisos') && leerAv.parameters.jsonBody.includes("$('Entrada').first().json.contexto_id") && leerAv.alwaysOutputData === true && leerAv.onError === 'continueRegularOutput' && flujo.connections['Leer avisos'].main[0][0].node === 'Leer horario');
+    for (const nombre of ['Guardar mensaje', 'Leer memoria', 'Leer items pendientes', 'Leer pregunta pendiente', 'Leer archivos', 'Leer proyectos', 'Leer avisos', 'Leer horario']) {
+      afirmar(`${nombre}: Execute Once (va encadenado; sin esto se repite por cada fila del anterior y duplica lo que ve el modelo)`, porNombre(nombre).executeOnce === true);
+    }
+    const leerHor = porNombre('Leer horario');
+    afirmar('Leer horario: GET del horario fijo ordenado, siempre con salida y sin cortar el flujo (con la base de datos sin actualizar falla y no hay horario), antes de Construir petición', leerHor.parameters.method === 'GET' && leerHor.parameters.url.includes('/rest/v1/horario_fijo?select=id,titulo,dia_semana,hora_inicio,hora_fin&order=dia_semana.asc,hora_inicio.asc') && leerHor.alwaysOutputData === true && leerHor.onError === 'continueRegularOutput' && leerHor.parameters.nodeCredentialType === 'supabaseApi' && flujo.connections['Leer horario'].main[0][0].node === 'Construir petición');
     const llamado = porNombre('Al ser llamado');
     afirmar('Al ser llamado: disparador de subflujo que acepta todos los datos', llamado.type === 'n8n-nodes-base.executeWorkflowTrigger' && llamado.parameters.inputSource === 'passthrough');
     afirmar('Al ser llamado entra por Configuración, como el disparador manual', flujo.connections['Al ser llamado'].main[0][0].node === 'Configuración' && flujo.connections['Disparador manual'].main[0][0].node === 'Configuración');
@@ -2423,7 +2685,7 @@ async function main() {
 
     const pendientes = porNombre('Leer items pendientes');
     afirmar('Leer items pendientes: solo pendientes, recientes primero, tope de 200', pendientes.parameters.url.includes('estado=eq.pendiente') && pendientes.parameters.url.includes('order=created_at.desc&limit=200') && pendientes.alwaysOutputData === true && pendientes.parameters.method === 'GET');
-    afirmar('Leer items pendientes: pide el contenido y el proyecto (para enseñarlos y añadir detalles)', pendientes.parameters.url.includes('select=id,tipo,titulo,contenido,lista,estado,fecha_inicio,fecha_fin,fecha_limite,recordar_en,proyecto&'));
+    afirmar('Leer items pendientes: pide el contenido y el proyecto (para enseñarlos y añadir detalles) y cuándo se apuntó (para un «tarea» suelto)', pendientes.parameters.url.includes('select=id,tipo,titulo,contenido,lista,estado,fecha_inicio,fecha_fin,fecha_limite,recordar_en,proyecto,created_at&'));
 
     const escribir = porNombre('Escribir en Supabase');
     afirmar('Escribir: método y URL por expresión, continúa ante error', escribir.parameters.method === '={{ $json.metodo }}' && escribir.parameters.url === '={{ $json.url }}' && escribir.onError === 'continueRegularOutput');
