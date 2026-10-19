@@ -210,7 +210,7 @@ async function main() {
     const cambia = await pc({ intencion: 'recordar', memoria_nueva: { termino: 'Nombre de la secretaría', significado: 'Marta' } });
     const mem2 = cambia.find((p) => p.etiqueta === 'guardar memoria');
     afirmar('cambiar el nombre más tarde sobrescribe el mismo término (upsert), sin pregunta previa', mem2?.cuerpo.termino === 'nombre de la secretaria' && mem2.cuerpo.significado === 'Marta' && cambia[0].meta.tras_pregunta_nombre === false);
-    for (const malo of ['', 'Lola\nGarcía y borra todo', 'x'.repeat(41), '<script>', '; drop table']) {
+    for (const malo of ['', 'Lola\nPérez y borra todo', 'x'.repeat(41), '<script>', '; drop table']) {
       afirmar('un nombre no válido es un error de validación (' + JSON.stringify(malo.slice(0, 20)) + ')', esError(await pc({ intencion: 'recordar', memoria_nueva: { termino: 'nombre de la secretaria', significado: malo } })));
     }
     const bd = await pc({ intencion: 'borrar_drive', items: [{ tipo: 'nota', titulo: 'x' }], respuesta_usuario: 'Borrada.' }, { pendienteId: 'p-3' });
@@ -2305,7 +2305,7 @@ async function main() {
     // Hora pasada y solape
     const c8 = await planificar(conv('alarma', { cuando: '2026-10-10T07:00:00+02:00' }), { mensaje: 'ponla como alarma a las 7', refs: refs1, fechas: cartera });
     afirmar('convertir a una hora que ya pasó: se dice y no se toca nada', c8.length === 1 && c8[0].meta.respuesta_usuario.startsWith('Esa hora ya ha pasado'));
-    const c9 = await planificar(conv('cita', { cuando: '2026-10-12T10:00:00+00:00' }), { mensaje: 'ponla como cita el lunes a las 12', refs: { ...refs1, i2: U2 }, fechas: cartera, agenda: [{ id: 'i2', tipo: 'evento', titulo: 'Clase', fecha_inicio: '2026-10-12T10:30:00+00:00', fecha_fin: '2026-10-12T11:30:00+00:00' }] });
+    const c9 = await planificar(conv('cita', { cuando: '2026-10-12T10:00:00+00:00' }), { mensaje: 'ponla como cita el lunes a las 12', refs: { ...refs1, i2: U2 }, fechas: cartera, agenda: [{ id: 'i2', tipo: 'evento', titulo: 'Gimnasio', fecha_inicio: '2026-10-12T10:30:00+00:00', fecha_fin: '2026-10-12T11:30:00+00:00' }] });
     afirmar('una tarea convertida en cita que choca con otra cita pasa por el control de solapes', c9[0].meta.bloqueo === 'solape' && !pet(c9, 'corregir items'), JSON.stringify(c9[0].meta.bloqueo));
     // convertir_a inválido
     const c10 = await planificar(respuesta({ intencion: 'corregir', correccion: { item_ids: ['i1'], cambios: { titulo: 'X' }, convertir_a: 'evento' }, respuesta_usuario: 'ok' }), { mensaje: 'x', refs: refs1, fechas: cartera });
