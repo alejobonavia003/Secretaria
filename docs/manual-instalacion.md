@@ -656,8 +656,18 @@ latidos y te mande un correo si dejan de llegar.
 | No llega el resumen de las 7:00, ni avisos | **Ventana de 24 h de Meta**: sin plantillas aprobadas, solo se puede escribir a quien te escribió en las últimas 24 h | Escríbele algo cada día. Es una limitación de WhatsApp, no un fallo |
 | «N mensajes tuyos no se procesaron» (Latido) | Un mensaje llegó con el flujo principal despublicado o una ejecución murió | Revisa *Executions*; después ejecuta `supabase/consultas/revisar-sin-procesar.sql` |
 
-Consultas útiles en Supabase (SQL Editor, solo leen): [`supabase/consultas/`](../supabase/consultas/) (`ver-errores.sql`,
-`ver-eventos.sql`, `ver-recordatorios.sql`, `ver-archivos.sql`…).
+Consultas útiles en Supabase (SQL Editor), en [`supabase/consultas/`](../supabase/consultas/):
+
+| Archivo | Qué hace |
+|---|---|
+| `ver-errores.sql` | Solo lee: los últimos mensajes, si se procesaron y el error si lo hubo. |
+| `ver-eventos.sql` | Solo lee: los eventos pendientes con su hora de Madrid. |
+| `ver-recordatorios.sql` | Solo lee: las alarmas y qué avisos han salido ya. |
+| `ver-avisos.sql` | Solo lee: los últimos eventos y el estado de su aviso por WhatsApp. |
+| `ver-archivos.sql` | Solo lee: los últimos archivos recibidos, su estado y su carpeta. |
+| `ver-carpetas-pedidas.sql` | Solo lee: las carpetas pedidas y si ya existen en Drive. |
+| `revisar-sin-procesar.sql` | **Escribe:** anota como revisados los mensajes que se quedaron sin procesar (los que cuenta el Latido). No borra nada. |
+| `vaciar-datos.sql` | **Borra todos los datos**, sin copia. Solo para empezar de cero (parte 17). |
 
 ---
 

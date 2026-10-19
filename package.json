@@ -4,6 +4,21 @@
   "description": "Secretaria personal por WhatsApp: clasifica mensajes y los guarda en Supabase, Google Calendar y Drive con flujos de n8n.",
   "private": true,
   "license": "MIT",
+  "homepage": "https://github.com/gguillex/Secretaria#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gguillex/Secretaria.git"
+  },
+  "keywords": [
+    "whatsapp",
+    "n8n",
+    "gemini",
+    "supabase",
+    "google-calendar",
+    "google-drive",
+    "asistente-personal",
+    "self-hosted"
+  ],
   "engines": {
     "node": ">=20"
   },
