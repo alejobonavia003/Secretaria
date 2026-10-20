@@ -111,7 +111,12 @@ function formatearLista(filas, consulta, ahora, archivos = []) {
     if (deArchivos) return [deArchivos];
     // Sin filtros: nada pendiente. Solo un rango de fechas («qué tengo hoy»): nada en esas fechas. Con tipo o lista: nada con esos criterios.
     if (consulta.estado === 'pendiente' && !hayFiltros) return ['No tienes nada pendiente.'];
-    if (consulta.estado === 'pendiente' && consulta.con_rango && !consulta.tipo && !consulta.lista && !consulta.proyecto && !consulta.buscar) return ['No tienes nada pendiente en esas fechas.'];
+    if (consulta.estado === 'pendiente' && consulta.con_rango && !consulta.tipo && !consulta.lista && !consulta.proyecto && !consulta.buscar) {
+      // Con el día dicho con palabras y avisando de que lo que no tiene fecha no sale
+      const cuando = typeof consulta.rango_texto === 'string' && consulta.rango_texto ? consulta.rango_texto : 'en esas fechas';
+      const frase = cuando.startsWith('hoy') || cuando.startsWith('mañana') ? `${cuando.charAt(0).toUpperCase()}${cuando.slice(1)} no tienes nada con fecha.` : `No tienes nada con fecha ${cuando}.`;
+      return [`${frase} Lo que no tiene fecha (tareas, listas…) no sale aquí: escribe /pending para verlo todo.`];
+    }
     // «Qué alarmas / citas / tareas / pensamientos / listas tengo» sin nada: se dice con la palabra que usó
     if (consulta.estado === 'pendiente' && !consulta.con_rango && !consulta.lista && !consulta.proyecto && !consulta.buscar) {
       if (consulta.vista === 'alarmas') return ['No tienes ninguna alarma pendiente.'];
@@ -724,6 +729,10 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     ? { error: String(error).slice(0, MAX_ERROR_GUARDADO), ...(erroresEscritura.length > 0 ? { procesado: false } : {}) }
     : preguntaDrive;
 
+  // Preguntas que el usuario dejó sin contestar al escribir otra cosa: se cerraron sin hacer nada y se le dice ANTES de la respuesta
+  const ignoradas = Array.isArray(meta.preguntas_ignoradas) ? meta.preguntas_ignoradas.filter((p) => typeof p === 'string' && p.trim() !== '') : [];
+  if (ignoradas.length > 0) mensajes.unshift(textoPreguntasIgnoradas(ignoradas));
+
   return {
     ok: error === null,
     intencion: meta.intencion,
@@ -736,6 +745,16 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     anotacion,
     envios_archivos: envios,
   };
+}
+
+// «Como no me contestaste a «¿…?», no he hecho nada con eso.» (una por pregunta, recortadas a una línea)
+function textoPreguntasIgnoradas(preguntas) {
+  const corta = (p) => {
+    const t = String(p).replace(/\s+/g, ' ').trim();
+    return t.length > 120 ? `${t.slice(0, 120).trimEnd()}…` : t;
+  };
+  if (preguntas.length === 1) return `Como no me contestaste a «${corta(preguntas[0])}», no he hecho nada con eso. Si lo quieres, dímelo otra vez.`;
+  return `Como no me contestaste a estas preguntas, no he hecho nada con ellas:\n${preguntas.map((p) => `• «${corta(p)}»`).join('\n')}\nSi quieres alguna, dímelo otra vez.`;
 }
 
 // --- Pegamento con n8n ---

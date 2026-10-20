@@ -69,6 +69,8 @@ $input.all().forEach((item, i) => {
       // La respuesta cita el PRIMER mensaje del grupo (WhatsApp solo deja citar uno): contesta a todos los que van desde ese
       // Tuvo que esperar a que otra ejecución contestara: el usuario mandó este mientras se procesaba otro (varios mensajes)
       espero_turno: vuelta > 0,
+      // Cuándo llegó el primero del grupo: el flujo principal sabe así si el usuario ya había visto una pregunta abierta
+      recibido_at: typeof mensajes[0]?.created_at === 'string' ? mensajes[0].created_at : null,
       // Todos los mensajes que contesta esta respuesta (se marcan como contestados al mandarla)
       wa_ids: mensajes.map((m) => m.wa_message_id).filter((w) => typeof w === 'string' && VALIDO.test(w)),
       // Lo entendido de cada audio del grupo, para el «🎙️ Entendí» (sale justo antes de procesar, en su turno)

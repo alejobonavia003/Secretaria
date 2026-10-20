@@ -1,5 +1,5 @@
 // Nodo "Entrada": frontera entre el origen del mensaje y el núcleo del flujo.
-// Contrato de salida (lo único que el núcleo espera): mensaje, fecha_actual, wa_message_id, tipo_entrada, contexto_id y, solo si el flujo de
+// Contrato de salida (lo único que el núcleo espera): mensaje, fecha_actual, wa_message_id, tipo_entrada, contexto_id, recibido_at (o null) y, solo si el flujo de
 // WhatsApp juntó demasiados mensajes seguidos, demasiados (true) y aviso_demasiados (el texto con el que se contesta, sin procesar nada).
 //
 // Dos orígenes:
@@ -34,7 +34,9 @@ if (llamada && typeof llamada === 'object' && Object.keys(llamada).length > 0) {
   // Si el usuario respondió (citó) a un mensaje, id de ese mensaje: sirve para saber a qué archivo se refiere. Vacío si no.
   const contexto_id = typeof llamada.contexto_id === 'string' && /^[A-Za-z0-9._=+\/-]{1,300}$/.test(llamada.contexto_id) ? llamada.contexto_id : '';
   const demasiados = llamada.demasiados === true && typeof llamada.aviso_demasiados === 'string' && llamada.aviso_demasiados.trim() !== '';
-  return [{ json: { mensaje: texto, fecha_actual, wa_message_id: llamada.wa_message_id.trim(), tipo_entrada: tipo, contexto_id, ...(demasiados ? { demasiados: true, aviso_demasiados: llamada.aviso_demasiados.trim().slice(0, 500) } : {}) } }];
+  // Cuándo llegó (lo da la cola del flujo de WhatsApp): para saber si el usuario había visto una pregunta abierta
+  const recibido_at = typeof llamada.recibido_at === 'string' && !Number.isNaN(Date.parse(llamada.recibido_at)) ? llamada.recibido_at : null;
+  return [{ json: { mensaje: texto, fecha_actual, wa_message_id: llamada.wa_message_id.trim(), tipo_entrada: tipo, contexto_id, recibido_at, ...(demasiados ? { demasiados: true, aviso_demasiados: llamada.aviso_demasiados.trim().slice(0, 500) } : {}) } }];
 }
 
 if (typeof MENSAJE !== 'string' || MENSAJE.trim() === '') {

@@ -2,6 +2,24 @@
 
 Formato: cada versión dice qué cambia para quien la usa y qué hay que hacer para actualizar una instalación existente.
 
+## 1.3.0 · 2026-10-20
+
+### Cambios
+
+- **No deja preguntas en el aire:** si te pregunta algo («¿La apunto igualmente?») y le mandas otra cosa sin contestar, no hace nada
+  con lo anterior y te lo dice antes de atender lo nuevo («Como no me contestaste a «…», no he hecho nada con eso»). Antes cualquier
+  mensaje que no pareciera una orden se tomaba como la respuesta.
+- **Qué contesta a cada pregunta:** una confirmación sí/no solo la contesta un sí, un no o un cambio corto con día u hora; «¿alarma,
+  cita o tarea?» solo una de esas palabras.
+- **«Qué tengo hoy» sin nada** dice qué día ha mirado y que lo que no tiene fecha (tareas, listas…) no sale ahí, con un recordatorio
+  de `/pending`. Antes decía «No tienes nada pendiente en esas fechas», y parecía un error.
+
+### Para actualizar desde la 1.2
+
+La base de datos **no cambia**. En el servidor: `git pull`, `bash herramientas/servidor/importar-flujos.sh` y vuelve a publicar los
+flujos (parte 11.5 del manual). Si importas solo uno de los dos flujos, cerrar las preguntas sin contestar no funciona: necesita el
+flujo de WhatsApp y el principal nuevos.
+
 ## 1.2.0 · 2026-10-19
 
 ### Novedades

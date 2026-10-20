@@ -565,6 +565,9 @@ sale en rojo, ábrela: el nodo rojo y su mensaje dicen qué pasa.
 - [ ] `para que lo sepas: Emma es mi hermana` → lo guarda; `/memory` lo enseña numerado y `/forget 1` lo olvida.
 - [ ] `trabajo los viernes de 16 a 20` → lo guarda en tu horario fijo (`/horario` lo enseña). Después, `médico el viernes a las 17`
       → pregunta si lo apunta igualmente.
+- [ ] `qué tengo hoy` sin nada con fecha → te dice qué día ha mirado y que lo que no tiene fecha no sale (`/pending` lo enseña todo).
+- [ ] Haz que te pregunte algo (`mañana coger la cartera` → «¿alarma, cita o tarea?») y contesta otra cosa (`qué tengo hoy`) → te dice
+      que no hizo nada con la pregunta sin contestar y atiende lo nuevo.
 - [ ] Manda seguidos un texto, una foto y otro texto → las tres respuestas llegan en ese orden, cada una citando su mensaje.
 - [ ] `crea la carpeta Pruebas` y, cuando exista, `borra la carpeta Pruebas` → enseña lo que se borraría; `sí` → va a la papelera de
       Drive (compruébalo en drive.google.com → Papelera).

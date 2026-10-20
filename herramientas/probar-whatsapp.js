@@ -742,6 +742,7 @@ async function main() {
     afirmar('procesar: conserva la cita a una foto de un mensaje anterior', j1.contexto_id === 'wamid.foto');
     afirmar('procesar: la respuesta citará el PRIMER mensaje del grupo', j1.responde_a === 'wamid.1');
     afirmar('procesar: a la primera no ha esperado turno', j1.espero_turno === false);
+    afirmar('procesar: lleva la hora de llegada del primero del grupo (para las preguntas sin contestar del flujo principal)', j1.recibido_at === null && (await juntar([{ accion: 'procesar', mensajes: [{ id: 'z1', wa_message_id: 'wamid.z', tipo_entrada: 'texto', texto: 'hola', created_at: '2026-10-20T10:00:00.000Z' }] }]))[0].recibido_at === '2026-10-20T10:00:00.000Z');
     afirmar('procesar: lleva todos los ids del grupo (para marcarlos como contestados) y ningún eco si no hay audios', j1.wa_ids.join() === 'wamid.1,wamid.2,wamid.3' && j1.ecos.length === 0);
     const [jAudio] = await juntar([{ accion: 'procesar', mensajes: [{ id: 'a1', wa_message_id: 'wamid.a', tipo_entrada: 'audio', texto: 'compra leche' }, { id: 'a2', wa_message_id: 'wamid.b', tipo_entrada: 'texto', texto: 'y pan' }] }], { 'En cola': [{ id: 'a2' }] });
     afirmar('procesar: el eco de cada audio del grupo (lo manda «Mensaje de eco» en su turno)', jAudio.ecos.join() === 'compra leche');

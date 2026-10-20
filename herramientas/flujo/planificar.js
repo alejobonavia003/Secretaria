@@ -412,6 +412,26 @@ function urlConsulta(base, q) {
   return `${base}/items?${partes.join('&')}`;
 }
 
+// El rango de una consulta dicho con palabras, para «no tienes nada…»
+// Por ejemplo: «hoy (mar 20 oct)», «mañana (…)», «el vie 23 oct», «entre el … y el …». null sin rango.
+function textoRango(q, ahora) {
+  if (!q.desde && !q.hasta) return null;
+  const dia = (d) => diaMadrid(d.getTime());
+  const corto = (d) => diaCorto(d.getTime());
+  const ini = q.desde ? q.desde.fecha : null;
+  const fin = q.hasta ? (q.hasta.exclusivo ? new Date(q.hasta.fecha.getTime() - 1) : q.hasta.fecha) : null;
+  const hoy = diaMadrid(ahora.getTime());
+  const [y, m, d] = hoy.split('-').map(Number);
+  const manana = diaMadrid(madridAUtc(y, m, d + 1, 12, 0).getTime());
+  if (ini && fin && dia(ini) === dia(fin)) {
+    if (dia(ini) === hoy) return `hoy (${corto(ini)})`;
+    if (dia(ini) === manana) return `mañana (${corto(ini)})`;
+    return `el ${corto(ini)}`;
+  }
+  if (ini && fin) return `entre el ${corto(ini)} y el ${corto(fin)}`;
+  return ini ? `desde el ${corto(ini)}` : `hasta el ${corto(fin)}`;
+}
+
 // Devuelve { datos, avisos } o lanza ErrorValidacion
 // Término de la memoria donde se guarda el nombre que el usuario le pone a la secretaria (sin acentos ni mayúsculas, como termino_norm)
 const NOMBRE_TERMINO = 'nombre de la secretaria';
@@ -1018,7 +1038,11 @@ const MANUAL = {
   },
   listas: {
     titulo: 'Listas',
-    texto: '• «añade leche y huevos a la compra» (cada cosa se apunta por separado).\n• «qué hay en la compra».\n• «ya compré la leche» la quita de la lista.',
+    texto:
+      '• «añade leche y huevos a la compra» (cada cosa se apunta por separado). Comprar siempre va a la lista de la compra, aunque digas un día («mañana compra pan»).\n' +
+      '• Si algo ya estaba en la lista, no lo repito: te digo qué apunté y qué ya estaba.\n' +
+      '• Si dices un día, después te pregunto si te aviso para ir a comprar: contéstame con la hora («a las 18») o «no».\n' +
+      '• «qué hay en la compra».\n• «ya compré la leche» la quita de la lista.',
   },
   notas: {
     titulo: 'Notas',
@@ -1060,7 +1084,8 @@ const MANUAL = {
       '• Si borras una sección o varias cosas a la vez, siempre te enseño la lista y te pregunto antes; si marcas como hechas más de 3, también. «Borra todo» te pregunta qué sección.\n' +
       '• Ver los detalles de algo: «qué apunté del casero», «enséñame el contenido de la tarea del banco».\n' +
       '• Todo con todos los detalles: «dámelo todo completo» o /pending completo.\n' +
-      '• Si no estoy segura de a cuál te refieres, te pregunto.',
+      '• Si no estoy segura de a cuál te refieres, te pregunto.\n' +
+      '• Si te pregunto algo (por ejemplo «¿la apunto igualmente?») y me escribes otra cosa sin contestar, no apunto lo que estaba pendiente y te lo digo.',
   },
   memoria: {
     titulo: 'Lo que recuerdo de ti',
@@ -1403,17 +1428,24 @@ function tipoDePregunta(fila) {
   if (/\bhora\b/.test(texto)) return 'cuando';
   return 'libre';
 }
-const RESPONDE = { sino: SI_NO, cuando: CUANDO, tipo: ELIGE_TIPO, eleccion: ELIGE_REPETIDO };
+// Una confirmación (sí/no) solo la contesta un sí o un no, o un cambio corto («a las 6», «mejor el jueves»: hasta 4 palabras con un día o
+// una hora). Algo más largo es otra cosa («mañana dentista a las 10») y no la contesta.
+const RESPONDE_SINO = { test: (m) => SI_NO.test(m) || (CUANDO.test(m) && m.split(' ').filter(Boolean).length <= 4) };
+const RESPONDE = { sino: RESPONDE_SINO, cuando: CUANDO, tipo: ELIGE_TIPO, eleccion: ELIGE_REPETIDO };
+// Si el mensaje no encaja con ninguna, solo se toma como respuesta a la más reciente si esta admite cualquier cosa (una pregunta libre, una
+// hora o una elección). A una confirmación o a «¿alarma, cita o tarea?» no la contesta algo que no encaja: es otra cosa.
+const ACEPTA_CUALQUIERA = new Set(['libre', 'cuando', 'eleccion']);
 // De las preguntas abiertas (la más reciente primero) devuelve la que este mensaje contesta, o null si es una orden nueva.
 // 1) la más reciente cuyo contenido encaja con el mensaje; 2) si no encaja con ninguna pero tampoco parece una orden nueva, la más
-// reciente (como antes de esta decisión); 3) si parece una orden nueva, ninguna.
+// reciente si admite cualquier respuesta (libre, hora, elección; no una confirmación ni el tipo); 3) si parece una
+// orden nueva, ninguna.
 function elegirPregunta(mensaje, abiertas) {
   const filas = (Array.isArray(abiertas) ? abiertas : []).filter((f) => f && typeof f.id === 'string');
   if (filas.length === 0) return null;
   const m = sinSignos(mensaje ?? '');
   const esOrden = ORDEN_NUEVA.test(m) && !SI_NO.test(m);
   if (esOrden) return filas.find((f) => tipoDePregunta(f) === 'libre') ?? null;
-  return filas.find((f) => RESPONDE[tipoDePregunta(f)]?.test(m)) ?? filas[0];
+  return filas.find((f) => RESPONDE[tipoDePregunta(f)]?.test(m)) ?? (ACEPTA_CUALQUIERA.has(tipoDePregunta(filas[0])) ? filas[0] : null);
 }
 
 // Un «sí» o un «no» sueltos sin ninguna pregunta abierta (ya caducó o ya se contestó): no hay nada que confirmar y el modelo se lo inventaba
@@ -1944,7 +1976,14 @@ function comprobarAgenda({ datos, agenda, hiloPrevio, horario = [] }) {
 function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, agenda = [], archivos = {}, pendientes = [] }) {
   const base = config.supabase_url.replace(/\/+$/, '') + '/rest/v1';
   const peticion = (etiqueta, metodo, ruta, cuerpo, prefer) => ({ etiqueta, metodo, url: base + ruta, cuerpo, prefer });
-  const marcarMensaje = (cuerpo) => peticion('actualizar mensaje', 'PATCH', `/mensajes?id=eq.${mensajeId}`, cuerpo, 'return=minimal');
+  // Cada pregunta que queda abierta lleva la hora a la que se hizo (en el último turno del hilo, campo «en»): si el usuario escribe otra
+  // cosa DESPUÉS sin contestarla, se cierra y se le dice. El modelo solo ve rol y texto de cada turno.
+  const marcarMensaje = (cuerpo) => {
+    const hilo = cuerpo?.pregunta_pendiente === true && Array.isArray(cuerpo.hilo) && cuerpo.hilo.length > 0
+      ? [...cuerpo.hilo.slice(0, -1), { ...cuerpo.hilo.at(-1), en: cuerpo.hilo.at(-1).en ?? ahora.toISOString() }]
+      : null;
+    return peticion('actualizar mensaje', 'PATCH', `/mensajes?id=eq.${mensajeId}`, hilo ? { ...cuerpo, hilo } : cuerpo, 'return=minimal');
+  };
   // "Leer consulta" se ejecuta siempre; si no hay consulta lee algo inocuo (el mensaje recién guardado)
   const urlNeutra = `${base}/mensajes?select=id&id=eq.${mensajeId}`;
   const conError = (motivo, meta) => ({
@@ -2511,7 +2550,7 @@ function planificar({ resp, mensajeId, config, ahora, refs = {}, contexto = {}, 
     meta.consulta_url = urlConsulta(base, q);
     // Con todo el detalle si lo pide el atajo o si el mensaje lo dice («qué tengo pendiente completo», «dámelo todo entero»)
     const completo = q.completo || pideCompleto(contexto.mensaje);
-    meta.consulta = { tipo: q.tipo, vista: q.vista, lista: q.lista, proyecto: q.proyecto, buscar: q.buscar, completo, estado: q.estado, con_rango: Boolean(q.desde || q.hasta), limite: MAX_FILAS_CONSULTA };
+    meta.consulta = { tipo: q.tipo, vista: q.vista, lista: q.lista, proyecto: q.proyecto, buscar: q.buscar, completo, estado: q.estado, con_rango: Boolean(q.desde || q.hasta), rango_texto: textoRango(q, ahora), limite: MAX_FILAS_CONSULTA };
   }
   const cuerpoMensaje = { procesado: true, error: null };
   if (datos.intencion === 'aclarar') {
@@ -2597,4 +2636,12 @@ const pendientes = (construccion.pendientes ?? []).filter((r) => Object.prototyp
 const llegada = $input.first().json;
 const resp = llegada?.saltar_modelo === true ? { error: 'no se llamó al modelo y el mensaje no es un comando' } : llegada;
 const plan = planificar({ resp, mensajeId, config: configPlan, ahora: new Date(), refs, contexto, agenda, archivos, pendientes });
+// Preguntas que el usuario ya había visto y ha dejado sin contestar al escribir otra cosa: se cierran (no se apunta nada de
+// ellas) y Resultado se lo dice antes de la respuesta. Las decide «Construir petición».
+const ignoradas = (Array.isArray(construccion.preguntas_ignoradas) ? construccion.preguntas_ignoradas : [])
+  .filter((q) => q && typeof q.id === 'string' && /^[0-9a-f-]{36}$/i.test(q.id) && q.id !== construccion.pendiente_id);
+if (ignoradas.length > 0) {
+  plan.peticiones.unshift({ etiqueta: 'cerrar preguntas sin contestar', metodo: 'PATCH', url: `${config.supabase_url.replace(/\/+$/, '')}/rest/v1/mensajes?id=in.(${ignoradas.map((q) => q.id).join(',')})`, cuerpo: { pregunta_pendiente: false }, prefer: 'return=minimal' });
+  plan.meta.preguntas_ignoradas = ignoradas.map((q) => String(q.pregunta ?? ''));
+}
 return plan.peticiones.map((p) => ({ json: { ...p, meta: plan.meta } }));

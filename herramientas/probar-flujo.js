@@ -333,7 +333,9 @@ async function main() {
     afirmar('una pregunta con más detalle sigue yendo al modelo («qué tengo pendiente del proyecto mudanza»)', (await planificar(respuesta({ intencion: 'consultar', consulta: { proyecto: 'Mudanza' } }), { mensaje: 'qué tengo pendiente del proyecto mudanza' }))[0].meta.consulta.proyecto === 'Mudanza');
     const vacio = async (consulta) => (await resConsulta({ ok: true, error: null, intencion: 'consultar', avisos: [], respuesta_usuario: '', pregunta: null, ahora: '2026-10-10T08:00:00.000Z', consulta: { tipo: null, lista: null, estado: 'pendiente', con_rango: false, limite: 500, ...consulta } }, [{}]))[0].mensajes[0];
     afirmar('sin nada pendiente y sin filtros: «No tienes nada pendiente.»', (await vacio({})) === 'No tienes nada pendiente.');
-    afirmar('sin nada en un rango de fechas (qué tengo hoy): «No tienes nada pendiente en esas fechas.»', (await vacio({ con_rango: true })) === 'No tienes nada pendiente en esas fechas.');
+    afirmar('sin nada en un rango de fechas y sin el día (Planificar antiguo): «No tienes nada con fecha en esas fechas…» y remite a /pending', (await vacio({ con_rango: true })).startsWith('No tienes nada con fecha en esas fechas.') && (await vacio({ con_rango: true })).includes('/pending'));
+    afirmar('«qué tengo hoy» sin nada: nombra el día y avisa de que lo que no tiene fecha no sale', (await vacio({ con_rango: true, rango_texto: 'hoy (mar 20 oct)' })) === 'Hoy (mar 20 oct) no tienes nada con fecha. Lo que no tiene fecha (tareas, listas…) no sale aquí: escribe /pending para verlo todo.');
+    afirmar('… y con otro día: «No tienes nada con fecha el vie 23 oct.»', (await vacio({ con_rango: true, rango_texto: 'el vie 23 oct' })).startsWith('No tienes nada con fecha el vie 23 oct.'));
     afirmar('con una lista, o un tipo en un rango de fechas: «No encuentro nada con esos criterios.»', (await vacio({ lista: 'compra' })) === 'No encuentro nada con esos criterios.' && (await vacio({ tipo: 'evento', con_rango: true })) === 'No encuentro nada con esos criterios.');
     afirmar('«qué citas / alarmas / tareas / pensamientos / listas tengo» sin nada: lo dice con esa palabra', (await vacio({ tipo: 'evento' })) === 'No tienes ninguna cita pendiente.' && (await vacio({ tipo: 'tarea', vista: 'alarmas' })) === 'No tienes ninguna alarma pendiente.' && (await vacio({ tipo: 'tarea', vista: 'tareas' })) === 'No tienes tareas pendientes.' && (await vacio({ tipo: 'nota' })) === 'No tienes ningún pensamiento guardado.' && (await vacio({ tipo: 'lista' })) === 'No tienes ninguna lista.');
 
@@ -740,7 +742,10 @@ async function main() {
     const llamado = (json) => ({ 'Al ser llamado': [json] });
     const [w] = await correr(nodo('entrada.js'), { DT: DTFalso, nodos: llamado({ mensaje: '  Comprar leche  ', wa_message_id: 'wamid.HBgM123', tipo_entrada: 'texto' }) });
     afirmar('llamada: usa el mensaje y el id de WhatsApp, sin espacios sobrantes', w.mensaje === 'Comprar leche' && w.wa_message_id === 'wamid.HBgM123');
-    afirmar('llamada: mantiene el contrato de salida', ['mensaje', 'fecha_actual', 'wa_message_id', 'tipo_entrada', 'contexto_id'].every((k) => k in w) && Object.keys(w).length === 5);
+    afirmar('llamada: mantiene el contrato de salida', ['mensaje', 'fecha_actual', 'wa_message_id', 'tipo_entrada', 'contexto_id', 'recibido_at'].every((k) => k in w) && Object.keys(w).length === 6 && w.recibido_at === null);
+    const [wr] = await correr(nodo('entrada.js'), { DT: DTFalso, nodos: llamado({ mensaje: 'x', wa_message_id: 'wamid.1', tipo_entrada: 'texto', recibido_at: '2026-10-20T10:00:00.000Z' }) });
+    const [wm] = await correr(nodo('entrada.js'), { DT: DTFalso, nodos: llamado({ mensaje: 'x', wa_message_id: 'wamid.1', tipo_entrada: 'texto', recibido_at: 'ayer' }) });
+    afirmar('llamada: pasa la hora de llegada de la cola (y descarta una que no sea una fecha)', wr.recibido_at === '2026-10-20T10:00:00.000Z' && wm.recibido_at === null);
     afirmar('llamada sin contexto: contexto_id vacío', w.contexto_id === '');
     const [dem] = await correr(nodo('entrada.js'), { DT: DTFalso, nodos: llamado({ mensaje: 'a\nb\nc', wa_message_id: 'wamid.D', tipo_entrada: 'texto', demasiados: true, aviso_demasiados: 'Me has mandado 9 mensajes seguidos…' }) });
     afirmar('llamada con demasiados mensajes seguidos: lo pasa con su aviso', dem.demasiados === true && dem.aviso_demasiados === 'Me has mandado 9 mensajes seguidos…');
@@ -903,6 +908,30 @@ async function main() {
       afirmar('la respuesta a la pregunta del aviso de la compra («a las 18») no llama al modelo', av1.saltar_modelo === true && av1.pendiente_id === 'q-aviso');
       const av2 = await ver('compra también leche', [PAV]);
       afirmar('… una orden nueva sí llama al modelo', av2.saltar_modelo !== true);
+      // Una pregunta ya VISTA que el usuario deja sin contestar al mandar otra cosa se cierra y se le dice
+      const conHora = (q, en) => ({ ...q, hilo: [...q.hilo.slice(0, -1), { ...q.hilo.at(-1), en }] });
+      const verA = async (mensaje, abiertas, recibido_at) => (await montar([{ termino: 'nombre de la secretaria', significado: 'Lola' }], { ...entrada, mensaje, recibido_at }, [{}], abiertas))[0];
+      const PV = conHora(P2, '2026-10-20T10:00:00.000Z');
+      const ig1 = await verA('mañana dentista a las 10', [PV], '2026-10-20T10:01:00.000Z');
+      afirmar('una orden nueva DESPUÉS de ver la pregunta: la pregunta queda como ignorada (se cerrará y se le dirá)', ig1.pendiente_id === null && ig1.preguntas_ignoradas.length === 1 && ig1.preguntas_ignoradas[0].id === 'q-lote', JSON.stringify(ig1.preguntas_ignoradas));
+      const ok1 = await verA('mejor el jueves', [PV], '2026-10-20T10:01:00.000Z');
+      const ok2 = await verA('a las 6', [PV], '2026-10-20T10:01:00.000Z');
+      afirmar('un cambio corto («mejor el jueves», «a las 6») sí contesta a la confirmación', ok1.pendiente_id === 'q-lote' && ok2.pendiente_id === 'q-lote' && ok1.preguntas_ignoradas.length === 0);
+      const PT = conHora(P1, '2026-10-20T10:00:00.000Z');
+      const ig7 = await verA('compra leche', [PT], '2026-10-20T10:01:00.000Z');
+      afirmar('a «¿alarma, cita o tarea?» no la contesta otra cosa: se ignora', ig7.pendiente_id === null && ig7.preguntas_ignoradas.map((q) => q.id).join() === 'q-tipo');
+      const ok3 = await verA('tarea', [PT], '2026-10-20T10:01:00.000Z');
+      afirmar('… y «tarea» sí la contesta', ok3.pendiente_id === 'q-tipo');
+      const ig2 = await verA('mañana dentista a las 10', [PV], '2026-10-20T09:59:59.000Z');
+      afirmar('… si el mensaje llegó ANTES de la pregunta (no la había visto): sigue abierta', ig2.preguntas_ignoradas.length === 0);
+      const ig3 = await verA('Si', [PV], '2026-10-20T10:01:00.000Z');
+      afirmar('… si el mensaje contesta a la pregunta: no se ignora nada', ig3.pendiente_id === 'q-lote' && ig3.preguntas_ignoradas.length === 0);
+      const ig4 = await verA('mañana dentista a las 10', [P2], '2026-10-20T10:01:00.000Z');
+      afirmar('… una pregunta sin hora (de antes del cambio) no se toca', ig4.preguntas_ignoradas.length === 0);
+      const ig5 = await verA('mañana dentista a las 10', [PV], undefined);
+      afirmar('… un mensaje sin hora de llegada (prueba manual) no toca nada', ig5.preguntas_ignoradas.length === 0);
+      const ig6 = await verA('mañana dentista a las 10', [PV], '2026-10-20T10:00:02.000Z');
+      afirmar('… dentro del margen de 3 s tampoco (no le había dado tiempo a leerla)', ig6.preguntas_ignoradas.length === 0);
       const f2 = await planificar(respuesta({ intencion: 'guardar', items: [] }), { mensaje: 'no', hiloPrevio: P2.hilo, pendienteId: 'q-lote' });
       afirmar('con una pregunta abierta, el «no» sigue su camino', !f2[0].meta.respuesta_usuario.startsWith('No tengo ninguna pregunta pendiente'));
       const a13 = await ver('vale', []);
@@ -1467,6 +1496,42 @@ async function main() {
     afirmar('«sí» sin hora: pregunta la hora y deja la pregunta abierta con el mismo día', msi.cuerpo.pregunta.startsWith('¿A qué hora te aviso mañana (') && JSON.parse(msi.cuerpo.hilo.at(-1).texto).aviso_compra.dia === dia);
     const otra = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'lista', lista: 'compra', titulo: 'Leche' }] }), { mensaje: 'añade leche', hiloPrevio: hiloAviso, pendienteId: 'q-aviso' });
     afirmar('otra cosa («añade leche») no es la respuesta: sigue el camino de siempre (lo del modelo)', otra.find((x) => x.etiqueta === 'guardar items')?.cuerpo[0].titulo === 'Leche');
+  }
+
+  console.log('Qué tengo hoy: el día dicho con palabras');
+  {
+    const sinModelo = { error: 'no se llamó al modelo y el mensaje no es un comando' };
+    const hoyP = await planificar(sinModelo, { mensaje: 'Que tengo hoy ?' });
+    const meta = hoyP[0].meta;
+    afirmar('«Que tengo hoy ?»: consulta con rango y rango_texto «hoy (…)»', meta.consulta?.con_rango === true && /^hoy \(\S+ \d{1,2} \S+\)$/.test(meta.consulta.rango_texto), JSON.stringify(meta.consulta));
+    const rango = await planificar(respuesta({ intencion: 'consultar', consulta: { estado: 'pendiente', desde: '2026-11-02', hasta: '2026-11-06' } }), { mensaje: 'qué tengo la semana del 2' });
+    afirmar('un rango de varios días: «entre el … y el …»', rango[0].meta.consulta.rango_texto.startsWith('entre el ') && rango[0].meta.consulta.rango_texto.includes(' y el '), rango[0].meta.consulta.rango_texto);
+    const sinRango = await planificar(respuesta({ intencion: 'consultar', consulta: { estado: 'pendiente' } }), { mensaje: 'qué tengo pendiente' });
+    afirmar('sin rango: rango_texto nulo', sinRango[0].meta.consulta.rango_texto === null);
+  }
+
+  console.log('Preguntas sin contestar: se cierran y se dice');
+  {
+    // Planificar guarda la hora de cada pregunta que queda abierta
+    const aclara = await planificar(respuesta({ intencion: 'aclarar', items: [], pregunta: '¿Lo apunto como alarma (te aviso a una hora), cita (en el calendario) o tarea?' }), { mensaje: 'el viernes llevar el portátil' });
+    const marca = aclara.find((x) => x.etiqueta === 'actualizar mensaje');
+    afirmar('la pregunta que queda abierta lleva la hora a la que se hizo (último turno del hilo)', marca.cuerpo.pregunta_pendiente === true && !Number.isNaN(Date.parse(marca.cuerpo.hilo.at(-1).en)) && marca.cuerpo.hilo.at(-1).rol === 'model');
+    const guarda = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'nota', titulo: 'x' }] }), { mensaje: 'apunta x' });
+    afirmar('un mensaje sin pregunta no lleva hilo ni hora', !('hilo' in guarda.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo));
+    // Las ignoradas: se cierran (PATCH antes que nada) y la meta las lleva para Resultado
+    const ID1 = '11111111-1111-4111-8111-111111111111';
+    const conIgnoradas = await correr(nodo('planificar.js'), {
+      input: [respuesta({ intencion: 'guardar', items: [{ tipo: 'evento', titulo: 'Dentista', fecha_inicio: new Date(Date.now() + 3 * 86400000).toISOString() }], respuesta_usuario: 'Apuntado.' })],
+      nodos: { Configuración: [{ config: CONFIG }], 'Guardar mensaje': [{ id: 'm-1' }], 'Construir petición': [{ refs: {}, agenda: [], pendientes: [], preguntas_ignoradas: [{ id: ID1, pregunta: '«Médico» cae en tu horario. ¿La apunto igualmente?' }, { id: 'no-es-uuid', pregunta: 'x' }] }], Entrada: [{ mensaje: 'dentista el jueves a las 10' }], 'Juntar mensajes': [{ mensaje: 'x' }] },
+    });
+    const cierre = conIgnoradas[0];
+    afirmar('Planificar: cierra las preguntas ignoradas antes de nada (y descarta ids raros)', cierre.etiqueta === 'cerrar preguntas sin contestar' && cierre.url.endsWith(`/rest/v1/mensajes?id=in.(${ID1})`) && cierre.cuerpo.pregunta_pendiente === false && conIgnoradas.some((x) => x.etiqueta === 'guardar items'), JSON.stringify(cierre));
+    afirmar('… y la meta lleva sus textos', JSON.stringify(cierre.meta.preguntas_ignoradas) === JSON.stringify(['«Médico» cae en tu horario. ¿La apunto igualmente?']));
+    const res = (meta) => correr(nodo('resultado.js'), { input: [{ id: 'x' }], nodos: { Planificar: [{ meta }], 'Escribir en Supabase': [{ id: 'x' }] } });
+    const r = (await res({ ...cierre.meta, respuesta_usuario: 'Apuntado: Dentista.' }))[0];
+    afirmar('Resultado: primero dice que no hizo nada con la pregunta sin contestar, luego la respuesta', r.mensajes[0] === 'Como no me contestaste a ««Médico» cae en tu horario. ¿La apunto igualmente?», no he hecho nada con eso. Si lo quieres, dímelo otra vez.' && r.mensajes.length >= 2, JSON.stringify(r.mensajes));
+    const r2 = (await res({ ...cierre.meta, preguntas_ignoradas: ['¿Uno?', '¿Dos?'] }))[0];
+    afirmar('… con varias, una lista', r2.mensajes[0].startsWith('Como no me contestaste a estas preguntas') && r2.mensajes[0].includes('• «¿Uno?»') && r2.mensajes[0].includes('• «¿Dos?»'));
   }
 
   console.log('Sin repetidos en las listas');

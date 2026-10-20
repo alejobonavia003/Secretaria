@@ -173,6 +173,17 @@ const abiertas = todas.filter((r) => hiloCoherente(r.hilo));
 const pendiente = elegirPregunta(entrada.mensaje, abiertas) ?? (abiertas.length === 0 ? (todas[0] ?? null) : null);
 const hiloPrevio = pendiente && hiloCoherente(pendiente.hilo) ? pendiente.hilo : [];
 const preguntaPendiente = hiloPrevio.length > 0 ? pendiente.pregunta : '';
+// Preguntas que el usuario ya había VISTO y deja sin contestar al mandar otra cosa: si este mensaje no contesta a ninguna
+// (una orden nueva) y llegó después de que se hiciera la pregunta (con unos segundos de margen), esa pregunta se cierra y se le dice. Si
+// llegó antes (escribió dos cosas seguidas y la pregunta de la primera aún no le había llegado), sigue abierta, como antes. Una pregunta sin
+// hora (de antes de este cambio) o un mensaje sin hora de llegada (prueba manual) no se tocan.
+const MARGEN_VISTA_MS = 3000;
+const recibido = Date.parse(entrada.recibido_at ?? '');
+const preguntasIgnoradas = pendiente || !Number.isFinite(recibido)
+  ? []
+  : abiertas
+    .filter((q) => Number.isFinite(Date.parse(q.hilo.at(-1)?.en ?? '')) && recibido > Date.parse(q.hilo.at(-1).en) + MARGEN_VISTA_MS)
+    .map((q) => ({ id: q.id, pregunta: q.pregunta }));
 
 // El nombre que el usuario le ha puesto a la secretaria vive en la memoria con un término fijo. Sin nombre, la primera respuesta es
 // preguntárselo (lo hace Planificar); si la última pregunta pendiente ya era esa, el mensaje es la respuesta y se procesa con el modelo.
@@ -245,6 +256,8 @@ return [
       agenda,
       // Para "Planificar": la pregunta anterior que este mensaje cierra y el hilo que hay que acumular
       pendiente_id: pendiente?.id ?? null,
+      // Las que se cierran por no contestarlas
+      preguntas_ignoradas: preguntasIgnoradas,
       // Nombre de la secretaria: si falta se pregunta antes que nada; si se acaba de preguntar, la respuesta es el nombre
       pedir_nombre: pedirNombre,
       // El nombre actual (para /name y /about)

@@ -2,7 +2,7 @@
 
 [![Pruebas](https://github.com/gguillex/Secretaria/actions/workflows/pruebas.yml/badge.svg)](https://github.com/gguillex/Secretaria/actions/workflows/pruebas.yml)
 [![Licencia: MIT](https://img.shields.io/badge/licencia-MIT-blue.svg)](LICENSE)
-![Versión 1.2.0](https://img.shields.io/badge/versión-1.2.0-informational)
+![Versión 1.3.0](https://img.shields.io/badge/versión-1.3.0-informational)
 ![n8n 2.41.6](https://img.shields.io/badge/n8n-2.41.6-EA4B71)
 ![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933)
 ![Gemini](https://img.shields.io/badge/IA-Gemini-4285F4)
@@ -43,6 +43,8 @@ Pensado para **una sola persona**: tú. Corre en un servidor pequeño propio, co
 - **Charla breve:** a un saludo o un «gracias» contesta con naturalidad, sin guardar nada.
 - **Todo en orden:** contesta textos, audios, fotos y documentos en el orden en que llegaron; si mandas varios seguidos, cada
   respuesta cita el mensaje al que contesta.
+- **No deja preguntas en el aire:** si te pregunta algo («¿La apunto igualmente?») y le mandas otra cosa sin contestar, no hace
+  nada con lo anterior y te lo dice antes de atender lo nuevo.
 - **Resumen diario** a las 7:00 (con los proyectos en viñetas) y recordatorio de archivos sin clasificar.
 - **No adivina:** si no entiende un mensaje o no está segura, pregunta o te dice que no te ha entendido, en vez de guardar algo mal.
   El aviso de fallos solo llega cuando falla algo de verdad, y dice qué mensaje era.

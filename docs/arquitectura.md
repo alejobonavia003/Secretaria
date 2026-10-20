@@ -105,6 +105,14 @@ suyo. Un mensaje que no llegó a guardarse deja de hacer esperar al cabo de 1 mi
   usuario escribe antes de que le llegue la respuesta): el código decide a cuál contesta cada mensaje por su contenido (sí/no, una hora,
   alarma/cita/tarea, cambiar/añadir) y una orden nueva («borra…», «dame…», «qué…») no contesta a ninguna. Un «sí» o un «no» sueltos
   sin pregunta abierta no llaman al modelo.
+  Qué contesta a cada pregunta depende de su tipo: una confirmación sí/no solo la contesta un sí, un no o un cambio corto con día u
+  hora («a las 6», «mejor el jueves»); «¿alarma, cita o tarea?» solo una de esas palabras; las preguntas libres, de hora o de
+  elección, cualquier mensaje que no sea una orden. **Si el mensaje no contesta a ninguna** y la pregunta ya se había hecho antes
+  de que el usuario escribiera, se cierra sin hacer nada y se le dice primero («Como no me contestaste a «…», no he hecho nada con
+  eso»), y después se atiende lo nuevo. Si escribió antes de que le llegara la pregunta, sigue abierta. El código guarda la hora de
+  cada pregunta en el hilo y la cola del flujo de WhatsApp pasa la hora de llegada del mensaje.
+- **«Qué tengo hoy» sin nada:** la respuesta dice qué día ha mirado («Hoy (mar 20 oct) no tienes nada con fecha») y que lo que no
+  tiene fecha (tareas, listas…) no sale ahí, con un recordatorio de `/pending`.
 - **Mensajes de golpe:** más de 8 textos o audios seguidos no se procesan (se avisa para que se manden en tandas) y de una misma
   notificación se guardan como mucho 10 archivos. Los límites son `MAX_MENSAJES_DE_GOLPE` y `MAX_ADJUNTOS_DE_GOLPE`, al principio de
   `herramientas/flujo-whatsapp/comun.js`.
