@@ -58,7 +58,7 @@ const MAX_ARCHIVOS_LISTA = 15;
 function bloqueArchivos(archivos) {
   if (!archivos.length) return null;
   const enlace = (f) => (typeof f.drive_url === 'string' && f.drive_url ? `\n  ${f.drive_url}` : '');
-  const lineas = archivos.slice(0, MAX_ARCHIVOS_LISTA).map((f) => `• ${limpiar(f.nombre)} (recibido ${dia(f.created_at)}, ${hora(f.created_at)})${enlace(f)}`);
+  const lineas = archivos.slice(0, MAX_ARCHIVOS_LISTA).map((f) => `• ${limpiar(f.nombre)}${enlace(f)}`);
   if (archivos.length > MAX_ARCHIVOS_LISTA) lineas.push(`… y ${archivos.length - MAX_ARCHIVOS_LISTA} más`);
   return `*Archivos sin clasificar*\n${lineas.join('\n')}`;
 }

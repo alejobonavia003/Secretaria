@@ -110,7 +110,7 @@ async function main() {
     const [rp] = await redactar([...TODO, { tipo: 'tarea', titulo: 'Llamar al casero', proyecto: 'Mudanza' }, { tipo: 'nota', titulo: 'Idea caja', proyecto: 'Mudanza' }], ARCH, ULT_RECIENTE);
     const tp = rp.cuerpo.text.body;
     afirmar('proyectos: aparte de las tareas cotidianas, una línea por proyecto', tp.includes('*Proyectos*\n📁 *Mudanza*\n• Llamar al casero\n• 📝 Idea caja') && !/\*Tareas\*[^*]*casero/.test(tp), tp);
-    afirmar('archivos sin clasificar con enlace', t.includes('*Archivos sin clasificar*\n• foto-1.jpg (recibido dom 11 oct, 20:30)\n  https://drive.google.com/file/d/AAA/view') && t.includes('presupuesto.pdf'), t);
+    afirmar('archivos sin clasificar con enlace', t.includes('*Archivos sin clasificar*\n• foto-1.jpg\n  https://drive.google.com/file/d/AAA/view') && t.includes('presupuesto.pdf'), t);
     afirmar('cabe en un mensaje', t.length <= 3800);
   }
 

@@ -35,8 +35,7 @@ const cabecera = n === 1 ? '📎 Tienes *1 archivo* sin clasificar desde hace m�
 const mostrados = archivos.slice(0, config.max_lista);
 const lista = mostrados.map((a) => `• ${limpiar(a.nombre)} (${fecha(a.created_at)})`).join('\n');
 const resto = n > mostrados.length ? `\n• y ${n - mostrados.length} más` : '';
-const quien = n > 1 ? `las ${Math.min(n, 3)} últimas son` : 'la última es';
-const pie = `Respóndeme, por ejemplo, «${quien} la factura de la luz» o «${n > 1 ? 'todas en Fotos' : 'guárdala en Fotos'}».`;
+const pie = `¿Qué ${n > 1 ? 'son' : 'es'} o en qué carpeta ${n > 1 ? 'los' : 'lo'} guardo? Por ejemplo: «${n > 1 ? 'todas en Fotos' : 'guárdala en Fotos'}».`;
 
 let texto = `${cabecera}\n${lista}${resto}\n\n${pie}`;
 if (texto.length > LIMITE_MENSAJE) texto = `${texto.slice(0, LIMITE_MENSAJE - 1).trimEnd()}…`;

@@ -46,7 +46,14 @@ const avanzar = (min) => {
   ahoraMs += min * 60000;
 };
 
-const CONFIG = { phone_number_id: '123456789012345', graph_version: 'v26.0', enfriamiento_min: 60, max_avisos_dia: 10 };
+const CONFIG = {
+  phone_number_id: '123456789012345',
+  graph_version: 'v26.0',
+  enfriamiento_min: 60,
+  max_avisos_dia: 10,
+  tolerancia_red_min: 30,
+  flujos_periodicos: ['Secretaria · Latido', 'Secretaria · Sincronizar Calendar'],
+};
 const ENV = { WHATSAPP_NUMERO_PERMITIDO: '34600111222' };
 
 function simular(nodos) {
@@ -139,6 +146,37 @@ async function main() {
     afirmar('el contador guarda la fecha de Madrid y los enviados', alm2.dia.enviados === 1 && /^\d{4}-\d{2}-\d{2}$/.test(alm2.dia.fecha), JSON.stringify(alm2.dia));
     const dañado = { ultimos: 'no soy un objeto', dia: null };
     afirmar('un almacén dañado no rompe el aviso', (await aviso(fallo(), dañado)).length === 1);
+  }
+
+  console.log('Errores de red en flujos periódicos');
+  {
+    const red = (nombre, mensaje) => fallo({ workflow: { id: '1', name: nombre }, execution: { id: '77', error: { message: mensaje }, lastNodeExecuted: 'Leer pendientes' } });
+    const timeout = red('Secretaria · Sincronizar Calendar', 'The connection timed out, consider setting the Retry on Fail option');
+    const almacen = {};
+    afirmar('un timeout de un flujo periódico no avisa a la primera', (await aviso(timeout, almacen)).length === 0);
+    avanzar(5);
+    afirmar('ni cinco minutos después', (await aviso(timeout, almacen)).length === 0);
+    for (let m = 10; m <= 25; m += 5) {
+      avanzar(5);
+      await aviso(timeout, almacen);
+    }
+    afirmar('ni a los 25 minutos seguidos', (await aviso(timeout, almacen)).length === 0);
+    avanzar(5);
+    const [largo] = await aviso(timeout, almacen);
+    afirmar('a los 30 minutos seguidos avisa y dice cuánto lleva', largo && largo.texto.includes('Lleva 30 min fallando por la red.'), largo?.texto);
+
+    const alm2 = {};
+    afirmar('un Bad gateway también se tolera', (await aviso(red('Secretaria · Latido', 'Bad gateway - the server returned an invalid response'), alm2)).length === 0);
+    avanzar(20);
+    afirmar('pero un hueco de más de 15 min sin fallos abre un episodio nuevo', (await aviso(red('Secretaria · Latido', 'Bad gateway'), alm2)).length === 0);
+
+    afirmar('un error que no es de red avisa enseguida en un flujo periódico', (await aviso(red('Secretaria · Sincronizar Calendar', 'Google Calendar: HTTP 403 forbidden'), {})).length === 1);
+    afirmar('un timeout en un flujo que no es periódico avisa enseguida', (await aviso(red('Secretaria · Resumen diario', 'The connection timed out'), {})).length === 1);
+    const sinTolerancia = { nodos: { config: { ...CONFIG, tolerancia_red_min: 0 } } };
+    afirmar('con tolerancia 0 avisa siempre, como antes', (await aviso(timeout, {}, sinTolerancia)).length === 1);
+    afirmar('una configuración sin las claves nuevas no rompe el aviso', (await aviso(timeout, {}, { nodos: { config: { phone_number_id: '1', graph_version: 'v26.0', enfriamiento_min: 60, max_avisos_dia: 10 } } })).length === 1);
+    const dañado = { red: 'no soy un objeto' };
+    afirmar('un almacén dañado no rompe la tolerancia', (await aviso(timeout, dañado)).length === 0 && typeof dañado.red === 'object');
   }
 
   console.log('Configuración');

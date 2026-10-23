@@ -20,14 +20,21 @@ return $input.all().map((item, i) => {
   const envio = $('Recorrer mensajes').itemMatching(i).json;
   const wamid = item.json?.messages?.[0]?.id;
   const envio_error = item.json?.error ? resumen(item.json.error) : null;
-  const esConfirmacion = typeof envio.archivo_drive_id === 'string' && envio.archivo_drive_id !== '';
+  // Un aviso que junta varios archivos (base de datos 1.4) lleva el id de todos: se anota el mismo mensaje en cada uno
+  const ids = Array.isArray(envio.archivo_drive_ids) && envio.archivo_drive_ids.length > 0
+    ? envio.archivo_drive_ids.filter((x) => typeof x === 'string' && x !== '')
+    : typeof envio.archivo_drive_id === 'string' && envio.archivo_drive_id !== '' ? [envio.archivo_drive_id] : [];
+  const esConfirmacion = ids.length > 0;
   // Si el envío falló o Meta no devolvió el id, el archivo se clasifica igualmente, sin responder a la confirmación
-  if (!esConfirmacion || !idValido(wamid)) return { json: { guardar: false, envio_error }, pairedItem: { item: i } };
+  // El id del mensaje enviado y su texto, para poder citarlo después (base de datos 1.4): «Soltar turno» los junta
+  const enviado = { wamid: idValido(wamid) && !envio_error ? wamid : null, texto: typeof envio.texto === 'string' ? envio.texto : '' };
+  if (!esConfirmacion || !idValido(wamid)) return { json: { guardar: false, envio_error, ...enviado }, pairedItem: { item: i } };
   return {
     json: {
       guardar: true,
       envio_error,
-      url: `${config.supabase_url}/rest/v1/archivos?drive_file_id=eq.${encodeURIComponent(envio.archivo_drive_id)}`,
+      ...enviado,
+      url: `${config.supabase_url}/rest/v1/archivos?drive_file_id=${ids.length === 1 ? `eq.${encodeURIComponent(ids[0])}` : `in.(${ids.map(encodeURIComponent).join(',')})`}`,
       cuerpo: { respuesta_wa_id: wamid },
     },
     pairedItem: { item: i },

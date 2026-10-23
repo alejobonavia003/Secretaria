@@ -1,5 +1,5 @@
 // Nodo "Entrada del audio": devuelve los audios ya transcritos (los de "Leer transcripción" que salieron bien) tal como los espera la cola:
-// mensaje, wa_message_id, tipo_entrada y contexto_id. El eco («Entendí») se manda después, cuando el audio ya está en la cola.
+// mensaje, wa_message_id, tipo_entrada y contexto_id. (Desde la sección 61 no hay eco de lo entendido.)
 
 const transcritos = $('Leer transcripción')
   .all()

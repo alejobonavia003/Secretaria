@@ -11,5 +11,6 @@ return $input.all().map((item, i) => {
   const anotado = $('Anotar confirmación').itemMatching(i).json;
   // Solo si hubo que guardar el id: la respuesta de "Guardar id de la confirmación" puede ser un error
   const id_error = anotado.guardar && item.json?.error ? resumen(item.json.error) : null;
-  return { json: { envio_error: anotado.envio_error ?? null, id_error }, pairedItem: { item: i } };
+  // wamid y texto: lo que se mandó ; «Soltar turno» los junta para anotar la respuesta en el mensaje del usuario
+  return { json: { envio_error: anotado.envio_error ?? null, id_error, wamid: anotado.wamid ?? null, texto: anotado.texto ?? '' }, pairedItem: { item: i } };
 });

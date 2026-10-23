@@ -80,6 +80,17 @@ try {
 } catch (e) {
   horario = [];
 }
+// Lo que el usuario quitó por WhatsApp en los últimos 7 días (base de datos 1.4), para «deshaz». Con try: si falta el nodo o la base de datos 1.4, no hay nada que recuperar
+let quitados = [];
+try {
+  quitados = $('Leer quitados')
+    .all()
+    .map((i) => i.json)
+    .filter((r) => r && typeof r.id === 'string' && typeof r.titulo === 'string' && typeof r.quitado_en === 'string' && ['archivado', 'hecho'].includes(r.estado))
+    .map(({ id, tipo, titulo, estado, quitado_en, recordar_en, fecha_limite, lista, proyecto }) => ({ id, tipo, titulo, estado, quitado_en, recordar_en: recordar_en ?? null, fecha_limite: fecha_limite ?? null, lista: lista ?? null, proyecto: proyecto ?? null }));
+} catch (e) {
+  quitados = [];
+}
 const horarioPrompt = horario.map((b) => `${DIAS_SEMANA[b.dia_semana] ?? b.dia_semana} ${b.hora_inicio}-${b.hora_fin} ${b.titulo}`);
 
 const avisoCitado = (leidoAvisos?.citados ?? []).filter(valido).map((it) => ({
@@ -130,11 +141,13 @@ const filasArchivos = $('Leer archivos')
   .all()
   .map((i) => i.json)
   .filter((r) => r && typeof r.id === 'string');
-const citado = entrada.contexto_id
-  ? filasArchivos.find((f) => f.respuesta_wa_id === entrada.contexto_id || f.mensajes?.wa_message_id === entrada.contexto_id)
-  : undefined;
+// Un aviso de la secretaria puede juntar varios archivos : responderle los cita a todos
+const citados = entrada.contexto_id
+  ? filasArchivos.filter((f) => f.respuesta_wa_id === entrada.contexto_id || f.mensajes?.wa_message_id === entrada.contexto_id)
+  : [];
+const citado = citados[0];
 const visibles = filasArchivos.filter((f) => f.estado === 'pendiente').slice(0, MAX_ARCHIVOS_VISIBLES);
-if (citado && !visibles.includes(citado)) visibles.push(citado);
+for (const c of citados) if (!visibles.includes(c)) visibles.push(c);
 
 const fmtRecibido = new Intl.DateTimeFormat('es-ES', { timeZone: 'Europe/Madrid', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 const refsArchivos = {};
@@ -153,7 +166,9 @@ const archivosPrompt = visibles.map((f, n) => {
     ...(f.carpeta_destino ? { carpeta: f.carpeta_destino } : {}),
   };
 });
-const archivoCitado = citado ? (Object.entries(refsArchivos).find(([, id]) => id === citado.id)?.[0] ?? '') : '';
+const refDeArchivo = (fila) => Object.entries(refsArchivos).find(([, id]) => id === fila.id)?.[0] ?? '';
+const refsCitados = citados.map(refDeArchivo).filter(Boolean);
+const archivoCitado = refsCitados.join(', ');
 
 // Si la secretaria hizo una pregunta hace poco y sigue sin respuesta, este mensaje es su respuesta: se le devuelve
 // al modelo el hilo guardado (turnos user/model) y la pregunta. "Leer pregunta pendiente" ya aplica la caducidad.
@@ -161,7 +176,7 @@ const archivoCitado = citado ? (Object.entries(refsArchivos).find(([, id]) => id
 // Pueden estar abiertas hasta tres preguntas a la vez (el usuario escribe antes de que le llegue la respuesta): el mensaje contesta a la
 // que encaja con lo que dice, y una orden nueva («borra…», «dame…») no contesta a ninguna y las deja abiertas.
 // Las funciones son la MISMA sección de planificar.js, que el generador inserta aquí; no editar aquí.
-const { interpretarComando, interpretarAplazamiento, pideListarRepetidos, elegirPregunta, siNoSinPregunta, pideBorrarTodo, seccionElegida, respuestaConfirmacion, quitarConcreto, tipoSuelto, respuestaAvisoCompra } = __COMANDOS__;
+const { interpretarComando, interpretarAplazamiento, pideListarRepetidos, elegirPregunta, siNoSinPregunta, pideBorrarTodo, borrarSecciones, interpretarDeshacer, seccionElegida, respuestaConfirmacion, quitarConcreto, tipoSuelto, respuestaAvisoCompra, respuestaOferta, esOrdenNueva, interpretarCarpetaSuelta, interpretarMoverCarpeta } = __COMANDOS__;
 const hiloCoherente = (h) =>
   h.length >= 2 && h.length % 2 === 0 && h.every((t, i) => t?.rol === (i % 2 === 0 ? 'user' : 'model') && typeof t.texto === 'string' && t.texto !== '');
 const todas = $('Leer pregunta pendiente')
@@ -169,8 +184,37 @@ const todas = $('Leer pregunta pendiente')
   .map((i) => i.json)
   .filter((r) => r && typeof r.id === 'string' && Array.isArray(r.hilo) && typeof r.pregunta === 'string');
 const abiertas = todas.filter((r) => hiloCoherente(r.hilo));
+// Responder citando CUALQUIER respuesta de la secretaria (base de datos 1.4): el flujo de WhatsApp anota en el mensaje del usuario los
+// ids de lo que se le contestó, y aquí se busca por el id del mensaje citado. Si la respuesta citada dejó una pregunta abierta (aunque ya
+// haya caducado o haya otras más recientes), el mensaje contesta a ésa; si no, el modelo recibe delante qué dijo la secretaria. Sin actualizar la base de datos a la 1.4
+// (o sin cita) no hay fila y todo sigue como antes.
+const filaCitada = (() => {
+  if (!entrada.contexto_id) return undefined;
+  try {
+    return $('Leer respuesta citada').all().map((i) => i.json).find((r) => r && typeof r.id === 'string' && typeof r.respuesta_texto === 'string');
+  } catch (e) {
+    return undefined; // el nodo no se ejecutó (flujo antiguo): sin cita
+  }
+})();
+// Condiciones para que citar una pregunta sea contestarla: sigue abierta; se hizo hace menos de un día y, si es una confirmación (sí/no: borrar,
+// apuntar con choque…), antes de que caduque (si no, un «sí» a una pregunta de hace días ejecutaría datos viejos); y el mensaje no es una orden
+// nueva que no encaje con ella (cita una pregunta y manda «dame las tareas»: es otra cosa).
+const candidataCitada = filaCitada && filaCitada.pregunta_pendiente === true && Array.isArray(filaCitada.hilo) && typeof filaCitada.pregunta === 'string' && hiloCoherente(filaCitada.hilo)
+  ? { id: filaCitada.id, pregunta: filaCitada.pregunta, hilo: filaCitada.hilo }
+  : null;
+const motivoCitada = (() => {
+  try {
+    return JSON.parse(candidataCitada?.hilo.at(-1)?.texto ?? '')?.motivo ?? '';
+  } catch {
+    return '';
+  }
+})();
+const edadCitadaMs = Date.now() - Date.parse(filaCitada?.created_at ?? '');
+const reciente24h = Number.isFinite(edadCitadaMs) && edadCitadaMs < 24 * 3600 * 1000;
+const sigueVigente = !String(motivoCitada).startsWith('confirmar_') || edadCitadaMs < (Number.isFinite(config.caducidad_min) ? config.caducidad_min : 30) * 60000;
+const preguntaCitada = candidataCitada && reciente24h && sigueVigente && (!esOrdenNueva(entrada.mensaje) || elegirPregunta(entrada.mensaje, [candidataCitada]) !== null) ? candidataCitada : null;
 // Si la única pregunta abierta tiene el hilo dañado, se ignora el hilo pero la pregunta se cierra igualmente
-const pendiente = elegirPregunta(entrada.mensaje, abiertas) ?? (abiertas.length === 0 ? (todas[0] ?? null) : null);
+const pendiente = preguntaCitada ?? elegirPregunta(entrada.mensaje, abiertas) ?? (abiertas.length === 0 ? (todas[0] ?? null) : null);
 const hiloPrevio = pendiente && hiloCoherente(pendiente.hilo) ? pendiente.hilo : [];
 const preguntaPendiente = hiloPrevio.length > 0 ? pendiente.pregunta : '';
 // Preguntas que el usuario ya había VISTO y deja sin contestar al mandar otra cosa: si este mensaje no contesta a ninguna
@@ -179,11 +223,19 @@ const preguntaPendiente = hiloPrevio.length > 0 ? pendiente.pregunta : '';
 // hora (de antes de este cambio) o un mensaje sin hora de llegada (prueba manual) no se tocan.
 const MARGEN_VISTA_MS = 3000;
 const recibido = Date.parse(entrada.recibido_at ?? '');
+// El motivo con el que Planificar dejó la pregunta (último turno del hilo): «oferta» = la charla ofreció apuntar algo 
+const motivoDe = (q) => {
+  try {
+    return JSON.parse(q.hilo.at(-1)?.texto ?? '')?.motivo ?? '';
+  } catch {
+    return '';
+  }
+};
 const preguntasIgnoradas = pendiente || !Number.isFinite(recibido)
   ? []
   : abiertas
     .filter((q) => Number.isFinite(Date.parse(q.hilo.at(-1)?.en ?? '')) && recibido > Date.parse(q.hilo.at(-1).en) + MARGEN_VISTA_MS)
-    .map((q) => ({ id: q.id, pregunta: q.pregunta }));
+    .map((q) => ({ id: q.id, pregunta: q.pregunta, silenciosa: motivoDe(q) === 'oferta' }));
 
 // El nombre que el usuario le ha puesto a la secretaria vive en la memoria con un término fijo. Sin nombre, la primera respuesta es
 // preguntárselo (lo hace Planificar); si la última pregunta pendiente ya era esa, el mensaje es la respuesta y se procesa con el modelo.
@@ -210,12 +262,17 @@ const saltarModelo =
   interpretarAplazamiento(entrada.mensaje, avisoCitado, new Date()) !== null ||
   pideListarRepetidos(entrada.mensaje, hiloPrevio) !== null ||
   (!esperaNombre && siNoSinPregunta(entrada.mensaje, hiloPrevio) !== null) ||
-  (!pedirNombre && pideBorrarTodo(entrada.mensaje)) ||
+  (!pedirNombre && (pideBorrarTodo(entrada.mensaje) || borrarSecciones(entrada.mensaje) !== null || interpretarDeshacer(entrada.mensaje) !== null)) ||
   seccionElegida(entrada.mensaje, hiloPrevio) !== null ||
   respuestaConfirmacion(entrada.mensaje, hiloPrevio) !== null ||
   (!pedirNombre && quitarConcreto(entrada.mensaje, pendientes) !== null) ||
   (!pedirNombre && !esperaNombre && tipoSuelto(entrada.mensaje, hiloPrevio, reciente, new Date()) !== null) ||
-  (!pedirNombre && !esperaNombre && respuestaAvisoCompra(entrada.mensaje, hiloPrevio) !== null);
+  (!pedirNombre && !esperaNombre && respuestaAvisoCompra(entrada.mensaje, hiloPrevio) !== null) ||
+  (!pedirNombre && !esperaNombre && respuestaOferta(entrada.mensaje, hiloPrevio) !== null) ||
+  // Un archivo con pie (o su confirmación respondida) que es solo una ruta de carpeta: se archiva por código
+  (!pedirNombre && !esperaNombre && interpretarCarpetaSuelta(entrada.mensaje, refsCitados) !== null) ||
+  // Meter una carpeta dentro de otra: se reconoce por código («mete la carpeta Viajes dentro de Fotos»)
+  (!pedirNombre && !esperaNombre && interpretarMoverCarpeta(entrada.mensaje) !== null);
 
 // Si responde a un aviso, el modelo recibe delante del mensaje de qué alarma o cita se trata (solo en ese caso: el resto de mensajes
 // le llegan igual que siempre). Así «muévela al viernes a las 9» sabe a qué se refiere.
@@ -226,6 +283,28 @@ const describirCitado = (c) => {
   const estado = c.tipo === 'tarea' && c.estado === 'hecho' ? ', ya sonó' : '';
   return `${c.ref} «${String(c.titulo).replace(/\s+/g, ' ').trim()}» (${c.tipo === 'tarea' ? 'alarma' : 'cita'}, ${hora}${estado})`;
 };
+// Si contesta a una oferta de la charla («¿quieres que te lo apunte como tarea?»), el modelo recibe delante qué hacer con el «sí» 
+const notaOferta = pendiente && motivoDe(pendiente) === 'oferta'
+  ? '[El usuario responde a tu oferta de apuntar algo. Si acepta (sí, apúntalo, vale…), guárdalo como tarea (tipo tarea) con un título corto y claro basado en su pregunta anterior, sin fecha salvo que él la diga; no vuelvas a preguntar qué apuntar. Si lo rechaza, usa descartar.]\n'
+  : '';
+// Si cita una respuesta de la secretaria que no era una pregunta abierta ni un aviso ni la confirmación de un archivo (por ejemplo un «Apuntado…»
+// o una lista), el modelo recibe delante lo que ella dijo y a qué contestaba 
+const recortar = (t, max) => {
+  const x = String(t ?? '').replace(/\s+/g, ' ').trim();
+  return x.length > max ? `${x.slice(0, max).trimEnd()}…` : x;
+};
+// Una respuesta larga (varios mensajes) se recorta por el medio: así se ve el principio y el final, que es lo que suele citarse (una pregunta, un cierre)
+const recortarMedio = (t, max) => {
+  const x = String(t ?? '').replace(/\s+/g, ' ').trim();
+  return x.length > max ? `${x.slice(0, Math.floor(max / 2)).trimEnd()} […] ${x.slice(-Math.floor(max / 2)).trimStart()}` : x;
+};
+const notaCitada = filaCitada && !preguntaCitada && avisoCitado.length === 0 && !citado
+  ? `[El usuario responde a tu mensaje: «${recortarMedio(filaCitada.respuesta_texto, 600)}»${filaCitada.texto_original ? ` (que era tu respuesta a: «${recortar(filaCitada.texto_original, 200)}»)` : ''}. Úsalo para entender a qué se refiere; los elementos de los que habla están en los pendientes.]\n`
+  : '';
+// Respondió al aviso que juntaba varios archivos: lo que pida vale para todos ellos
+const notaArchivos = refsCitados.length > 1
+  ? `[El usuario responde a tu aviso de ${refsCitados.length} archivos guardados juntos (${refsCitados.join(', ')}). Lo que pida vale para todos ellos.]\n`
+  : '';
 const notaAviso = avisoCitado.length > 0
   ? `[El usuario responde a tu aviso de: ${avisoCitado.map(describirCitado).join('; ')}. Si pide aplazarla, moverla o cambiarla, es un corregir de ${avisoCitado.length === 1 ? 'ese elemento' : 'uno de ellos'}.]\n`
   : '';
@@ -252,6 +331,8 @@ return [
       reciente,
       // Referencias cortas de archivos (a1, a2…) -> id real, y su nombre actual y fecha de recepción (para renombrarlos)
       refs_archivos: refsArchivos,
+      // Los archivos a los que se refiere este mensaje (su pie, o la respuesta a su confirmación): "Planificar" los archiva por código si el mensaje es una ruta
+      archivos_citados: refsCitados,
       archivos_info: infoArchivos,
       agenda,
       // Para "Planificar": la pregunta anterior que este mensaje cierra y el hilo que hay que acumular
@@ -265,6 +346,8 @@ return [
       memoria_filas: memoriaFilas,
       // El horario fijo (para avisar si una cita cae dentro y para /horario)
       horario,
+      // Lo que quitó el usuario (para «deshaz», sección 63)
+      quitados,
       espera_nombre: esperaNombre,
       // Sin llamada a Gemini: "Planificar" lo contesta con código
       saltar_modelo: saltarModelo,
@@ -277,7 +360,7 @@ return [
         systemInstruction: { parts: [{ text: sistema }] },
         contents: [
           ...hiloPrevio.map((t) => ({ role: t.rol, parts: [{ text: t.texto }] })),
-          { role: 'user', parts: [{ text: `${notaAviso}${entrada.mensaje}` }] },
+          { role: 'user', parts: [{ text: `${notaAviso}${notaArchivos}${notaCitada}${notaOferta}${entrada.mensaje}` }] },
         ],
         generationConfig: {
           temperature: 0,

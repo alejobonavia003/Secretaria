@@ -2,6 +2,56 @@
 
 Formato: cada versión dice qué cambia para quien la usa y qué hay que hacer para actualizar una instalación existente.
 
+## 1.4.0 · 2026-10-23
+
+### Novedades
+
+- **Deshacer:** quitar o completar anota cuándo. «Deshaz» recupera lo último que quitaste (lo de la última orden, hasta 24 horas
+  después) y «recupera la tarea del banco» algo concreto. Si era de un proyecto cerrado, lo reabre.
+- **Mover carpetas:** «mete la carpeta Viajes dentro de Fotos», por texto o por voz, una o varias a la vez, y creando la carpeta de
+  destino si no existe. Se mueve con todo lo de dentro; `Entrada` y `Notas` no se mueven.
+- **Foto o documento con la ruta de pie de texto** («Fotos/Viajes»): se archiva sin preguntar. Una respuesta que es solo la ruta
+  también.
+- **Contestar citando cualquier respuesta** de la secretaria (también con un audio): sabe a cuál te refieres.
+- **La oferta de la charla se recuerda:** si contesta «¿quieres que lo apunte como tarea?» y dices «sí» o «apúntalo», sabe de qué
+  hablabais.
+- **Órdenes de lectura con tus palabras, sin modelo:** «dame todo», «ver mis ideas», «dame la jerarquía», «dame los proyectos»…, con
+  sinónimos, erratas, muletillas y también por voz.
+- **Un solo aviso para varios archivos** (opcional, `ESPERA_ARCHIVOS_S` en la configuración del flujo de WhatsApp; por defecto 0 = un
+  aviso por archivo).
+
+### Cambios
+
+- **Menos preguntas.** Ya no pregunta por un día con otras cosas, por un nombre repetido, por quitar en bloque ni «¿te aviso para ir a
+  comprar?»; lo hace y dice lo que ha hecho. Sigue preguntando lo que falta (la hora, ¿alarma, cita o tarea?), el solape real con
+  otra cita, el choque con el horario fijo y el borrado en Drive.
+- **Borrar varias secciones a la vez** («borra las alarmas y las tareas») sin confirmación; «borra todo» solo pregunta qué sección.
+- **Respuestas más cortas y sin relleno.** Se quita el «🎙️ Entendí: …» de los audios, la nota al pie de la jerarquía de carpetas, las
+  explicaciones entre paréntesis y las fechas de recepción de los listados de archivos.
+- **La confirmación de lo guardado** («Apuntado: …») la redacta el código, y «mañana» se calcula por calendario (no sumando 24 horas):
+  funciona bien el día del cambio de hora. Hay pruebas para el cambio de hora.
+- **Sin esperas fijas:** los mensajes se contestan en cuanto se pueden (`ESPERA_AGRUPAR_S = 0`); la cola y el orden de llegada siguen.
+- **Menos avisos falsos:** un error de red de un flujo automático no avisa hasta llevar 30 minutos seguidos (`TOLERANCIA_RED_MIN`), y
+  tres lecturas más reintentan si falla la red.
+- Nueva consulta `supabase/consultas/ver-tiempos.sql`: cuánto tarda en contestar cada mensaje.
+- Los flujos que más cambian son «Procesar mensaje» (de 31 a 40 nodos de trabajo) y «WhatsApp» (de 72 a 76); el resto, poco.
+
+### Para actualizar desde la 1.3
+
+**La base de datos cambia**, así que el orden importa:
+
+1. Haz una copia de n8n (parte 15 del manual).
+2. En el SQL Editor de Supabase, ejecuta [`supabase/actualizar-1.4.sql`](supabase/actualizar-1.4.sql) **una vez**. Añade cuatro
+   columnas (`mensajes.respuesta_wa_ids`, `mensajes.respuesta_texto`, `items.quitado_en`, `archivos.confirmado_at`) y dos funciones
+   (`reclamar_confirmacion_archivos` y `mover_carpeta_drive`); no toca tus datos. Después ejecuta
+   `supabase/comprobar-instalacion.sql` (10 filas con `ok = true`) y `supabase/consultas/ver-version.sql` (debe decir 1.4).
+3. En el servidor: `git pull`, `bash herramientas/servidor/importar-flujos.sh` y vuelve a publicar los flujos (parte 11.5 del manual).
+   La base de datos va **antes** que los flujos: **sin el paso 2 fallan** «Deshacer», citar una respuesta y mover carpetas, y el flujo de
+   WhatsApp deja de anotar lo que contesta.
+
+Si vienes de una versión anterior a la 1.3, ejecuta antes, en orden, los `actualizar-1.X.sql` que te falten (`ver-version.sql` te dice
+cuál tienes). Las instalaciones nuevas usan `supabase/instalar.sql`, que ya incluye todo.
+
 ## 1.3.0 · 2026-10-20
 
 ### Cambios

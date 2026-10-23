@@ -31,10 +31,6 @@ if (fallidos.length > 0) problemas.push(`${fallidos.length} de ${envios.length} 
 const archivos = filas('Revisar envíos de archivos').find((r) => r && r.archivos_fallidos > 0);
 if (archivos) problemas.push(`${archivos.archivos_fallidos} de ${archivos.archivos_total} mensajes de archivos no se enviaron (${archivos.archivos_error})`);
 
-const ecos = filas('Enviar lo entendido');
-const ecosFallidos = ecos.filter((r) => r && r.error);
-if (ecosFallidos.length > 0) problemas.push(`${ecosFallidos.length} de ${ecos.length} mensajes de «lo que he entendido» no se enviaron (${resumen(ecosFallidos[0].error)})`);
-
 // Si no se pudo anotar lo contestado, lo que llegó después espera hasta que caduque (TURNO_MIN)
 const marcados = filas('Marcar contestados');
 if (marcados.some((r) => r && r.error)) problemas.push(`no se pudo anotar como contestado (${resumen(marcados.find((r) => r && r.error).error)}); lo siguiente puede tardar en contestarse`);
@@ -45,7 +41,7 @@ const procesados = filas('Procesar mensaje');
 // anterior, o el nodo falló entero), como antes: cualquier error.
 const malos = procesados.filter((r) => r && ('fallo_flujo' in r ? r.fallo_flujo === true : r.error || r.ok === false));
 if (malos.length > 0) problemas.push(`el flujo principal no pudo procesar el mensaje (${resumen(malos[0].error ?? 'ok = false')})`);
-// «Anotar fallo» guarda también la pregunta de borrar en Drive: si no pudo, el «sí» del usuario no encontrará la pregunta (revisión del 2026-10-19)
+// «Anotar fallo» guarda también la pregunta de borrar en Drive: si no pudo, el «sí» del usuario no encontrará la pregunta
 const sinAnotar = procesados.filter((r) => r && r.anotado === false);
 if (sinAnotar.length > 0) problemas.push('el flujo principal no pudo guardar en el mensaje su error o su pregunta (nodo «Anotar fallo»)');
 

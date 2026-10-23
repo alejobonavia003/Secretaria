@@ -2,7 +2,7 @@
 
 [![Pruebas](https://github.com/gguillex/Secretaria/actions/workflows/pruebas.yml/badge.svg)](https://github.com/gguillex/Secretaria/actions/workflows/pruebas.yml)
 [![Licencia: MIT](https://img.shields.io/badge/licencia-MIT-blue.svg)](LICENSE)
-![Versión 1.3.0](https://img.shields.io/badge/versión-1.3.0-informational)
+![Versión 1.4.0](https://img.shields.io/badge/versión-1.4.0-informational)
 ![n8n 2.41.6](https://img.shields.io/badge/n8n-2.41.6-EA4B71)
 ![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933)
 ![Gemini](https://img.shields.io/badge/IA-Gemini-4285F4)
@@ -20,27 +20,35 @@ Pensado para **una sola persona**: tú. Corre en un servidor pequeño propio, co
 
 ## Qué hace
 
-- **Entiende y guarda** mensajes de texto, audios (los transcribe), fotos y documentos. Varios mensajes seguidos se juntan en uno.
+- **Entiende y guarda** mensajes de texto, audios (los transcribe), fotos y documentos. Los mensajes que llegan a la vez se juntan en uno.
 - **Agenda:** citas en Google Calendar, sin solapes, con aviso por WhatsApp antes de empezar.
 - **Alarmas** («recuérdame a las 18:30…»), con avisos 1 hora antes, 30 minutos antes y a la hora. **Respondiendo a un aviso** se aplaza
   o se mueve («10 minutos más», «muévela a las 20:00»).
 - **Tareas, listas, notas y proyectos**, con consultas en lenguaje natural («qué tengo hoy», «qué alarmas tengo», «qué apunté del
   casero») y comandos (`/help`, `/today`, `/pending`, `/files`, `/memory`…). Los listados van con titulares cortos; «completo» enseña el detalle.
 - **Cambiar de tipo** algo ya guardado («ponla como alarma», «pásalo a cita», «que sea una tarea»): lo hace el código, que mueve las
-  fechas y solo confirma lo que de verdad quedó guardado. Si una alarma o cita nueva se llama como otra pendiente, pregunta si
-  cambiarla o añadir otra.
-- **Borrar con cuidado:** «borra todo» pregunta qué sección, y borrar en bloque enseña la lista y pide confirmación.
+  fechas y solo confirma lo que de verdad quedó guardado.
+- **Quitar sin dar vueltas, y deshacer:** «borra las alarmas y las tareas» quita varias secciones a la vez y te dice lo que ha quitado,
+  sin pedir confirmación; «borra todo» solo pregunta qué sección. Si te equivocas, «deshaz» recupera lo último que quitaste y
+  «recupera la tarea del banco» algo concreto (hasta 24 horas después).
 - **Archivos:** los organiza en carpetas de Drive a petición («guárdala en Fotos/Viajes») y te los devuelve por WhatsApp. También
   borra carpetas y archivos («borra la carpeta Fotos/Viajes», «vacía la carpeta Facturas»): enseña la lista y solo los manda a la
-  papelera de Drive (recuperable unos 30 días) si le dices que sí.
+  papelera de Drive (recuperable unos 30 días) si le dices que sí. Mueve carpetas dentro de otras («mete la carpeta Viajes dentro
+  de Fotos», también varias a la vez o creando el destino), y una foto con la ruta como pie de texto se archiva sin preguntar.
 - **Memoria:** recuerda lo que le cuentas que dura («Emma es mi hermana», «vivo en Granada») y cómo quieres que te
   llame («llámame Ana»). `/memory` enseña lo que recuerda (hasta 50 datos) y `/forget 2` olvida el segundo; si se lo pides con palabras
   («olvida lo de Emma»), pregunta antes.
 - **Horario fijo semanal** («trabajo los viernes de 16 a 20»): si apuntas una cita que cae dentro, pregunta antes. `/horario` lo
   enseña y `/horario quitar N` quita un bloque.
-- **La compra:** lo que sea comprar va a la lista de la compra aunque digas un día, sin repetir lo que ya está, y pregunta si te avisa
-  ese día para ir a comprar.
-- **Charla breve:** a un saludo o un «gracias» contesta con naturalidad, sin guardar nada.
+- **La compra:** lo que sea comprar va a la lista de la compra aunque digas un día, sin repetir lo que ya está.
+- **Charla breve:** a un saludo o un «gracias» contesta con naturalidad, sin guardar nada. Si ofrece apuntar algo («¿quieres que lo
+  apunte como tarea?»), tu «sí» posterior sabe de qué hablabais.
+- **Contestar a una respuesta concreta:** si respondes citando cualquiera de sus mensajes (también con un audio), entiende a cuál
+  te refieres.
+- **Órdenes con tus palabras, al momento:** «dame todo», «ver mis ideas», «dame la jerarquía» o «dame los proyectos» (también por
+  voz) se resuelven sin llamar al modelo, como los comandos.
+- **Pocas preguntas:** solo pregunta cuando falta un dato (¿a qué hora?, ¿alarma, cita o tarea?), cuando una cita choca con otra o
+  con tu horario fijo, o antes de borrar en Drive. Las respuestas son cortas y sin relleno.
 - **Todo en orden:** contesta textos, audios, fotos y documentos en el orden en que llegaron; si mandas varios seguidos, cada
   respuesta cita el mensaje al que contesta.
 - **No deja preguntas en el aire:** si te pregunta algo («¿La apunto igualmente?») y le mandas otra cosa sin contestar, no hace
@@ -61,12 +69,13 @@ Pensado para **una sola persona**: tú. Corre en un servidor pequeño propio, co
 | «qué tengo hoy» · «qué alarmas tengo» | Te lo lista al momento, sin llamar al modelo. |
 | «ponla como alarma mañana a las 9» (sobre una tarea) | La convierte en alarma y confirma solo lo que de verdad quedó guardado. |
 | Una foto, y luego le respondes «guárdala en Fotos/Viajes» | La sube a `Entrada/` de Drive y la mueve a esa carpeta. |
-| Una nota de voz | Te dice «🎙️ Entendí: …» y la trata como si la hubieras escrito. |
-| «borra todo» | Pregunta qué sección y, antes de borrar, te enseña la lista y pide confirmación. |
+| Una nota de voz | La transcribe y la trata como si la hubieras escrito. |
+| «borra las alarmas y las tareas» · «deshaz» | Quita las dos secciones y te dice lo que ha quitado; «deshaz» lo recupera. |
+| «mete la carpeta Viajes dentro de Fotos» | Mueve la carpeta de Drive con todo lo de dentro. |
 | «borra la carpeta Fotos/Viajes» | Enseña lo que se borraría y, si dices «sí», lo manda a la papelera de Drive. |
 | «para que lo sepas: Emma es mi hermana» · `/memory` | Lo recuerda para entender lo que le pidas después; `/memory` lo enseña. |
 | «trabajo los viernes de 16 a 20» · `/horario` | Lo guarda como horario fijo; si luego apuntas una cita que cae dentro, pregunta antes. |
-| «mañana compra pan y leche» | Lo apunta en la lista de la compra (sin repetir lo que ya estaba) y pregunta si te avisa mañana para ir a comprar. |
+| «mañana compra pan y leche» | Lo apunta en la lista de la compra, sin repetir lo que ya estaba. |
 
 ## Cómo está hecha
 

@@ -110,10 +110,10 @@ async function main() {
     const [r] = await redactar(uno, RECIENTE);
     const c = r.cuerpo;
     afirmar('con la ventana abierta, texto libre al número permitido', c.type === 'text' && c.messaging_product === 'whatsapp' && c.to === '34600111222' && c.text.preview_url === false, JSON.stringify(c));
-    afirmar('un archivo: singular, con su nombre y fecha de Madrid, y cómo clasificarlo', r.texto === '📎 Tienes *1 archivo* sin clasificar desde hace más de un día:\n• Factura.pdf (10 oct 18:30)\n\nRespóndeme, por ejemplo, «la última es la factura de la luz» o «guárdala en Fotos».', r.texto);
+    afirmar('un archivo: singular, con su nombre y fecha de Madrid, y cómo clasificarlo', r.texto === '📎 Tienes *1 archivo* sin clasificar desde hace más de un día:\n• Factura.pdf (10 oct 18:30)\n\n¿Qué es o en qué carpeta lo guardo? Por ejemplo: «guárdala en Fotos».', r.texto);
     const tres = Array.from({ length: 3 }, (_, i) => ({ nombre: `foto-${i}.jpg`, created_at: '2026-10-10T16:30:00+00:00' }));
     const [t] = await redactar(tres, RECIENTE);
-    afirmar('varios archivos: plural, uno por línea y «las 3 últimas»', t.texto.includes('*3 archivos*') && t.texto.includes('• foto-0.jpg') && t.texto.includes('• foto-2.jpg') && t.texto.includes('«las 3 últimas son la factura'), t.texto);
+    afirmar('varios archivos: plural, uno por línea y «todas en Fotos»', t.texto.includes('*3 archivos*') && t.texto.includes('• foto-0.jpg') && t.texto.includes('• foto-2.jpg') && t.texto.includes('«todas en Fotos»'), t.texto);
     const doce = Array.from({ length: 12 }, (_, i) => ({ nombre: `f${i}.jpg`, created_at: '2026-10-10T16:30:00+00:00' }));
     const [d] = await redactar(doce, RECIENTE);
     afirmar('más de 10: nombra 10 y resume el resto', d.texto.includes('*12 archivos*') && d.texto.includes('• f9.jpg') && !d.texto.includes('• f10.jpg') && d.texto.includes('• y 2 más') && d.total === 12, d.texto);

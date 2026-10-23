@@ -2,7 +2,7 @@
 //   transcrito  { ok: true, mensaje, wa_message_id, tipo_entrada: 'audio', contexto_id }   (sigue a "Procesar mensaje")
 //   fallido     { ok: false, mensajes: [texto], motivo, responde_a }                                (sigue a "Preparar envío")
 // El texto transcrito va al flujo principal exactamente igual que un mensaje escrito: mismas reglas, mismas confirmaciones.
-// El flujo principal antepone «Entendí: …» a su respuesta para que se vea qué se oyó.
+// No se repite lo transcrito : la respuesta del flujo principal es lo único que se manda.
 
 /*__COMUN__*/
 

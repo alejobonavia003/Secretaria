@@ -8,14 +8,12 @@
 //   Solo se muestra lo pendiente; los eventos pasados se ocultan salvo que se pida un rango de fechas.
 
 // === Textos que puedes cambiar a mano ===
-// Lo que sale debajo del árbol de carpetas («qué carpetas tengo», /folders). {niveles} se sustituye por el número de niveles que se enseñan.
-const PIE_CARPETAS = '(Entre paréntesis, los archivos que tengo registrados en cada una. Se muestran hasta {niveles} niveles. Puede tardar un poco en actualizarse)';
 // Título que sale encima del árbol
 const TITULO_CARPETAS = '*Carpetas en Drive*';
 // ========================================
 
 const LIMITE_MENSAJE = 3800; // WhatsApp admite 4096 caracteres por mensaje; margen para no rozarlo
-const MENSAJE_FALLO = 'No he podido procesar ese mensaje. Lo he guardado para revisarlo. Si necesitas ayuda, escribe /help.';
+const MENSAJE_FALLO = 'No he podido procesar ese mensaje. Lo he guardado para revisarlo.';
 // Cita el mensaje que falló para que el usuario sepa cuál fue: «compra leche y pan para…». Varias líneas son varios
 // mensajes seguidos juntados: cada uno entre comillas (hasta 3). Sin texto, el mensaje genérico de siempre.
 function citarMensajes(texto) {
@@ -26,11 +24,11 @@ function citarMensajes(texto) {
 }
 const textoFallo = (texto) => {
   const { cita, varios } = citarMensajes(texto);
-  return cita ? `No he podido procesar ${varios ? 'estos mensajes' : 'este mensaje'}: ${cita}. Lo he guardado para revisarlo. Si necesitas ayuda, escribe /help.` : MENSAJE_FALLO;
+  return cita ? `No he podido procesar ${varios ? 'estos mensajes' : 'este mensaje'}: ${cita}. Lo he guardado para revisarlo.` : MENSAJE_FALLO;
 };
 const MAX_ERROR_GUARDADO = 1000; // tope de lo que se anota en mensajes.error
 // Cuando el modelo devuelve algo que no encaja: no es un fallo del flujo, es que no ha entendido el mensaje
-const TEXTO_NO_ENTENDIDO = 'No te he entendido bien, así que no he hecho nada. ¿Me lo dices de otra forma? Si es algo que no sé hacer, escribe /help para ver lo que puedo hacer.';
+const TEXTO_NO_ENTENDIDO = 'No te he entendido, no he hecho nada. ¿Me lo dices de otra forma?';
 
 const textoError = (e) => (typeof e === 'string' ? e : (e?.message ?? JSON.stringify(e)));
 
@@ -76,7 +74,7 @@ const MAX_ARCHIVOS_LISTA = 15;
 function bloqueArchivos(archivos) {
   if (!archivos.length) return null;
   const enlace = (f) => (typeof f.drive_url === 'string' && f.drive_url ? `\n  ${f.drive_url}` : '');
-  const lineas = archivos.slice(0, MAX_ARCHIVOS_LISTA).map((f) => `• ${limpiar(f.nombre)} (recibido ${dia(f.created_at)}, ${hora(f.created_at)})${enlace(f)}`);
+  const lineas = archivos.slice(0, MAX_ARCHIVOS_LISTA).map((f) => `• ${limpiar(f.nombre)}${enlace(f)}`);
   if (archivos.length > MAX_ARCHIVOS_LISTA) lineas.push(`… y ${archivos.length - MAX_ARCHIVOS_LISTA} más`);
   return `*Archivos sin clasificar*\n${lineas.join('\n')}`;
 }
@@ -86,7 +84,7 @@ function bloqueArchivos(archivos) {
 //   - Con «completo» (o «entero», o /pending completo) sale el contenido entero. Nunca sale lo que escribió el usuario palabra por palabra:
 //     al juntar varias cosas en un mensaje salían bloques idénticos con el mensaje entero.
 const DETALLE_LARGO = 1000;
-const TEXTO_HAY_MAS = '(…) Tiene más detalle. Todo entero: «dámelo todo completo». Solo uno: «enséñame entera la tarea del banco».';
+const TEXTO_HAY_MAS = '(…) Di «completo» para ver todo.';
 function detalle(r, largo, marcas) {
   const titulo = limpiar(r.titulo);
   const c = limpiar(r.contenido) === titulo ? '' : limpiar(r.contenido);
@@ -115,7 +113,7 @@ function formatearLista(filas, consulta, ahora, archivos = []) {
       // Con el día dicho con palabras y avisando de que lo que no tiene fecha no sale
       const cuando = typeof consulta.rango_texto === 'string' && consulta.rango_texto ? consulta.rango_texto : 'en esas fechas';
       const frase = cuando.startsWith('hoy') || cuando.startsWith('mañana') ? `${cuando.charAt(0).toUpperCase()}${cuando.slice(1)} no tienes nada con fecha.` : `No tienes nada con fecha ${cuando}.`;
-      return [`${frase} Lo que no tiene fecha (tareas, listas…) no sale aquí: escribe /pending para verlo todo.`];
+      return [`${frase} Lo que no tiene fecha sale con /pending.`];
     }
     // «Qué alarmas / citas / tareas / pensamientos / listas tengo» sin nada: se dice con la palabra que usó
     if (consulta.estado === 'pendiente' && !consulta.con_rango && !consulta.lista && !consulta.proyecto && !consulta.buscar) {
@@ -235,7 +233,7 @@ function arbolDeCarpetas({ niveles, raizId, filas }) {
   pintar(raizId, '', 1);
   if (lineas.length === 1) return { texto: 'Todavía no hay carpetas dentro de Secretaria.' };
   return {
-    texto: [TITULO_CARPETAS, `\`\`\`\n${lineas.join('\n')}\n\`\`\``, PIE_CARPETAS.split('{niveles}').join(String(NIVELES_ARBOL))].filter((t) => t !== '').join('\n'),
+    texto: [TITULO_CARPETAS, `\`\`\`\n${lineas.join('\n')}\n\`\`\``].filter((t) => t !== '').join('\n'),
   };
 }
 
@@ -243,20 +241,20 @@ function arbolDeCarpetas({ niveles, raizId, filas }) {
 // Al pedirlo, «Revisar Drive» propone qué se mandaría a la papelera y aquí se enseña con la pregunta; con el «sí», «Revisar Drive» comprueba
 // cada cosa otra vez, «Mandar a la papelera» la manda y aquí se cuenta lo que de verdad pasó (con lo que respondió Drive).
 const MAX_LINEAS_DRIVE = 15;
-const TEXTO_RECUPERAR = 'Si te equivocas, se recupera desde la papelera de Drive durante unos 30 días.';
+const TEXTO_RECUPERAR = 'Se recupera de la papelera de Drive durante unos 30 días.';
 function lineasConTope(lineas) {
   return lineas.length > MAX_LINEAS_DRIVE ? [...lineas.slice(0, MAX_LINEAS_DRIVE), `… y ${lineas.length - MAX_LINEAS_DRIVE} más`] : lineas;
 }
 // Devuelve { texto } para contestar sin más o { texto, papelera } con la pregunta de confirmación
 function textoPropuestaDrive(p) {
   if (!p || typeof p !== 'object') return { texto: 'No he podido revisar tus carpetas de Drive.', error: 'Revisar Drive no devolvió la propuesta', fallo: true };
-  if (p.ambiguas) return { texto: `Hay varias carpetas con ese nombre:\n${p.ambiguas.map((r) => `• ${limpiar(r)}`).join('\n')}\nDime cuál, con la ruta entera (por ejemplo «borra la carpeta ${limpiar(p.ambiguas[0])}»).` };
-  if (p.no_encontrada) return { texto: `No encuentro la carpeta «${limpiar(p.no_encontrada)}» en Drive (miro hasta 3 niveles dentro de Secretaria). Escribe «qué carpetas tengo» para verlas.` };
-  if (p.protegida) return { texto: `No borro la carpeta «${limpiar(p.protegida)}»: la uso yo para ordenar tus cosas. Puedo borrar lo que hay dentro: dime una subcarpeta o «borra los archivos de ${limpiar(p.protegida)}».` };
-  if (p.demasiados) return { texto: `Eso son ${p.demasiados} archivos sueltos y como mucho borro 50 de una vez. Borra la carpeta entera o hazlo desde Drive.` };
+  if (p.ambiguas) return { texto: `Hay varias carpetas con ese nombre:\n${p.ambiguas.map((r) => `• ${limpiar(r)}`).join('\n')}\n¿Cuál?` };
+  if (p.no_encontrada) return { texto: `No encuentro la carpeta «${limpiar(p.no_encontrada)}» en Drive.` };
+  if (p.protegida) return { texto: `No borro «${limpiar(p.protegida)}»: la uso yo para ordenar tus cosas. Dime una subcarpeta o «borra los archivos de ${limpiar(p.protegida)}».` };
+  if (p.demasiados) return { texto: `Son ${p.demasiados} archivos sueltos y borro 50 como mucho. Borra la carpeta entera o hazlo desde Drive.` };
   if (p.vacia) return { texto: `No tengo archivos registrados en «${limpiar(p.vacia)}».` };
   const objetivos = Array.isArray(p.objetivos) ? p.objetivos : [];
-  if (objetivos.length === 0) return { texto: 'No encuentro esos archivos (puede que ya estén borrados). Escribe «qué archivos tengo» para verlos.' };
+  if (objetivos.length === 0) return { texto: 'No encuentro esos archivos.' };
   const lineas = [];
   for (const o of objetivos) {
     if (o.tipo === 'carpeta') {
@@ -269,7 +267,7 @@ function textoPropuestaDrive(p) {
   const texto = [
     'Voy a mandar a la papelera de Drive:',
     ...lineasConTope(lineas),
-    conCarpeta ? 'Con la carpeta va todo lo que tenga dentro, también lo que subieras a mano (eso no lo tengo registrado).' : '',
+    conCarpeta ? 'Se va con todo lo que tenga dentro, también lo que subiste a mano.' : '',
     TEXTO_RECUPERAR,
     objetivos.length === 1 && !conCarpeta ? '¿Lo mando a la papelera?' : '¿Lo mando todo a la papelera?',
   ].filter(Boolean).join('\n');
@@ -282,10 +280,87 @@ function motivoDrive(r) {
   if (r.statusCode === 403) return 'Drive no me deja (sin permiso)';
   return `error de Drive (HTTP ${r.statusCode})`;
 }
+// Mover carpetas dentro de otra . plan: lo que decidió «Revisar Drive» (mover_plan); creado: la salida de «Crear en Drive» (null si no hacía falta);
+// preparados, movidos y anotados: las salidas de «Preparar movimientos» (las que llevan mover), «Mover en Drive» y «Anotar movimiento», en el mismo orden.
+// Los rechazos no tocan nada y se dicen con una frase cada uno; los fallos de Drive o de la base de datos avisan.
+function textoMover({ plan, creado, preparados, movidos, anotados }) {
+  const r = plan ?? {};
+  const lista = (rutas) => (rutas ?? []).map((x) => `• ${limpiar(x)}`).join('\n');
+  const frase = (e) => {
+    switch (e.error) {
+      case 'arbol':
+        return 'No he podido leer tus carpetas de Drive y no he movido nada. Inténtalo en un rato.';
+      case 'origen_no_encontrado':
+      case 'destino_no_encontrado':
+        return `No encuentro la carpeta «${limpiar(e.nombre)}» en Drive.`;
+      case 'origen_ambiguo':
+      case 'destino_ambiguo':
+        return `Hay varias carpetas con ese nombre:\n${lista(e.rutas)}\nDime la ruta completa.`;
+      case 'protegida':
+        return `No muevo «${limpiar(e.ruta)}»: la uso yo para ordenar tus cosas.`;
+      case 'dentro_de_si':
+        return `No puedo meter «${limpiar(e.ruta)}» dentro de sí misma.`;
+      case 'anidada':
+        return `«${limpiar(e.ruta)}» ya va dentro de otra de las que mueves.`;
+      case 'ya_esta':
+        return `«${limpiar(e.origen)}» ya está dentro de «${limpiar(e.destino)}».`;
+      case 'choque':
+        return `Ya hay una carpeta «${limpiar(e.nombre)}» dentro de «${limpiar(e.destino)}».`;
+      case 'profundidad':
+        return `Así quedaría en «${limpiar(e.ruta)}», a más de 3 niveles. Prueba con otro destino.`;
+      default:
+        return 'No he podido mover esa carpeta.';
+    }
+  };
+  const fallo = (texto, error) => ({ texto, error, fallo: true });
+  if (r.error_global) {
+    const e = r.error_global;
+    if (e.error === 'arbol') return fallo(frase(e), e.detalle);
+    if (!['pedido', 'destino_ambiguo', 'destino_no_encontrado', 'profundidad'].includes(e.error)) return fallo(frase(e), `mover_carpeta: ${JSON.stringify(e).slice(0, 200)}`);
+    return e.error === 'pedido' ? fallo(frase(e), 'mover_carpeta: pedido sin origen o destino') : { texto: frase(e) };
+  }
+  const rechazos = (r.rechazos ?? []).map(frase);
+  const previstos = (preparados ?? []).filter((x) => x && x.mover);
+  if (previstos.length === 0) {
+    if (r.crear && !(creado && !creado.error && creado.statusCode >= 200 && creado.statusCode < 300)) {
+      return fallo(`Drive no me ha dejado crear la carpeta «${limpiar(r.crear.nombre)}» (${motivoDrive(creado)}). No he movido nada.`, `Crear en Drive: ${motivoDrive(creado)}`);
+    }
+    return rechazos.length ? { texto: rechazos.join('\n') } : fallo('No he podido mover esa carpeta.', 'Revisar Drive no devolvió movimientos ni rechazos');
+  }
+  const hechos = [];
+  const fallos = [];
+  const sinAnotar = [];
+  previstos.forEach((p, i) => {
+    const m = p.mover;
+    const mv = (movidos ?? [])[i];
+    if (!(mv && !mv.error && mv.statusCode >= 200 && mv.statusCode < 300)) {
+      fallos.push(`«${limpiar(m.nombre)}» (${motivoDrive(mv)})`);
+      return;
+    }
+    hechos.push(m);
+    const an = (anotados ?? [])[i];
+    if (!an || an.error) sinAnotar.push(an?.error ? textoError(an.error) : 'sin respuesta');
+  });
+  const partes = [];
+  if (hechos.length === 1) {
+    partes.push(`Hecho: «${limpiar(hechos[0].ruta_origen)}» está ahora en «${limpiar(hechos[0].ruta_destino)}».`);
+  } else if (hechos.length > 1) {
+    const destino = limpiar(r.crear ? r.crear.ruta : hechos[0].ruta_destino.split('/').slice(0, -1).join('/'));
+    partes.push(`${r.crear ? `He creado «${destino}» y he metido` : `He metido en «${destino}»`}:\n${hechos.map((h) => `• ${limpiar(h.nombre)}`).join('\n')}`);
+  }
+  if (hechos.length === 1 && r.crear) partes[0] = `He creado «${limpiar(r.crear.ruta)}» y he metido dentro «${limpiar(hechos[0].nombre)}».`;
+  if (fallos.length) partes.push(`Drive no me ha dejado mover ${fallos.join(', ')}.`);
+  partes.push(...rechazos);
+  const omitidos = (anotados ?? []).reduce((n, a) => n + (Number(a && a.omitidos) || 0), 0);
+  if (omitidos > 0) partes.push(`${omitidos} ruta${omitidos === 1 ? '' : 's'} no encajaba${omitidos === 1 ? '' : 'n'} y se ha${omitidos === 1 ? '' : 'n'} dejado como estaba${omitidos === 1 ? '' : 'n'}.`);
+  if (sinAnotar.length) partes.push(`No he podido anotarlo en la base de datos (Vigilar Drive lo avisará como movido a mano): ${sinAnotar[0]}`);
+  const error = fallos.length ? `Mover en Drive: ${fallos.join(', ')}` : sinAnotar.length ? `Anotar movimiento: ${sinAnotar[0]}` : '';
+  return error ? { texto: partes.join('\n'), error, fallo: true } : { texto: partes.join('\n') };
+}
 // revisados: la salida de «Revisar Drive»; mandados: la de «Mandar a la papelera» (mismo orden); marcado: la de «Marcar borrado»
 function textoPapelera({ revisados, mandados, marcado }) {
   const primero = revisados[0] ?? {};
-  if (primero.error) return { texto: 'No he podido leer tus carpetas de Drive, así que no he borrado nada. Vuelve a pedírmelo en un rato.', error: primero.error, fallo: true };
+  if (primero.error) return { texto: 'No he podido leer tus carpetas de Drive y no he borrado nada. Inténtalo en un rato.', error: primero.error, fallo: true };
   const hechos = [];
   const fallidos = [];
   let fallo = false; // un 403 o un 404 son una respuesta de Drive; sin respuesta o un 5xx, un fallo del flujo
@@ -345,7 +420,7 @@ function filtrarArchivos(filas, filtro) {
 }
 
 const TEXTO_SIN_ARCHIVOS = (hayFiltro) =>
-  hayFiltro ? 'No tengo archivos con esos criterios. Dime «qué archivos tengo» y te los enseño todos.' : 'Todavía no has guardado ningún archivo.';
+  hayFiltro ? 'No tengo archivos con esos criterios.' : 'Todavía no has guardado ningún archivo.';
 
 // --- Mandar los archivos por WhatsApp (ver_archivos con enviar: true) ---
 // Se mandan como máximo MAX_ARCHIVOS_ENVIO (20), los más recientes que encajen, agrupados por carpeta. Aquí solo se decide CUÁLES y qué decir: el flujo de WhatsApp
@@ -368,9 +443,9 @@ function archivosParaEnviar(filas, filtro) {
   const de = rutas.length > 1 ? ` de ${rutas.length} carpetas` : '';
   const intro =
     enviables.length > elegidos.length
-      ? `Hay ${enviables.length} archivos con esos criterios. Te mando los ${elegidos.length} más recientes${de}; si quieres otros, pídemelos por carpeta o por tipo:`
+      ? `Hay ${enviables.length} archivos. Te mando los ${elegidos.length} más recientes${de}:`
       : elegidos.length === 1
-        ? 'Te mando este archivo:'
+        ? 'Aquí tienes el archivo:'
         : `Te mando ${elegidos.length} archivos${de}:`;
   return {
     mensajes: [intro],
@@ -393,23 +468,42 @@ function formatearArchivos(filas, filtro) {
     const lista = grupos.get(ruta);
     const lineas = lista.map((f) => {
       const enlace = typeof f.drive_url === 'string' && f.drive_url ? `\n  ${f.drive_url}` : '';
-      return `• ${limpiar(f.nombre)} (recibido ${dia(f.created_at)}, ${hora(f.created_at)})${enlace}`;
+      return `• ${limpiar(f.nombre)}${enlace}`;
     });
     return `*${limpiar(ruta)}* (${lista.length})\n${lineas.join('\n')}`;
   });
   if (archivos.length > MAX_ARCHIVOS_VER) {
-    bloques.push(`… y ${archivos.length - MAX_ARCHIVOS_VER} más. Pídemelos por carpeta o por tipo.`);
+    bloques.push(`… y ${archivos.length - MAX_ARCHIVOS_VER} más.`);
   }
   return bloques;
 }
 
-// Horario de los eventos que se acaban de guardar. Si alguno dura una hora (lo que se asume cuando el usuario no la dice), se
-// avisa de que se puede cambiar: así la duración no pasa en silencio.
+// Confirmación de lo que se acaba de guardar, redactada con las filas que devolvió la base de datos : corta y siempre igual, sin
+// depender de lo que diga el modelo. Las citas y las alarmas ya las dicen `Horario:` y `🔔`, así que aquí solo van el resto. Devuelve null si
+// las filas no traen título (otros caminos, p. ej. guardar con archivos): entonces se conserva la frase del modelo.
+const esFilaAlarma = (r) => r.tipo === 'tarea' && Boolean(r.recordar_en) && !r.fecha_limite;
+function textoGuardado(filas) {
+  const con = (Array.isArray(filas) ? filas : []).filter((r) => r && typeof r.titulo === 'string' && typeof r.tipo === 'string');
+  if (con.length === 0) return null;
+  const lineas = [];
+  const listas = new Map();
+  for (const r of con) {
+    if (r.tipo === 'evento' || esFilaAlarma(r)) continue;
+    if (r.tipo === 'lista') {
+      const nombre = r.lista || 'compra';
+      listas.set(nombre, [...(listas.get(nombre) ?? []), limpiar(r.titulo)]);
+    } else if (r.tipo === 'nota') lineas.push(`📝 ${limpiar(r.titulo)}`);
+    else lineas.push(`✅ ${limpiar(r.titulo)}${r.fecha_limite ? ` (para ${dia(r.fecha_limite)})` : ''}`);
+  }
+  for (const [nombre, titulos] of listas) lineas.push(`🛒 ${nombre.toLowerCase() === 'compra' ? 'Lista de la compra' : `Lista «${limpiar(nombre)}»`}: ${titulos.join(', ')}.`);
+  return lineas.join('\n');
+}
+
+// Horario de los eventos que se acaban de guardar. La duración por defecto (una hora) ya se da por conocida: no se avisa.
 function textoHorario(eventos) {
   if (!Array.isArray(eventos) || eventos.length === 0) return '';
   const partes = eventos.map((e) => `${limpiar(e.titulo)}, ${dia(e.inicio)}, de ${hora(e.inicio)} a ${hora(e.fin)}`);
-  const aviso = eventos.some((e) => e.minutos === 60) ? ' Si dura distinto, dime cuánto.' : '';
-  return `Horario: ${partes.join('; ')}.${aviso}`;
+  return `Horario: ${partes.join('; ')}.`;
 }
 
 // Recordatorios cortos recién guardados (tareas con hora de aviso). Se dice cuándo se avisará y con qué antelación: el sistema avisa 1 hora
@@ -420,14 +514,14 @@ const TEXTO_ANTELACION = { 60: '1 hora antes', 30: '30 minutos antes', 0: 'a la 
 function textoRecordatorios(recordatorios, pasados, ahora) {
   const lineas = [];
   const hoyClave = claveDia(ahora.toISOString());
-  const mananaClave = claveDia(new Date(ahora.getTime() + 24 * 3600 * 1000).toISOString());
+  // «Mañana» por calendario, no sumando 24 h: el domingo del cambio de hora (25 de octubre) dura 25 horas y el de marzo, 23
+  const [yH, mH, dH] = hoyClave.split('-').map(Number);
+  const mananaClave = new Date(Date.UTC(yH, mH - 1, dH + 1)).toISOString().slice(0, 10);
   for (const r of Array.isArray(recordatorios) ? recordatorios : []) {
     const inicio = Date.parse(r.recordar_en);
     if (Number.isNaN(inicio)) continue;
     const cuando = claveDia(r.recordar_en) === hoyClave ? 'hoy' : claveDia(r.recordar_en) === mananaClave ? 'mañana' : dia(r.recordar_en);
-    const validos = AVISOS_RECORDATORIO_MIN.filter((m) => inicio - m * 60000 > ahora.getTime()).map((m) => TEXTO_ANTELACION[m]);
-    const cuantos = validos.length > 1 ? `${validos.slice(0, -1).join(', ')} y ${validos.at(-1)}` : validos[0];
-    lineas.push(`🔔 ${limpiar(r.titulo)}: ${cuando} a las ${hora(r.recordar_en)}. Te avisaré ${cuantos}.`);
+    lineas.push(`🔔 ${limpiar(r.titulo)}: ${cuando} a las ${hora(r.recordar_en)}.`);
   }
   for (const t of Array.isArray(pasados) ? pasados : []) lineas.push(`⚠️ La hora de «${limpiar(t)}» ya ha pasado: lo he guardado como tarea, sin aviso.`);
   return lineas.join('\n');
@@ -459,7 +553,7 @@ function textoRecuerdo(meta) {
   return `📌 Lo recordaré: ${limpiar(m.termino)}: ${limpiar(m.significado)}.`;
 }
 const textoLlena = (meta) =>
-  typeof meta.memoria_llena === 'string' ? `Mi memoria está llena (50 datos) y no he guardado «${limpiar(meta.memoria_llena)}». Mira /memory y olvida alguno con /forget.` : '';
+  typeof meta.memoria_llena === 'string' ? `Tengo la memoria llena (50 datos) y no he guardado «${limpiar(meta.memoria_llena)}». Olvida alguno con /forget.` : '';
 
 function textoConversion(a, filas, ahora) {
   const lineas = [];
@@ -471,7 +565,7 @@ function textoConversion(a, filas, ahora) {
       lineas.push(`Hecho: «${titulo}» ahora es ${ARTICULO_TIPO[a]}.\n${textoRecordatorios([{ titulo: r.titulo, recordar_en: r.recordar_en }], [], ahora)}`);
     } else if (a === 'cita' && r.tipo === 'evento' && r.fecha_inicio && pendiente) {
       const fin = typeof r.fecha_fin === 'string' && !Number.isNaN(Date.parse(r.fecha_fin)) ? ` a ${hora(r.fecha_fin)}` : '';
-      lineas.push(`📅 «${titulo}» ahora es ${ARTICULO_TIPO[a]}: ${dia(r.fecha_inicio)}, ${fin ? 'de' : 'a las'} ${hora(r.fecha_inicio)}${fin}. Aparecerá en tu calendario en un minuto.`);
+      lineas.push(`📅 «${titulo}» ahora es ${ARTICULO_TIPO[a]}: ${dia(r.fecha_inicio)}, ${fin ? 'de' : 'a las'} ${hora(r.fecha_inicio)}${fin}.`);
     } else if (a === 'tarea' && r.tipo === 'tarea' && !r.recordar_en && pendiente) {
       lineas.push(`✅ «${titulo}» ahora es ${ARTICULO_TIPO[a]}${r.fecha_limite ? ` (para ${dia(r.fecha_limite)})` : ''}.`);
     } else fallidas.push(titulo);
@@ -484,8 +578,8 @@ function textoConversion(a, filas, ahora) {
 function textoCarpetasPedidas(rutas) {
   const nombres = rutas.map((r) => `«${limpiar(r)}»`);
   return rutas.length === 1
-    ? `Carpeta ${nombres[0]} pedida. Aparecerá en Drive en unos minutos (creo un nivel por minuto).`
-    : `Carpetas pedidas: ${nombres.join(', ')}. Aparecerán en Drive en unos minutos (creo un nivel por minuto).`;
+    ? `Carpeta ${nombres[0]} pedida.`
+    : `Carpetas pedidas: ${nombres.join(', ')}.`;
 }
 
 // Lista de proyectos ("¿qué proyectos tengo?", /projects): los activos con lo pendiente de cada uno y, aparte, los cerrados. Con código.
@@ -494,14 +588,13 @@ function textoProyectos(proyectos) {
   const activos = lista.filter((p) => p.estado === 'activo');
   const cerrados = lista.filter((p) => p.estado !== 'activo');
   if (activos.length === 0 && cerrados.length === 0) {
-    return 'Todavía no tienes proyectos. Para crear uno: «proyecto Mudanza: llamar al casero» (con su primera tarea) o «crea el proyecto Mudanza».';
+    return 'Todavía no tienes proyectos.';
   }
   const pend = (n) => (n === 1 ? '1 pendiente' : n > 0 ? `${n} pendientes` : 'nada pendiente');
   const partes = [];
   if (activos.length) partes.push(`*Proyectos*\n${activos.map((p) => `📁 ${limpiar(p.nombre)} (${pend(p.pendientes)})`).join('\n')}`);
   else partes.push('No tienes proyectos activos.');
   if (cerrados.length) partes.push(`Cerrados: ${cerrados.map((p) => limpiar(p.nombre)).join(', ')}.`);
-  partes.push('Para ver uno: «qué tengo del proyecto …».');
   return partes.join('\n\n');
 }
 
@@ -513,6 +606,14 @@ function textoSeleccion(intencion, filas) {
   const visibles = titulos.slice(0, MAX_TITULOS_CONFIRMACION).map((t) => `«${t}»`);
   const mas = titulos.length > MAX_TITULOS_CONFIRMACION ? ` y ${titulos.length - MAX_TITULOS_CONFIRMACION} más` : '';
   return titulos.length > 3 ? `${verbo} ${titulos.length} elementos: ${visibles.join(', ')}${mas}.` : `${verbo}: ${visibles.join(', ')}.`;
+}
+
+// Confirmación de «deshaz»: con los títulos de lo que de verdad se ha recuperado
+function textoRecuperado(filas) {
+  const titulos = filas.map((f) => limpiar(f.titulo)).filter(Boolean);
+  const visibles = titulos.slice(0, MAX_TITULOS_CONFIRMACION).map((t) => `«${t}»`);
+  const mas = titulos.length > MAX_TITULOS_CONFIRMACION ? ` y ${titulos.length - MAX_TITULOS_CONFIRMACION} más` : '';
+  return titulos.length > 3 ? `Recuperados ${titulos.length} elementos: ${visibles.join(', ')}${mas}.` : `${titulos.length === 1 ? 'Recuperado' : 'Recuperados'}: ${visibles.join(', ')}.`;
 }
 
 // Une los bloques en mensajes que no pasen del límite; un bloque enorme se parte por líneas
@@ -616,6 +717,11 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
         ],
       };
     }
+  } else if (meta.intencion === 'mover_carpeta' && meta.mover_carpeta) {
+    const r = textoMover({ plan: (drive.revisados ?? [])[0]?.mover_plan, creado: drive.creado ?? null, preparados: drive.preparados ?? [], movidos: drive.movidos ?? [], anotados: drive.anotados ?? [] });
+    mensajes = [r.texto];
+    if (r.error) error = r.error;
+    if (r.fallo) falloFlujo = true;
   } else if (meta.intencion === 'ver_archivos') {
     const erroresLectura = lecturas.map((e) => e?.error).filter(Boolean).map(textoError);
     if (erroresLectura.length) {
@@ -643,15 +749,15 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     const lineas = [...grupos.values()].map((g) => `• ${g.dias.join(', ').replace(/, ([^,]*)$/, ' y $1')} de ${g.hora_inicio} a ${g.hora_fin}: ${limpiar(g.titulo)}`);
     mensajes = [meta.horario_ya_estaba
       ? `Eso ya estaba en tu horario fijo:\n${lineas.join('\n')}`
-      : `🗓️ Apuntado en tu horario fijo:\n${lineas.join('\n')}\nSi apuntas una cita que caiga dentro, te preguntaré antes. /horario para verlo.`];
+      : `🗓️ Horario apuntado:\n${lineas.join('\n')}`];
   } else if (meta.intencion === 'quitar_horario') {
     const DIAS = ['', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
     const q = escrituras.find((e) => e && e.borrado === true && typeof e.titulo === 'string');
-    mensajes = [q ? `🗑️ Quitado de tu horario: ${DIAS[q.dia_semana] ?? ''} de ${q.hora_inicio} a ${q.hora_fin}: ${limpiar(q.titulo)}.` : 'Ese bloque ya no estaba en tu horario. Escribe /horario para verlo.'];
+    mensajes = [q ? `🗑️ Quitado de tu horario: ${DIAS[q.dia_semana] ?? ''} de ${q.hora_inicio} a ${q.hora_fin}: ${limpiar(q.titulo)}.` : 'Ese bloque ya no estaba en tu horario.'];
   } else if (meta.intencion === 'olvidar_memoria') {
     // Lo que de verdad se borró (olvidar_memoria devuelve el dato); si ya no estaba, se dice
     const borrados = escrituras.filter((e) => e && e.borrado === true && typeof e.termino === 'string');
-    mensajes = [borrados.length > 0 ? `🗑️ Olvidado:\n${borrados.map((e) => `• ${limpiar(e.termino)}: ${limpiar(e.significado)}`).join('\n')}` : 'Eso ya no estaba en mi memoria. Escribe /memory para ver lo que recuerdo.'];
+    mensajes = [borrados.length > 0 ? `🗑️ Olvidado:\n${borrados.map((e) => `• ${limpiar(e.termino)}: ${limpiar(e.significado)}`).join('\n')}` : 'Eso ya no estaba en mi memoria.'];
   } else if (meta.respuesta_fija) {
     // Planificar ya decidió la respuesta y no escribió nada (nada que cancelar, un proyecto que ya existe…): no es un fallo
     mensajes = [meta.respuesta_usuario];
@@ -662,13 +768,13 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     if (filasEscritas.length === 0 && p.accion === 'cerrar') {
       // Cerrar uno que no existe (o ya cerrado) no es un fallo: no había nada que cerrar
       error = 'No se cerró ningún proyecto';
-      mensajes = [`No encuentro ningún proyecto abierto que se llame «${limpiar(p.nombre)}». Escribe /projects para ver los que tienes.`];
+      mensajes = [`No encuentro ningún proyecto abierto que se llame «${limpiar(p.nombre)}».`];
     } else if (filasEscritas.length === 0) {
       error = 'No se pudo crear el proyecto';
       falloFlujo = true;
       mensajes = [MENSAJE_FALLO];
     } else if (p.accion === 'crear') {
-      mensajes = [`Proyecto «${limpiar(p.nombre)}» creado. Para añadirle cosas: «para el proyecto ${limpiar(p.nombre)}: …».`];
+      mensajes = [`Proyecto «${limpiar(p.nombre)}» creado.`];
     } else {
       const n = p.quitados ?? 0;
       mensajes = [`Proyecto «${limpiar(p.nombre)}» cerrado${n > 0 ? ` y ${n === 1 ? 'quitada su cosa pendiente' : `quitadas sus ${n} cosas pendientes`}` : ''}.`];
@@ -682,6 +788,9 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     } else {
       mensajes = [textoCarpetasPedidas(rutas)];
     }
+  } else if (meta.intencion === 'deshacer') {
+    mensajes = filasEscritas.length === 0 ? ['No he podido recuperar nada.'] : [textoRecuperado(filasEscritas)];
+    if (filasEscritas.length === 0) error = 'La recuperación no afectó a ningún item';
   } else if (['corregir', 'completar', 'archivar', 'cancelar'].includes(meta.intencion) && filasEscritas.length === 0) {
     error = 'La actualización no afectó a ningún item';
     mensajes = ['No he encontrado nada que cambiar.'];
@@ -689,7 +798,7 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
     const c = textoConversion(meta.conversion, filasEscritas, ahora);
     if (c.fallidas.length > 0) {
       error = `El cambio a ${meta.conversion} no quedó aplicado: ${c.fallidas.join(', ')}`;
-      mensajes = [`No he podido dejar ${c.fallidas.map((t) => `«${t}»`).join(', ')} como ${meta.conversion}. Díselo otra vez con la hora, por ejemplo «ponla como ${meta.conversion} mañana a las 8».`];
+      mensajes = [`No he podido dejar ${c.fallidas.map((t) => `«${t}»`).join(', ')} como ${meta.conversion}. Dime la hora.`];
     } else mensajes = [c.texto];
   } else if (meta.intencion === 'aclarar') {
     mensajes = [[textoRecuerdo(meta), textoLlena(meta), meta.pregunta].filter(Boolean).join('\n')];
@@ -698,8 +807,9 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
   } else {
     // Un nombre nuevo para la secretaria lo confirma el código, con el nombre ya validado (no lo que diga el modelo)
     // Igual con el nombre del usuario: cómo quiere que se le llame
-    const confirmacion = meta.intencion === 'recordar' && typeof meta.nombre_nuevo === 'string'
-      ? `Perfecto: a partir de ahora me llamo ${limpiar(meta.nombre_nuevo)}. ${meta.tras_pregunta_nombre ? 'Ya puedes mandarme lo que quieras. Escribe /help para ver qué puedo hacer.' : 'Cuando quieras otro nombre, dímelo.'}`
+    const guardado = meta.intencion === 'guardar' && !meta.confirmacion_codigo ? textoGuardado(filasEscritas) : null;
+    const confirmacion = guardado !== null ? guardado : meta.intencion === 'recordar' && typeof meta.nombre_nuevo === 'string'
+      ? `Vale, me llamo ${limpiar(meta.nombre_nuevo)}.`
       : meta.intencion === 'recordar' && typeof meta.nombre_usuario === 'string'
         ? `De acuerdo: a partir de ahora te llamaré ${limpiar(meta.nombre_usuario)}.`
         : (meta.respuesta_usuario ?? '').trim() || 'Hecho.';
@@ -716,7 +826,7 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
       ? `${meta.proyectos_nuevos.length === 1 ? 'Proyecto nuevo' : 'Proyectos nuevos'}: ${meta.proyectos_nuevos.map((p) => `«${limpiar(p)}»`).join(', ')}.`
       : '';
     const recuerdo = meta.intencion === 'recordar' ? '' : [textoRecuerdo(meta), textoLlena(meta)].filter(Boolean).join('\n');
-    mensajes = [(alarmas.length > 0 ? [recordatorios, horario, nota, nuevos, recuerdo] : [movida || confirmacion, horario, recordatorios, nuevos, recuerdo]).filter(Boolean).join('\n')];
+    mensajes = [(alarmas.length > 0 ? [recordatorios, horario, nota, nuevos, recuerdo] : [movida || confirmacion, horario, recordatorios, nuevos, recuerdo]).filter(Boolean).join('\n') || 'Hecho.'];
     // La compra con un día: tras apuntarlo, la pregunta del aviso (queda abierta en el mensaje)
     if (meta.intencion === 'guardar' && meta.aviso_compra?.pregunta && error === null) mensajes.push(meta.aviso_compra.pregunta);
   }
@@ -747,14 +857,14 @@ function resolver({ meta, escrituras, lecturas, ahora, niveles = [], raizId = ''
   };
 }
 
-// «Como no me contestaste a «¿…?», no he hecho nada con eso.» (una por pregunta, recortadas a una línea)
+// «No contestaste a «¿…?», así que no he hecho nada con eso.» (una por pregunta, recortadas a una línea)
 function textoPreguntasIgnoradas(preguntas) {
   const corta = (p) => {
     const t = String(p).replace(/\s+/g, ' ').trim();
     return t.length > 120 ? `${t.slice(0, 120).trimEnd()}…` : t;
   };
-  if (preguntas.length === 1) return `Como no me contestaste a «${corta(preguntas[0])}», no he hecho nada con eso. Si lo quieres, dímelo otra vez.`;
-  return `Como no me contestaste a estas preguntas, no he hecho nada con ellas:\n${preguntas.map((p) => `• «${corta(p)}»`).join('\n')}\nSi quieres alguna, dímelo otra vez.`;
+  if (preguntas.length === 1) return `No contestaste a «${corta(preguntas[0])}», así que no he hecho nada con eso.`;
+  return `No contestaste a estas preguntas, así que no he hecho nada con ellas:\n${preguntas.map((p) => `• «${corta(p)}»`).join('\n')}`;
 }
 
 // --- Pegamento con n8n ---
@@ -804,7 +914,7 @@ const salida = resolver({
   escrituras: $('Escribir en Supabase').all().map((i) => i.json),
   // Con la rama de carpetas, lo que llega es lo de Drive (Revisar Drive, Marcar borrado): los archivos contados se leen de su nodo
   lecturas: meta.carpetas ? todos('Contar archivos') : $input.all().map((i) => i.json),
-  drive: { revisados: todos('Revisar Drive'), mandados: todos('Mandar a la papelera'), marcado: nivel('Marcar borrado') },
+  drive: { revisados: todos('Revisar Drive'), mandados: todos('Mandar a la papelera'), marcado: nivel('Marcar borrado'), creado: nivel('Crear en Drive'), preparados: todos('Preparar movimientos'), movidos: todos('Mover en Drive'), anotados: todos('Anotar movimiento') },
   ahora: meta.ahora ? new Date(meta.ahora) : new Date(),
   niveles: meta.carpetas ? ['Listar nivel 1', 'Listar nivel 2', 'Listar nivel 3'].map(nivel) : [],
   raizId: meta.carpetas ? $('Configuración').first().json.config.carpeta_raiz_id : '',

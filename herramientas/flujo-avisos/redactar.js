@@ -39,6 +39,20 @@ const ahora = Date.now();
 const hoy = new Intl.DateTimeFormat('en-CA', { timeZone: ZONA, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ahora));
 if (!estado.dia || estado.dia.fecha !== hoy) estado.dia = { fecha: hoy, enviados: 0 };
 
+// --- Errores de red en flujos que se repiten solos: se toleran hasta que duren TOLERANCIA_RED_MIN minutos ---
+// Un episodio sigue abierto mientras el siguiente fallo de red llegue en menos de HUECO_EPISODIO_MIN minutos del anterior.
+const HUECO_EPISODIO_MIN = 15;
+const ERROR_DE_RED = /timed out|timeout|bad gateway|gateway time-?out|service unavailable|\b50[234]\b|econnreset|econnrefused|etimedout|enotfound|eai_again|socket hang up/i;
+let minutosConRed = 0;
+if (ERROR_DE_RED.test(mensaje) && (config.flujos_periodicos ?? []).includes(flujo) && config.tolerancia_red_min > 0) {
+  estado.red = estado.red && typeof estado.red === 'object' ? estado.red : {};
+  let ep = estado.red[flujo];
+  if (!ep || ahora - ep.ultimo > HUECO_EPISODIO_MIN * 60000) ep = estado.red[flujo] = { desde: ahora, ultimo: ahora };
+  ep.ultimo = ahora;
+  minutosConRed = Math.round((ahora - ep.desde) / 60000);
+  if (minutosConRed < config.tolerancia_red_min) return []; // lo recoge el ciclo siguiente: aún no es una caída
+}
+
 const previo = estado.ultimos[flujo];
 if (previo && ahora - previo.t < config.enfriamiento_min * 60000) {
   previo.repetidos = (previo.repetidos ?? 0) + 1;
@@ -52,6 +66,7 @@ estado.dia.enviados += 1;
 
 const partes = [`⚠️ Fallo en «${flujo}»${nodo ? ` (nodo «${nodo}»)` : ''}: ${mensaje}.`];
 if (idEjecucion) partes.push(`Ejecución ${idEjecucion}.`);
+if (minutosConRed > 0) partes.push(`Lleva ${minutosConRed} min fallando por la red.`);
 if (repetidos > 0) partes.push(`Se repitió ${repetidos} ${repetidos === 1 ? 'vez' : 'veces'} desde el último aviso.`);
 const texto = recortar(partes.join(' ').replace(/\.\./g, '.'), 900);
 

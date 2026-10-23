@@ -97,8 +97,7 @@ function construirFlujoBase() {
   const Y = 0; // entrada, mensajes y proceso
   const NOTA = 160; // alto de las notas de las ramas
   const FILA_COLA = -840; // la cola de mensajes, arriba del todo; su segunda fila (esperar turno) va 180 más abajo
-  // El eco de los audios («🎙️ Entendí: …») va en una fila ENCIMA de la cola: n8n ejecuta primero la rama que está más arriba, así el eco
-  // sale antes de esperar y de procesar
+  // Fila donde va la nota de la cola, encima de ella
   const FILA_ECO = FILA_COLA - 200;
   const FILA_RESP = Y + 140; // respuestas de texto, a continuación de «Procesar mensaje»
   const FILA_TURNO = FILA_RESP + 200; // soltar el turno y comprobar el envío, debajo de las respuestas
@@ -264,11 +263,31 @@ function construirFlujoBase() {
       // Si falla, lo que llegó después espera hasta que caduque (TURNO_MIN): se avisa en «Comprobar envío»
       { executeOnce: true, alwaysOutputData: true, onError: 'continueRegularOutput' },
     ),
-    nodoSi(66, '¿Soltar turno?', [PASO * 14, FILA_TURNO], [{ izq: "={{ $('Soltar turno').first().json.soltar_turno ? 'si' : 'no' }}", der: 'si' }]),
+    // Anota en los mensajes del usuario que se han contestado los ids de WhatsApp de la respuesta y su texto (base de datos 1.4): así,
+    // cuando cita cualquiera de esos mensajes, el flujo principal sabe a qué se refiere. Si falla (sin actualizar la base de datos a la 1.4), no pasa nada: sin cita.
+    nodoHttp(
+      76,
+      'Guardar respuesta',
+      [PASO * 14, FILA_TURNO],
+      {
+        method: 'PATCH',
+        // Si no se envió nada (todos fallaron), no se toca ninguna fila: la URL busca un id que no existe (así no se borra lo ya anotado)
+        url: `={{ ${CFG}.supabase_url }}/rest/v1/mensajes?wa_message_id=in.({{ (($('Soltar turno').first().json.respuesta_wamids || []).length > 0 ? ($('Soltar turno').first().json.contestados || []) : []).map((w) => '%22' + encodeURIComponent(w) + '%22').join(',') || '%22sin-mensajes%22' }})`,
+        ...supabase,
+        sendHeaders: true,
+        specifyHeaders: 'keypair',
+        headerParameters: { parameters: [{ name: 'Prefer', value: 'return=minimal' }] },
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: "={{ JSON.stringify({ respuesta_wa_ids: $('Soltar turno').first().json.respuesta_wamids || [], respuesta_texto: $('Soltar turno').first().json.respuesta_texto || null }) }}",
+      },
+      { executeOnce: true, alwaysOutputData: true, onError: 'continueRegularOutput' },
+    ),
+    nodoSi(66, '¿Soltar turno?', [PASO * 15, FILA_TURNO], [{ izq: "={{ $('Soltar turno').first().json.soltar_turno ? 'si' : 'no' }}", der: 'si' }]),
     nodoHttp(
       67,
       'Liberar turno',
-      [PASO * 15, FILA_TURNO],
+      [PASO * 16, FILA_TURNO],
       {
         method: 'POST',
         url: `={{ ${CFG}.supabase_url }}/rest/v1/rpc/liberar_turno`,
@@ -371,9 +390,9 @@ function construirFlujoBase() {
 
     // Cuando ya se han enviado todos los mensajes (salida "done" del bucle), hace fallar la ejecución si un envío o el flujo principal
     // fallaron. Así el fallo se ve y activa el "Aviso de fallos".
-    nodoCode(26, 'Comprobar envío', [PASO * 16, FILA_TURNO], 'comprobar-envio.js'),
+    nodoCode(26, 'Comprobar envío', [PASO * 17, FILA_TURNO], 'comprobar-envio.js'),
 
-    // --- Archivos (fase 2, paso A): imágenes y documentos se guardan en Drive, en Entrada/, como pendientes ---
+    // --- Archivos (archivos): imágenes y documentos se guardan en Drive, en Entrada/, como pendientes ---
     nodoSi(13, '¿Es archivo?', [PASO * 8, FILA_ARCHIVO], [
       { izq: '={{ $json.tipo_entrada }}', der: 'imagen' },
       { izq: '={{ $json.tipo_entrada }}', der: 'documento' },
@@ -451,9 +470,61 @@ function construirFlujoBase() {
       },
       { onError: 'continueRegularOutput' },
     ),
+    // Un archivo con pie de texto («Fotos/Viajes», «apuntes de redes tema 3») no pregunta qué es: su pie entra en la cola de texto citando al
+    // propio archivo, como si el usuario hubiera respondido a la foto. Solo si el archivo se registró (sin registro no hay a qué citar).
+    nodoSi(80, '¿Pie para procesar?', [PASO * 19, FILA_ARCHIVO - 170], [
+      { izq: "={{ $('¿Subido?').item.json.tiene_pie === true && typeof $json.drive_file_id === 'string' ? 'si' : 'no' }}", der: 'si' },
+    ]),
+    // Reutiliza la fila que ya guardó «Guardar mensaje de archivo» (mismo wa_message_id): la pone en cola, sin procesar y citándose a sí misma.
+    // Devuelve la fila, con la misma forma que «Guardar en cola», y sigue por «En cola».
+    nodoHttp(
+      81,
+      'Poner pie en cola',
+      [PASO * 20, FILA_ARCHIVO - 170],
+      {
+        method: 'PATCH',
+        url: `={{ ${CFG}.supabase_url }}/rest/v1/mensajes?wa_message_id=eq.{{ encodeURIComponent($('¿Subido?').item.json.mensaje.wa_message_id) }}`,
+        ...supabase,
+        sendHeaders: true,
+        specifyHeaders: 'keypair',
+        headerParameters: { parameters: [{ name: 'Prefer', value: 'return=representation' }] },
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: "={{ JSON.stringify({ en_cola: true, procesado: false, contexto_wa_id: $('¿Subido?').item.json.mensaje.wa_message_id }) }}",
+      },
+      { retryOnFail: true, maxTries: 3, waitBetweenTries: 2000 },
+    ),
     nodoCode(23, 'Resultado archivo', [PASO * 18, FILA_ARCHIVO], 'resultado-archivo.js', { conComun: true }),
+    // Un solo mensaje de guardado al mandar varios archivos (base de datos 1.4): cada ejecución espera unos segundos, reclama en
+    // Supabase todos los archivos aún sin confirmar (solo si no se guardó otro hace un instante) y la que se los lleva manda UN mensaje con
+    // todos los nombres. Con ESPERA_ARCHIVOS_S = 0 nada cambia: un aviso por archivo.
+    {
+      parameters: { amount: `={{ ${CFG}.espera_archivos_s }}`, unit: 'seconds' },
+      id: id(77),
+      name: 'Esperar a más archivos',
+      type: 'n8n-nodes-base.wait',
+      typeVersion: 1.1,
+      webhookId: '5ec7e7a3-0077-4000-8000-0000000000aa',
+      position: [PASO * 19, FILA_ARCHIVO],
+    },
+    // Una sola llamada por ejecución (aunque lleguen varios archivos a la vez). Si falla (sin actualizar la base de datos a la 1.4), «Agrupar confirmaciones» avisa archivo a archivo.
+    nodoHttp(
+      78,
+      'Reclamar confirmación de archivos',
+      [PASO * 20, FILA_ARCHIVO],
+      {
+        method: 'POST',
+        url: `={{ ${CFG}.supabase_url }}/rest/v1/rpc/reclamar_confirmacion_archivos`,
+        ...supabase,
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: `={{ JSON.stringify({ p_quieto_s: ${CFG}.quieto_archivos_s, p_ventana_min: 10 }) }}`,
+      },
+      { executeOnce: true, alwaysOutputData: true, onError: 'continueRegularOutput' },
+    ),
+    nodoCode(79, 'Agrupar confirmaciones', [PASO * 21, FILA_ARCHIVO], 'agrupar-confirmaciones.js', { conComun: true }),
 
-    // --- Audio (fase 3): se descarga, se transcribe con Gemini y el texto entra a "Procesar mensaje" como un mensaje más ---
+    // --- Audio (audio): se descarga, se transcribe con Gemini y el texto entra a "Procesar mensaje" como un mensaje más ---
     nodoSi(27, '¿Es audio?', [PASO * 8, FILA_AUDIO], [{ izq: '={{ $json.tipo_entrada }}', der: 'audio' }]),
     nodoHttp(
       28,
@@ -492,26 +563,6 @@ function construirFlujoBase() {
     ),
     nodoCode(34, 'Leer transcripción', [PASO * 15, FILA_AUDIO], 'leer-transcripcion.js', { conComun: true }),
     nodoSi(35, '¿Transcrito?', [PASO * 16, FILA_AUDIO], [{ izq: "={{ $json.ok ? 'si' : 'no' }}", der: 'si' }]),
-    // Lo primero que le llega al usuario: lo que se entendió. Se manda en cuanto se ha transcrito y la cadena espera a que termine
-    // el envío antes de procesar nada (el nodo siguiente no empieza hasta que éste acaba), así ningún otro mensaje puede adelantarlo.
-    // El eco sale cuando al audio le toca su turno (al reclamarlo, justo antes de procesarlo): así respeta el orden de llegada
-    // y sale una sola vez aunque Meta entregue el mismo audio dos veces. Va en la rama de ARRIBA de «¿Procesar?» (antes que «Procesar mensaje»).
-    nodoCode(50, 'Mensaje de eco', [PASO * 11, FILA_ECO], 'mensaje-eco.js', { conComun: true }),
-    nodoHttp(
-      51,
-      'Enviar lo entendido',
-      [PASO * 12, FILA_ECO],
-      {
-        method: 'POST',
-        url: `=https://graph.facebook.com/{{ ${CFG}.graph_version }}/{{ ${CFG}.phone_number_id }}/messages`,
-        authentication: 'genericCredentialType',
-        genericAuthType: 'httpHeaderAuth',
-        sendBody: true,
-        specifyBody: 'json',
-        jsonBody: '={{ JSON.stringify($json.cuerpo) }}',
-      },
-      { retryOnFail: true, maxTries: 2, waitBetweenTries: 3000, onError: 'continueRegularOutput' },
-    ),
     nodoCode(52, 'Entrada del audio', [PASO * 17, FILA_AUDIO], 'entrada-audio.js'),
 
     // --- Enviar archivos al usuario ("dame todas las fotos"): el flujo principal decide cuáles (hasta 20, agrupados por carpeta) y los
@@ -583,11 +634,11 @@ function construirFlujoBase() {
 
     nota(101, -40, -420, PASO * 4, 200, 4, '## ① Entrada y seguridad\n**Webhook** recibe el saludo de Meta (GET) y las notificaciones (POST) con el cuerpo en bruto.\n**Configuración** va primero para que un error de configuración se vea al registrar el webhook.\n**Verificar** comprueba el verify token, la firma `X-Hub-Signature-256` (con el App Secret) y que el remitente sea el número permitido. Los secretos se leen del `.env`.\n**Responder** contesta 200 enseguida (o 403) y el flujo sigue.'),
     nota(102, PASO * 4 - 40, -420, PASO * 4, 200, 5, '## ② Mensajes y duplicados\n**Separar mensajes** deja un item por mensaje. **Comprobar duplicados** y **Quitar duplicados** descartan los reenvíos de Meta (el `wa_message_id` ya está en Supabase). **Registrar llegadas** anota cada mensaje con su hora: todo se contesta en ese orden.\n**¿Es texto?**: el texto va al flujo principal. Imágenes y documentos van a la rama de archivos (abajo); los audios van a la rama de audio (abajo); vídeos, stickers… reciben una respuesta honesta de que aún no se entienden.'),
-    nota(105, PASO * 8 - 40, FILA_ARCHIVO - 60 - NOTA, PASO * 11, NOTA, 3, '## ④ Archivos (imágenes y documentos)\n**Leer datos del adjunto** pide a Meta la URL de descarga (caduca a los 5 minutos). **Comprobar adjunto** acepta solo URLs de Meta, tipos admitidos y el tamaño máximo (`LIMITE_ADJUNTO_MB`) y calcula el nombre. **Descargar adjunto** → **Subir a Drive** (carpeta Entrada). **Guardar mensaje de archivo** y **Registrar archivo** escriben en Supabase (el archivo queda `pendiente`). Todo lo que falla o se rechaza contesta con un mensaje honesto en **Preparar envío**.'),
-    nota(106, PASO * 8 - 40, FILA_AUDIO - 60 - NOTA, PASO * 12, NOTA, 7, '## ⑤ Audio (notas de voz)\n**Leer datos del audio** y **Comprobar audio** (dominio de Meta, formato que entiende Gemini y `LIMITE_AUDIO_MB`) → **Descargar audio** → **Preparar transcripción** (binario a base64) → **Transcribir audio** (Gemini, credencial Header Auth **de Gemini**) → **Leer transcripción**. Si se entendió, **Entrada del audio** lo mete en la cola como un mensaje más (el «🎙️ Entendí: …» sale al tocarle el turno, arriba); si no, contesta con un aviso honesto. El audio no se guarda en Drive.'),
+    nota(105, PASO * 8 - 40, FILA_ARCHIVO - 60 - NOTA, PASO * 11, NOTA, 3, '## ④ Archivos (imágenes y documentos)\n**Leer datos del adjunto** pide a Meta la URL de descarga (caduca a los 5 minutos). **Comprobar adjunto** acepta solo URLs de Meta, tipos admitidos y el tamaño máximo (`LIMITE_ADJUNTO_MB`) y calcula el nombre. **Descargar adjunto** → **Subir a Drive** (carpeta Entrada). **Guardar mensaje de archivo** y **Registrar archivo** escriben en Supabase (el archivo queda `pendiente`). Si el archivo trae **pie de texto** y se registró, **¿Pie para procesar?** → **Poner pie en cola** lo mete en la cola de texto citando al propio archivo (no pregunta qué es; el flujo principal lo archiva o lo clasifica con ese pie). **Esperar a más archivos** → **Reclamar confirmación de archivos** → **Agrupar confirmaciones** juntan en UN mensaje los avisos de los archivos que llegan seguidos (`ESPERA_ARCHIVOS_S`). Todo lo que falla o se rechaza contesta con un mensaje honesto en **Preparar envío**.'),
+    nota(106, PASO * 8 - 40, FILA_AUDIO - 60 - NOTA, PASO * 12, NOTA, 7, '## ⑤ Audio (notas de voz)\n**Leer datos del audio** y **Comprobar audio** (dominio de Meta, formato que entiende Gemini y `LIMITE_AUDIO_MB`) → **Descargar audio** → **Preparar transcripción** (binario a base64) → **Transcribir audio** (Gemini, credencial Header Auth **de Gemini**) → **Leer transcripción**. Si se entendió, **Entrada del audio** lo mete en la cola como un mensaje más (sin eco de lo entendido, sección 61); si no, contesta con un aviso honesto. El audio no se guarda en Drive.'),
     nota(107, PASO * 9 - 40, FILA_ENVIO - 160 - 60 - NOTA, PASO * 10, NOTA, 3, '## ⑥ Mandar archivos al usuario\nDespués del texto y antes de soltar el turno (**¿Mandar archivos?**, tras **Soltar turno**): **Preparar archivos a enviar** toma de la respuesta los archivos pedidos (hasta 20, agrupados por carpeta) y arma la secuencia: nombre de carpeta, sus archivos, siguiente carpeta… **Recorrer envíos** (Loop Over Items, de 1 en 1) procesa cada elemento completo antes del siguiente: **¿Es cabecera?** → **Mensaje de cabecera** (el nombre en negrita) o bien **Leer datos de Drive** → **Decidir envío de archivo** (tipo y tamaño que admite Meta) → **Descargar de Drive** → **Subir a WhatsApp** → **Preparar mensaje de archivo**; todo termina en **Enviar archivo**, que vuelve al bucle. Lo que no se puede mandar va como enlace de Drive. Al acabar, **Revisar envíos de archivos** resume los envíos y sigue a **Marcar contestados** (si alguno falló, **Comprobar envío** pone la ejecución en rojo). Credencial **Google Drive OAuth2** en *Leer datos de Drive* y *Descargar de Drive*; **Header Auth de WhatsApp** en *Subir a WhatsApp* y *Enviar archivo*.'),
-    nota(108, PASO * 7 - 40, FILA_ECO - 60 - 200, PASO * 8, 200, 4, '## Cola de mensajes\nTexto y audios transcritos: **Preparar cola** → **Guardar en cola** → **En cola** → **Esperar a más mensajes** (`ESPERA_AGRUPAR_S`) → **Reclamar mensajes**. **Juntar mensajes**: si llegó otro después, no hace nada (los junta la ejecución del último); si otra ejecución tiene el turno, **Esperar turno** (`ESPERA_TURNO_S`) y vuelta a reclamar; si no, **Mensaje de eco** → **Enviar lo entendido** («🎙️ Entendí: …» de los audios) y **Procesar mensaje** con todos juntos. También espera si llegó antes algo sin contestar (una foto, un audio que se transcribe). El turno se suelta en **Liberar turno**, después de mandar la respuesta: las respuestas no se desordenan.'),
-    nota(103, PASO * 8 - 40, -420, PASO * 3, 200, 6, '## ③ Proceso y respuesta\n**Procesar mensaje** llama al flujo "Secretaria · Procesar mensaje". **Preparar envío** convierte su campo `mensajes` en un item por mensaje (o un aviso honesto si falló). **¿Me toca contestar?** → **Turno de respuesta**: espera (**Esperar para contestar**) a que se conteste lo que llegó antes y cita tu mensaje solo si mandaste varios. **Recorrer mensajes** (Loop Over Items, de 1 en 1) manda los mensajes uno tras otro y en orden: **Enviar WhatsApp** (un POST a la API de Meta), **Anotar confirmación**, **Cerrar envío**; al acabar, **Soltar turno** → **¿Mandar archivos?** (los pedidos, abajo) → **Marcar contestados** → **Liberar turno** → **Comprobar envío** (pone la ejecución en rojo, y avisa, solo si un envío falló o el flujo principal falló de verdad: `fallo_flujo`).'),
+    nota(108, PASO * 7 - 40, FILA_ECO - 60 - 200, PASO * 8, 200, 4, '## Cola de mensajes\nTexto y audios transcritos: **Preparar cola** → **Guardar en cola** → **En cola** → **Esperar a más mensajes** (`ESPERA_AGRUPAR_S`) → **Reclamar mensajes**. **Juntar mensajes**: si llegó otro después, no hace nada (los junta la ejecución del último); si otra ejecución tiene el turno, **Esperar turno** (`ESPERA_TURNO_S`) y vuelta a reclamar; si no, **Procesar mensaje** con todos juntos (un archivo con pie de texto va aparte, con su archivo). También espera si llegó antes algo sin contestar (una foto, un audio que se transcribe). El turno se suelta en **Liberar turno**, después de mandar la respuesta: las respuestas no se desordenan.'),
+    nota(103, PASO * 8 - 40, -420, PASO * 3, 200, 6, '## ③ Proceso y respuesta\n**Procesar mensaje** llama al flujo "Secretaria · Procesar mensaje". **Preparar envío** convierte su campo `mensajes` en un item por mensaje (o un aviso honesto si falló). **¿Me toca contestar?** → **Turno de respuesta**: espera (**Esperar para contestar**) a que se conteste lo que llegó antes y cita tu mensaje solo si mandaste varios. **Recorrer mensajes** (Loop Over Items, de 1 en 1) manda los mensajes uno tras otro y en orden: **Enviar WhatsApp** (un POST a la API de Meta), **Anotar confirmación**, **Cerrar envío**; al acabar, **Soltar turno** → **¿Mandar archivos?** (los pedidos, abajo) → **Marcar contestados** → **Guardar respuesta** (ids y texto de lo enviado) → **Liberar turno** → **Comprobar envío** (pone la ejecución en rojo, y avisa, solo si un envío falló o el flujo principal falló de verdad: `fallo_flujo`).'),
     nota(
       104,
       -40,
@@ -595,7 +646,7 @@ function construirFlujoBase() {
       PASO * 4,
       360,
       2,
-      '## Antes de ejecutar\n1. Identificadores: `SUPABASE_URL`, `WHATSAPP_PHONE_NUMBER_ID` y `DRIVE_ENTRADA_ID` en el `.env` del servidor (no hace falta tocar **Configuración**).\n2. En **Procesar mensaje**, elige el flujo "Secretaria · Procesar mensaje".\n3. Credenciales (¡revisa cada nodo, n8n a veces asigna la equivocada!): **Supabase API** en *Comprobar duplicados*, *Registrar llegadas*, *Guardar en cola*, *Reclamar mensajes*, *¿Me toca contestar?*, *Marcar contestados*, *Liberar turno*, *Guardar mensaje de archivo*, *Registrar archivo* y *Guardar id de la confirmación*; **Header Auth de WhatsApp** (nombre `Authorization`, valor `Bearer <token de acceso>`) en *Enviar WhatsApp*, *Leer datos del adjunto*, *Descargar adjunto*, *Leer datos del audio* y *Descargar audio*; **Header Auth de Gemini** en *Transcribir audio* (la misma que usa *Modelo* en el flujo principal); **Google Drive OAuth2** en *Subir a Drive*.\n4. En el `.env`: `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_NUMERO_PERMITIDO`, `N8N_WEBHOOK_URL`. En `docker-compose.yml`: `NODE_FUNCTION_ALLOW_BUILTIN=crypto`.\n5. **Activa** el flujo (la URL de producción es `/webhook/whatsapp`; la de prueba no la usa Meta).\n6. En Meta: URL de devolución de llamada = tu URL pública + `/webhook/whatsapp`, y el mismo verify token. Suscribe el campo `messages`.',
+      '## Antes de ejecutar\n1. Identificadores: `SUPABASE_URL`, `WHATSAPP_PHONE_NUMBER_ID` y `DRIVE_ENTRADA_ID` en el `.env` del servidor (no hace falta tocar **Configuración**).\n2. En **Procesar mensaje**, elige el flujo "Secretaria · Procesar mensaje".\n3. Credenciales (¡revisa cada nodo, n8n a veces asigna la equivocada!): **Supabase API** en *Comprobar duplicados*, *Registrar llegadas*, *Guardar en cola*, *Reclamar mensajes*, *¿Me toca contestar?*, *Marcar contestados*, *Guardar respuesta*, *Liberar turno*, *Guardar mensaje de archivo*, *Registrar archivo*, *Poner pie en cola*, *Reclamar confirmación de archivos* y *Guardar id de la confirmación*; **Header Auth de WhatsApp** (nombre `Authorization`, valor `Bearer <token de acceso>`) en *Enviar WhatsApp*, *Leer datos del adjunto*, *Descargar adjunto*, *Leer datos del audio* y *Descargar audio*; **Header Auth de Gemini** en *Transcribir audio* (la misma que usa *Modelo* en el flujo principal); **Google Drive OAuth2** en *Subir a Drive*.\n4. En el `.env`: `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_NUMERO_PERMITIDO`, `N8N_WEBHOOK_URL`. En `docker-compose.yml`: `NODE_FUNCTION_ALLOW_BUILTIN=crypto`.\n5. **Activa** el flujo (la URL de producción es `/webhook/whatsapp`; la de prueba no la usa Meta).\n6. En Meta: URL de devolución de llamada = tu URL pública + `/webhook/whatsapp`, y el mismo verify token. Suscribe el campo `messages`.',
     ),
   ];
 
@@ -615,8 +666,8 @@ function construirFlujoBase() {
   conexiones['Esperar a más mensajes'] = { main: [[a('Reclamar mensajes')]] };
   conexiones['Reclamar mensajes'] = { main: [[a('Juntar mensajes')]] };
   conexiones['Juntar mensajes'] = { main: [[a('¿Procesar?')]] };
-  // Al procesar: primero (más arriba) el eco de los audios del grupo; después, el proceso
-  conexiones['¿Procesar?'] = { main: [[a('Mensaje de eco'), a('Procesar mensaje')], [a('¿Esperar turno?')]] };
+  // Al procesar: se llama al flujo principal
+  conexiones['¿Procesar?'] = { main: [[a('Procesar mensaje')], [a('¿Esperar turno?')]] };
   conexiones['¿Esperar turno?'] = { main: [[a('Esperar turno')], []] };
   conexiones['Esperar turno'] = { main: [[a('Reclamar mensajes')]] };
   // Rama de archivos. Todo lo que falla o se rechaza va directo a "Preparar envío" con su mensaje.
@@ -629,8 +680,14 @@ function construirFlujoBase() {
   conexiones['Preparar registro'] = { main: [[a('¿Subido?')]] };
   conexiones['¿Subido?'] = { main: [[a('Guardar mensaje de archivo')], [a('Preparar envío')]] };
   conexiones['Guardar mensaje de archivo'] = { main: [[a('Registrar archivo')]] };
-  conexiones['Registrar archivo'] = { main: [[a('Resultado archivo')]] };
-  conexiones['Resultado archivo'] = { main: [[a('Preparar envío')]] };
+  conexiones['Registrar archivo'] = { main: [[a('¿Pie para procesar?')]] };
+  // Con pie: entra en la cola de texto (cita al propio archivo). Sin pie: el aviso de guardado de siempre.
+  conexiones['¿Pie para procesar?'] = { main: [[a('Poner pie en cola')], [a('Resultado archivo')]] };
+  conexiones['Poner pie en cola'] = { main: [[a('En cola')]] };
+  conexiones['Resultado archivo'] = { main: [[a('Esperar a más archivos')]] };
+  conexiones['Esperar a más archivos'] = { main: [[a('Reclamar confirmación de archivos')]] };
+  conexiones['Reclamar confirmación de archivos'] = { main: [[a('Agrupar confirmaciones')]] };
+  conexiones['Agrupar confirmaciones'] = { main: [[a('Preparar envío')]] };
   // Rama de audio. Todo lo que falla o se rechaza va directo a "Preparar envío"; lo transcrito entra a "Procesar mensaje" (texto).
   conexiones['¿Es audio?'] = { main: [[a('Leer datos del audio')], [a('Preparar envío')]] };
   conexiones['Leer datos del audio'] = { main: [[a('Comprobar audio')]] };
@@ -641,7 +698,6 @@ function construirFlujoBase() {
   conexiones['Transcribir audio'] = { main: [[a('Leer transcripción')]] };
   conexiones['Leer transcripción'] = { main: [[a('¿Transcrito?')]] };
   conexiones['¿Transcrito?'] = { main: [[a('Entrada del audio')], [a('Preparar envío')]] };
-  conexiones['Mensaje de eco'] = { main: [[a('Enviar lo entendido')]] };
   conexiones['Entrada del audio'] = { main: [[a('Preparar cola')]] };
   conexiones['Webhook POST'] = { main: [[a('Configuración')]] };
   conexiones['Webhook GET'] = { main: [[a('Configuración')]] };
@@ -674,7 +730,8 @@ function construirFlujoBase() {
   conexiones['Recorrer mensajes'] = { main: [[a('Soltar turno')], [a('Enviar WhatsApp')]] };
   conexiones['Soltar turno'] = { main: [[a('¿Mandar archivos?')]] };
   conexiones['¿Mandar archivos?'] = { main: [[a('Preparar archivos a enviar')], [a('Marcar contestados')]] };
-  conexiones['Marcar contestados'] = { main: [[a('¿Soltar turno?')]] };
+  conexiones['Marcar contestados'] = { main: [[a('Guardar respuesta')]] };
+  conexiones['Guardar respuesta'] = { main: [[a('¿Soltar turno?')]] };
   conexiones['¿Soltar turno?'] = { main: [[a('Liberar turno')], [a('Comprobar envío')]] };
   conexiones['Liberar turno'] = { main: [[a('Comprobar envío')]] };
   conexiones['Enviar WhatsApp'] = { main: [[a('Anotar confirmación')]] };

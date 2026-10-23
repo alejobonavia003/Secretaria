@@ -39,7 +39,13 @@ function textoDeEsteMensaje(i) {
 function citaDe(i, r) {
   const solo = (id) => ({ id, varios: false, contesta: id ? [id] : [], de_cola: false });
   // Las ramas de audio, archivos y rechazos siempre traen «responde_a» (aunque sea nulo): nunca toman los mensajes de la cola
-  if ('responde_a' in r) return solo(idCitable(r.responde_a));
+  // Un aviso que junta varios archivos (base de datos 1.4) trae además «contesta_todos»: los mensajes de todos los archivos de la tanda, que esta
+  // respuesta contesta de una vez (así se marcan como contestados y su turno no espera a que alguien los conteste)
+  if ('responde_a' in r) {
+    const uno = solo(idCitable(r.responde_a));
+    const todos = Array.isArray(r.contesta_todos) ? r.contesta_todos.filter((w) => typeof w === 'string' && idCitable(w)) : [];
+    return todos.length > 0 ? { ...uno, contesta: [...new Set([...uno.contesta, ...todos])], varios: todos.length > 1 } : uno;
+  }
   if (r.tipo_entrada === 'no_soportado') return solo(idCitable(r.wa_message_id));
   const deJuntar = (j) => ({
     id: idCitable(j.responde_a ?? j.wa_message_id),
@@ -81,6 +87,8 @@ for (const [i, item] of $input.all().entries()) {
   // Si el mensaje es la confirmación de un archivo recién guardado, el primer texto lleva el id de ese archivo en Drive:
   // "Anotar confirmación" lo usa para guardar el id del mensaje enviado (así el usuario puede clasificarlo respondiéndolo)
   const archivo = typeof r.archivo_drive_id === 'string' && r.archivo_drive_id !== '' ? r.archivo_drive_id : null;
+  // Si junta varios archivos (base de datos 1.4), el primer texto lleva el id de todos
+  const archivos = Array.isArray(r.archivo_drive_ids) ? r.archivo_drive_ids.filter((x) => typeof x === 'string' && /^[A-Za-z0-9_-]{10,100}$/.test(x)).slice(0, 50) : [];
   // Solo el primer mensaje de la respuesta puede citar al usuario: los siguientes (una lista larga partida, una pregunta) van justo debajo
   const cita = citaDe(i, r);
   textos.forEach((t, n) =>
@@ -89,6 +97,7 @@ for (const [i, item] of $input.all().entries()) {
         para,
         texto: t.slice(0, LIMITE_WHATSAPP),
         ...(archivo && n === 0 ? { archivo_drive_id: archivo } : {}),
+        ...(archivos.length > 0 && n === 0 ? { archivo_drive_ids: archivos } : {}),
         ...(cita.id && n === 0 ? { responde_a: cita.id, varios_mensajes: cita.varios } : {}),
         // «desde»: cuándo empezó a esperar su turno de respuesta (el tope de espera es TURNO_MIN)
         ...(n === 0 ? { contesta: cita.contesta, de_cola: cita.de_cola, desde: ahora } : {}),

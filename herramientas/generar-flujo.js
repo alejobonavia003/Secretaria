@@ -56,13 +56,22 @@ function codigoComandos(planificar = leer(ruta('herramientas', 'flujo', 'planifi
     const j = lineas.findIndex((l, k) => k >= i && l.trimEnd().endsWith(';'));
     return lineas.slice(i, j + 1).join('\n');
   };
+  // Una función de nivel superior, desde «function X(» hasta la primera línea que es solo «}»
+  const funcion = (nombre) => {
+    const i = lineas.findIndex((l) => l.startsWith(`function ${nombre}(`));
+    if (i < 0) fallar(`no se encuentra «function ${nombre}» en planificar.js`);
+    const j = lineas.findIndex((l, k) => k >= i && l === '}');
+    return lineas.slice(i, j + 1).join('\n');
+  };
   return [
     '(() => {',
     constante('sinAcentos'),
     constante('diaMadrid'),
     constante('NOMBRE_TERMINO'),
+    constante('NIVELES_CARPETA_MAX'),
+    funcion('segmentosCarpeta'),
     lineas.slice(ini, fin).join('\n'),
-    'return { interpretarComando, interpretarAplazamiento, pideListarRepetidos, elegirPregunta, siNoSinPregunta, pideBorrarTodo, seccionElegida, respuestaConfirmacion, quitarConcreto, tipoSuelto, respuestaAvisoCompra };',
+    'return { interpretarComando, interpretarAplazamiento, pideListarRepetidos, elegirPregunta, siNoSinPregunta, pideBorrarTodo, borrarSecciones, interpretarDeshacer, seccionElegida, respuestaConfirmacion, quitarConcreto, tipoSuelto, respuestaAvisoCompra, respuestaOferta, esOrdenNueva, interpretarCarpetaSuelta, interpretarMoverCarpeta };',
     '})()',
   ].join('\n');
 }
@@ -112,6 +121,8 @@ const ORDEN = [
   'Leer proyectos',
   'Leer avisos',
   'Leer horario',
+  'Leer respuesta citada',
+  'Leer quitados',
   'Construir petición',
   '¿Hace falta el modelo?',
   'Modelo',
@@ -230,6 +241,31 @@ function construirFlujoBase() {
       { method: 'GET', url: `={{ ${CFG}.supabase_url }}/rest/v1/horario_fijo?select=id,titulo,dia_semana,hora_inicio,hora_fin&order=dia_semana.asc,hora_inicio.asc,titulo.asc`, ...supabase },
       { alwaysOutputData: true, onError: 'continueRegularOutput' },
     ),
+    // La respuesta de la secretaria que el usuario cita (base de datos 1.4): el mensaje suyo al que contestaba, con lo que se le dijo. Sin
+    // cita (o sin actualizar la base de datos a la 1.4) no encuentra nada y todo sigue como antes. Si hay varios mensajes con la misma respuesta (mensajes juntados), el último.
+    nodoHttp(
+      38,
+      'Leer respuesta citada',
+      x('Leer respuesta citada'),
+      {
+        method: 'GET',
+        url: `={{ ${CFG}.supabase_url }}/rest/v1/mensajes?select=id,texto_original,tipo_entrada,pregunta,pregunta_pendiente,hilo,respuesta_texto,created_at&respuesta_wa_ids=cs.%7B%22{{ encodeURIComponent($('Entrada').first().json.contexto_id || 'sin-cita') }}%22%7D&order=created_at.desc&limit=1`,
+        ...supabase,
+      },
+      { alwaysOutputData: true, onError: 'continueRegularOutput' },
+    ),
+    // Lo que el usuario quitó por WhatsApp en los últimos 7 días (base de datos 1.4), para «deshaz». Sin actualizar la base de datos a la 1.4 falla y no hay nada que recuperar.
+    nodoHttp(
+      39,
+      'Leer quitados',
+      x('Leer quitados'),
+      {
+        method: 'GET',
+        url: `={{ ${CFG}.supabase_url }}/rest/v1/items?select=id,tipo,titulo,estado,quitado_en,recordar_en,fecha_limite,lista,proyecto&quitado_en=gte.{{ new Date(Date.now() - 7 * 86400000).toISOString() }}&estado=in.(archivado,hecho)&order=quitado_en.desc&limit=300`,
+        ...supabase,
+      },
+      { alwaysOutputData: true, onError: 'continueRegularOutput' },
+    ),
     nodoCode(6, 'Construir petición', x('Construir petición'), 'construir-peticion.js', [
       ['__PROMPT__', JSON.stringify(prompt)],
       ['__COMANDOS__', codigoComandos()],
@@ -326,8 +362,8 @@ function construirFlujoBase() {
     nodoHttp(17, 'Listar nivel 1', x('¿Listar carpetas?') + PASO, { method: 'GET', url: urlNivel(`[${CFG}.carpeta_raiz_id]`), ...driveAuth, options: RESPUESTA_COMPLETA }, { onError: 'continueRegularOutput', executeOnce: true, position: [x('¿Listar carpetas?') + PASO, FILA_CARPETAS] }),
     nodoHttp(18, 'Listar nivel 2', x('¿Listar carpetas?') + PASO * 2, { method: 'GET', url: urlNivel(idsDe('Listar nivel 1')), ...driveAuth, options: RESPUESTA_COMPLETA }, { onError: 'continueRegularOutput', executeOnce: true, position: [x('¿Listar carpetas?') + PASO * 2, FILA_CARPETAS] }),
     nodoHttp(19, 'Listar nivel 3', x('¿Listar carpetas?') + PASO * 3, { method: 'GET', url: urlNivel(idsDe('Listar nivel 2')), ...driveAuth, options: RESPUESTA_COMPLETA }, { onError: 'continueRegularOutput', executeOnce: true, position: [x('¿Listar carpetas?') + PASO * 3, FILA_CARPETAS] }),
-    nodoHttp(20, 'Contar archivos', x('¿Listar carpetas?') + PASO * 4, { method: 'GET', url: `={{ ${CFG}.supabase_url }}/rest/v1/archivos?select=id,nombre,drive_file_id,carpeta_id,estado&eliminado_at=is.null&limit=5000`, ...supabase }, { executeOnce: true, alwaysOutputData: true, onError: 'continueRegularOutput', position: [x('¿Listar carpetas?') + PASO * 4, FILA_CARPETAS] }),
-    // Borrar en Drive. «Revisar Drive» propone qué se borraría (al pedirlo) o comprueba cada id con el árbol de ahora (al
+    nodoHttp(20, 'Contar archivos', x('¿Listar carpetas?') + PASO * 4, { method: 'GET', url: `={{ ${CFG}.supabase_url }}/rest/v1/archivos?select=id,nombre,drive_file_id,carpeta_id,carpeta_destino,estado&eliminado_at=is.null&limit=5000`, ...supabase }, { executeOnce: true, alwaysOutputData: true, onError: 'continueRegularOutput', position: [x('¿Listar carpetas?') + PASO * 4, FILA_CARPETAS] }),
+    // Borrar en Drive . «Revisar Drive» propone qué se borraría (al pedirlo) o comprueba cada id con el árbol de ahora (al
     // confirmarlo); solo con lo confirmado y comprobado sigue la rama de la papelera. Con la lista de carpetas, pasa de largo.
     { ...nodoCode(33, 'Revisar Drive', 0, 'revisar-drive.js'), position: [x('¿Listar carpetas?') + PASO * 5, FILA_CARPETAS] },
     {
@@ -379,8 +415,110 @@ function construirFlujoBase() {
       },
       { executeOnce: true, alwaysOutputData: true, onError: 'continueRegularOutput', position: [x('¿Listar carpetas?') + PASO * 8, FILA_CARPETAS - 160] },
     ),
+    // Mover carpetas dentro de otra . «Revisar Drive» ya las ha buscado en el árbol real y ha decidido (mover_plan). Si hay que crear la
+    // carpeta de destino, se crea primero en Drive; «Preparar movimientos» saca un item por carpeta y cada una se mueve de verdad (con todo lo de
+    // dentro, también lo subido a mano). «Anotar movimiento» reescribe las rutas de la base de datos (base de datos 1.4) para que cuadren y «Vigilar
+    // Drive» no lo avise como un cambio hecho a mano; si Drive no la movió, manda una llamada vacía que la función rechaza sin tocar nada (así todos
+    // los items siguen el mismo camino hasta «Resultado» y la respuesta sale una sola vez).
+    {
+      parameters: {
+        conditions: {
+          options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+          conditions: [
+            { id: 'a1b2c3d4-0044-4000-8000-000000000001', leftValue: "={{ $json.mover_plan ? 'si' : 'no' }}", rightValue: 'si', operator: { type: 'string', operation: 'equals' } },
+          ],
+          combinator: 'and',
+        },
+        options: {},
+      },
+      id: id(44),
+      name: '¿Hay carpetas que mover?',
+      type: 'n8n-nodes-base.if',
+      typeVersion: 2.2,
+      position: [x('¿Listar carpetas?') + PASO * 7, FILA_CARPETAS + 200],
+    },
+    {
+      parameters: {
+        conditions: {
+          options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+          conditions: [
+            { id: 'a1b2c3d4-0042-4000-8000-000000000001', leftValue: "={{ $json.mover_plan && $json.mover_plan.crear ? 'si' : 'no' }}", rightValue: 'si', operator: { type: 'string', operation: 'equals' } },
+          ],
+          combinator: 'and',
+        },
+        options: {},
+      },
+      id: id(42),
+      name: '¿Crear carpeta primero?',
+      type: 'n8n-nodes-base.if',
+      typeVersion: 2.2,
+      position: [x('¿Listar carpetas?') + PASO * 8, FILA_CARPETAS + 200],
+    },
+    nodoHttp(
+      45,
+      'Crear en Drive',
+      0,
+      {
+        method: 'POST',
+        url: 'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true',
+        ...driveAuth,
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: "={{ JSON.stringify({ name: $json.mover_plan.crear.nombre, mimeType: 'application/vnd.google-apps.folder', parents: [$json.mover_plan.crear.padre_id], appProperties: { secretaria: '1' } }) }}",
+        options: RESPUESTA_COMPLETA,
+      },
+      { onError: 'continueRegularOutput', position: [x('¿Listar carpetas?') + PASO * 9, FILA_CARPETAS + 360] },
+    ),
+    { ...nodoCode(46, 'Preparar movimientos', 0, 'preparar-movimientos.js'), position: [x('¿Listar carpetas?') + PASO * 10, FILA_CARPETAS + 200] },
+    {
+      parameters: {
+        conditions: {
+          options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+          conditions: [
+            { id: 'a1b2c3d4-0040-4000-8000-000000000001', leftValue: "={{ $json.mover ? 'si' : 'no' }}", rightValue: 'si', operator: { type: 'string', operation: 'equals' } },
+          ],
+          combinator: 'and',
+        },
+        options: {},
+      },
+      id: id(40),
+      name: '¿Mover carpeta?',
+      type: 'n8n-nodes-base.if',
+      typeVersion: 2.2,
+      position: [x('¿Listar carpetas?') + PASO * 11, FILA_CARPETAS + 200],
+    },
+    nodoHttp(
+      41,
+      'Mover en Drive',
+      0,
+      {
+        method: 'PATCH',
+        url: "={{ 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent($json.mover.id) + '?addParents=' + encodeURIComponent($json.mover.nuevo_padre_id) + '&removeParents=' + encodeURIComponent($json.mover.viejo_padre_id) + '&supportsAllDrives=true' }}",
+        ...driveAuth,
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: '={{ JSON.stringify({}) }}',
+        options: RESPUESTA_COMPLETA,
+      },
+      { onError: 'continueRegularOutput', position: [x('¿Listar carpetas?') + PASO * 12, FILA_CARPETAS + 200] },
+    ),
+    nodoHttp(
+      43,
+      'Anotar movimiento',
+      0,
+      {
+        method: 'POST',
+        url: `={{ ${CFG}.supabase_url }}/rest/v1/rpc/mover_carpeta_drive`,
+        ...supabase,
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody:
+          "={{ JSON.stringify($json.statusCode >= 200 && $json.statusCode < 300 ? { p_id: $('Preparar movimientos').item.json.mover.id, p_nuevo_padre_id: $('Preparar movimientos').item.json.mover.nuevo_padre_id, p_ruta_origen: $('Preparar movimientos').item.json.mover.ruta_origen, p_ruta_destino: $('Preparar movimientos').item.json.mover.ruta_destino } : { p_id: '', p_nuevo_padre_id: '', p_ruta_origen: '', p_ruta_destino: '' }) }}",
+      },
+      { alwaysOutputData: true, onError: 'continueRegularOutput', position: [x('¿Listar carpetas?') + PASO * 13, FILA_CARPETAS + 200] },
+    ),
     nodoCode(10, 'Resultado', x('Resultado'), 'resultado.js'),
-    // Constancia del fallo (bloque A de la fase de cierre): si Resultado detectó un error DESPUÉS de Planificar (una escritura o
+    // Constancia del fallo: si Resultado detectó un error DESPUÉS de Planificar (una escritura o
     // una lectura que falló), lo anota en mensajes.error; sin esto el mensaje quedaba como procesado y sin motivo. Un fallo de
     // Planificar o del modelo ya lo deja Planificar en la misma fila.
     {
@@ -424,13 +562,13 @@ function construirFlujoBase() {
     nota(102, x('Guardar mensaje') - 40, PASO * 3, 5, '## ② Contexto\nEl mensaje se guarda **antes** de nada (si viene de WhatsApp ya estaba en la cola: se completa su fila): si algo falla después, no se pierde.\nLuego se leen la memoria (términos y datos que el usuario ha contado; /memory la enseña), los archivos recibidos (a1, a2… y, si el usuario respondió a una foto o a su confirmación, cuál es), todos los items pendientes (el modelo se refiere a ellos con `i1`, `i2`… al corregir o completar) y la **pregunta pendiente** reciente, si la hay: su hilo se devuelve al modelo para que entienda la respuesta.'),
     nota(103, x('Construir petición') - 40, PASO * 2, 6, '## ③ Modelo\nPrompt de `prompts/clasificador.md`, temperatura 0, salida JSON.\nLos comandos y frases fijas (/help, /memory, «cómo te llamas», «qué tengo hoy») y el «sí»/«no» de las confirmaciones se saltan el modelo (**¿Hace falta el modelo?**).\n3 intentos con 5 s de espera. Un error no detiene el flujo: llega a Planificar como `{ error }`.'),
     nota(104, x('Planificar') - 40, PASO * 2, 3, '## ④ Decisión y escritura\n**Planificar** valida (tolerante) y decide qué escribir. Las referencias que cita el modelo deben ser de items pendientes.\n**Escribir en Supabase** ejecuta las escrituras en orden.\nSi el modelo no responde o falla una escritura, el mensaje queda con `procesado = false` y el motivo en `error`. Si su respuesta no encaja, queda procesado, con el motivo, y se contesta «no te he entendido». Con confianza < 0,7 no se guarda nada: se pregunta.'),
-    nota(105, x('Leer consulta') - 40, PASO * 2, 7, '## ⑤ Respuesta\n**Leer consulta** solo trae datos si la intención es consultar.\n**¿Listar carpetas?**: con la lista de carpetas o al borrar en Drive lee el árbol (3 niveles) y los archivos registrados. **Revisar Drive** propone qué se borraría o, tras el «sí», lo comprueba otra vez; solo eso va a **Mandar a la papelera** (recuperable ~30 días) y **Marcar borrado** lo anota. **Resultado** redacta la lista (solo lo pendiente), el árbol de carpetas o un mensaje honesto si algo falló. Una entrada de `mensajes` por mensaje de WhatsApp.'),
+    nota(105, x('Leer consulta') - 40, PASO * 2, 7, '## ⑤ Respuesta\n**Leer consulta** solo trae datos si la intención es consultar.\n**¿Listar carpetas?**: con la lista de carpetas o al borrar en Drive lee el árbol (3 niveles) y los archivos registrados. **Revisar Drive** propone qué se borraría o, tras el «sí», lo comprueba otra vez; solo eso va a **Mandar a la papelera** (recuperable ~30 días) y **Marcar borrado** lo anota. Para **mover una carpeta dentro de otra**, **Revisar Drive** la busca en el árbol real y decide (no se mueven Entrada ni Notas; máximo 3 niveles); **¿Mover carpeta?** → **¿Hay carpetas que mover?** → **¿Crear carpeta primero?** → **Crear en Drive** → **Preparar movimientos** → **¿Mover carpeta?** → **Mover en Drive** → **Anotar movimiento** (reescribe las rutas de la base de datos). **Resultado** redacta la lista (solo lo pendiente), el árbol de carpetas o un mensaje honesto si algo falló. Una entrada de `mensajes` por mensaje de WhatsApp.'),
     nota(
       106,
       0,
       900,
       2,
-      '## Antes de ejecutar\n1. Elige la credencial en **Modelo** (Header Auth de Gemini) y en **Guardar mensaje**, **Leer memoria**, **Leer items pendientes**, **Leer pregunta pendiente**, **Leer archivos**, **Leer proyectos**, **Leer avisos**, **Leer horario**, **Escribir en Supabase**, **Leer consulta**, **Contar archivos** y **Marcar borrado** (Supabase API), y la de **Google Drive OAuth2** en **Listar nivel 1**, **Listar nivel 2**, **Listar nivel 3** y **Mandar a la papelera**.\n2. Identificadores: `SUPABASE_URL` y `DRIVE_CARPETA_RAIZ_ID` en el `.env` del servidor (no hace falta tocar **Configuración**). En **Entrada**, el `MENSAJE` de prueba.\n3. Requiere la base de datos instalada (`supabase/instalar.sql`, o los `supabase/actualizar-*.sql` que te falten si venías de una versión anterior: sin ellos, `Marcar borrado` falla y Vigilar Drive avisará lo borrado como si fuera a mano, y `Leer horario` falla sin cortar el flujo y no hay horario). La cola de mensajes seguidos y el turno viven en el flujo de WhatsApp: este flujo no espera nunca.\n\nLas filas de prueba tienen `wa_message_id` que empieza por `manual-`.',
+      '## Antes de ejecutar\n1. Elige la credencial en **Modelo** (Header Auth de Gemini) y en **Guardar mensaje**, **Leer memoria**, **Leer items pendientes**, **Leer pregunta pendiente**, **Leer archivos**, **Leer proyectos**, **Leer avisos**, **Leer horario**, **Leer respuesta citada**, **Leer quitados**, **Escribir en Supabase**, **Leer consulta**, **Contar archivos**, **Marcar borrado** y **Anotar movimiento** (Supabase API), y la de **Google Drive OAuth2** en **Listar nivel 1**, **Listar nivel 2**, **Listar nivel 3**, **Mandar a la papelera** **Mover en Drive** y **Crear en Drive**.\n2. Identificadores: `SUPABASE_URL` y `DRIVE_CARPETA_RAIZ_ID` en el `.env` del servidor (no hace falta tocar **Configuración**). En **Entrada**, el `MENSAJE` de prueba.\n3. Requiere la base de datos al día (`supabase/instalar.sql`, o los `supabase/actualizar-*.sql` que te falten si venías de una versión anterior). Sin ella algunos nodos fallan: `Leer avisos`, `Leer horario` y `Leer respuesta citada` sin cortar el flujo (faltarían esas funciones), `Marcar borrado` y **Anotar movimiento** después de que Drive ya haya hecho el cambio (Vigilar Drive lo avisará como hecho a mano). La cola de mensajes seguidos y el turno viven en el flujo de WhatsApp: este flujo no espera nunca.\n\nLas filas de prueba tienen `wa_message_id` que empieza por `manual-`.',
       // debajo de «Al ser llamado» (y = 200), sin taparlo
       360,
       260,
@@ -441,7 +579,7 @@ function construirFlujoBase() {
   // «Leer items pendientes» se repetía por cada fila de la memoria (y así en cadena), el modelo veía cada elemento duplicado («Tienes varias
   // citas de Médico» con una sola) y un mensaje lanzaba cientos de lecturas a Supabase. Ninguna depende
   // del item que recibe: cada una se ejecuta una sola vez y devuelve todas sus filas.
-  const LECTURAS_UNA_VEZ = ['Guardar mensaje', 'Leer memoria', 'Leer items pendientes', 'Leer pregunta pendiente', 'Leer archivos', 'Leer proyectos', 'Leer avisos', 'Leer horario'];
+  const LECTURAS_UNA_VEZ = ['Guardar mensaje', 'Leer memoria', 'Leer items pendientes', 'Leer pregunta pendiente', 'Leer archivos', 'Leer proyectos', 'Leer avisos', 'Leer horario', 'Leer respuesta citada', 'Leer quitados'];
   for (const nd of nodos) if (LECTURAS_UNA_VEZ.includes(nd.name)) nd.executeOnce = true;
 
   const conexiones = {};
@@ -460,9 +598,17 @@ function construirFlujoBase() {
   conexiones['Contar archivos'] = { main: [[a('Revisar Drive')]] };
   // Borrar en Drive: solo lo confirmado y comprobado va a la papelera; lo demás, directo al resultado
   conexiones['Revisar Drive'] = { main: [[a('¿Mandar a la papelera?')]] };
-  conexiones['¿Mandar a la papelera?'] = { main: [[a('Mandar a la papelera')], [a('Resultado')]] };
+  conexiones['¿Mandar a la papelera?'] = { main: [[a('Mandar a la papelera')], [a('¿Hay carpetas que mover?')]] };
   conexiones['Mandar a la papelera'] = { main: [[a('Marcar borrado')]] };
   conexiones['Marcar borrado'] = { main: [[a('Resultado')]] };
+  // Mover carpetas: si «Revisar Drive» hizo un plan, se crea el destino (si hace falta), se prepara un item por carpeta y cada una se mueve y se anota
+  conexiones['¿Hay carpetas que mover?'] = { main: [[a('¿Crear carpeta primero?')], [a('Resultado')]] };
+  conexiones['¿Crear carpeta primero?'] = { main: [[a('Crear en Drive')], [a('Preparar movimientos')]] };
+  conexiones['Crear en Drive'] = { main: [[a('Preparar movimientos')]] };
+  conexiones['Preparar movimientos'] = { main: [[a('¿Mover carpeta?')]] };
+  conexiones['¿Mover carpeta?'] = { main: [[a('Mover en Drive')], [a('Resultado')]] };
+  conexiones['Mover en Drive'] = { main: [[a('Anotar movimiento')]] };
+  conexiones['Anotar movimiento'] = { main: [[a('Resultado')]] };
   // Tras Resultado: anotar el fallo si lo hubo y entregar siempre la misma salida
   conexiones['Resultado'] = { main: [[a('¿Anotar fallo?')]] };
   conexiones['¿Anotar fallo?'] = { main: [[a('Anotar fallo')], [a('Entregar')]] };

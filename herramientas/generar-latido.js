@@ -98,7 +98,7 @@ function construirFlujoBase() {
       },
       { retryOnFail: true, maxTries: 2, waitBetweenTries: 3000 },
     ),
-    nodoHttp(5, 'Leer estado de alertas', [PASO * 3, 0], { method: 'GET', url: `={{ ${CFG}.supabase_url }}/rest/v1/vigilantes_estado?select=valor&clave=eq.latido`, ...supabase }, { executeOnce: true, alwaysOutputData: true }),
+    nodoHttp(5, 'Leer estado de alertas', [PASO * 3, 0], { method: 'GET', url: `={{ ${CFG}.supabase_url }}/rest/v1/vigilantes_estado?select=valor&clave=eq.latido`, ...supabase }, { executeOnce: true, alwaysOutputData: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 2000 }),
     // Último mensaje que has ESCRITO tú (los ids de WhatsApp empiezan por "wamid."): decide si la ventana de 24 h sigue abierta
     nodoHttp(6, 'Leer último mensaje', [PASO * 4, 0], { method: 'GET', url: `={{ ${CFG}.supabase_url }}/rest/v1/mensajes?select=created_at&wa_message_id=like.wamid.*&order=created_at.desc&limit=1`, ...supabase }, { executeOnce: true, alwaysOutputData: true }),
     nodoCode(7, 'Evaluar', [PASO * 5, 0], 'evaluar.js'),

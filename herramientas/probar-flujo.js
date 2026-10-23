@@ -37,6 +37,7 @@ const CONFIG = {
   modelo: 'gemini-3.8-flash',
   supabase_url: 'https://abc.supabase.co',
   espera_min: 15,
+  caducidad_min: 30,
 };
 const BASE = 'https://abc.supabase.co/rest/v1';
 
@@ -63,13 +64,13 @@ const REFS = { i1: 'a1-uuid', i2: 'b2-uuid', i3: 'c3-uuid' };
 
 // "pendienteId" e "hiloPrevio": la pregunta anterior que este mensaje contesta y el hilo guardado hasta ella
 // (lo que "Construir petición" le pasa a "Planificar"). "mensaje" es el texto de este mensaje (nodo "Entrada").
-const planificar = (resp, { mensajeId = 'm-1', config = CONFIG, refs = {}, pendienteId = null, hiloPrevio = [], mensaje = 'mensaje de prueba', agenda = [], refsArchivos = {}, infoArchivos = {}, pedirNombre = false, esperaNombre = false, nombreSecretaria = null, pendientes = [], proyectos = [], avisosCitados = [], reabribles = [], fechas = {}, memoria = [], horario = [], reciente = null } = {}) =>
+const planificar = (resp, { mensajeId = 'm-1', config = CONFIG, refs = {}, pendienteId = null, hiloPrevio = [], mensaje = 'mensaje de prueba', agenda = [], refsArchivos = {}, infoArchivos = {}, pedirNombre = false, esperaNombre = false, nombreSecretaria = null, pendientes = [], proyectos = [], avisosCitados = [], reabribles = [], fechas = {}, memoria = [], horario = [], quitados = [], reciente = null, archivosCitados = [] } = {}) =>
   correr(nodo('planificar.js'), {
     input: [resp],
     nodos: {
       Configuración: [{ config }],
       'Guardar mensaje': [{ id: mensajeId }],
-      'Construir petición': [{ refs: { ...Object.fromEntries(pendientes.map((x) => [x.id, x.id])), ...refs }, agenda, pendiente_id: pendienteId, hilo_previo: hiloPrevio, refs_archivos: refsArchivos, archivos_info: infoArchivos, pedir_nombre: pedirNombre, espera_nombre: esperaNombre, nombre_secretaria: nombreSecretaria, memoria_filas: memoria, horario, pendientes, proyectos, avisos_citados: avisosCitados, reabribles, fechas, reciente }],
+      'Construir petición': [{ refs: { ...Object.fromEntries(pendientes.map((x) => [x.id, x.id])), ...refs }, agenda, pendiente_id: pendienteId, hilo_previo: hiloPrevio, refs_archivos: refsArchivos, archivos_info: infoArchivos, pedir_nombre: pedirNombre, espera_nombre: esperaNombre, nombre_secretaria: nombreSecretaria, memoria_filas: memoria, horario, quitados, pendientes, proyectos, avisos_citados: avisosCitados, reabribles, fechas, reciente, archivos_citados: archivosCitados }],
       Entrada: [{ mensaje }],
       'Juntar mensajes': [{ mensaje }],
     },
@@ -177,27 +178,120 @@ async function main() {
     afirmar('varias preguntas intermedias y un turno que no es JSON tampoco lo borran', unidas.some((p) => p.etiqueta === 'guardar items'));
     afirmar('sin ese hilo, vuelve a preguntar', (await planificar(guardarTarea(), { proyectos: PROY, mensaje: 'x' }))[0].meta.bloqueo === 'crear_proyecto');
 
-    // Encadenadas: lo aceptado en una pregunta viaja a la siguiente, aunque sea de otro tipo
+    // Un día ocupado ya no se pregunta: solo el proyecto nuevo sigue preguntando
     const agenda = [{ id: 'i1', tipo: 'evento', titulo: 'Reunión', fecha_inicio: '2026-10-13T08:00:00+00:00', fecha_fin: '2026-10-13T09:00:00+00:00' }];
     const visita = { tipo: 'evento', titulo: 'Visita al piso', fecha_inicio: '2026-10-13T14:00:00+02:00', fecha_fin: '2026-10-13T15:00:00+02:00', proyecto: 'Mudanzas' };
     const opcAgenda = (extra = {}) => ({ agenda, refs: { i1: 'e-1' }, proyectos: PROY, mensaje: 'visita al piso el martes a las 14 para mudanzas', ...extra });
     const p1 = await planificar(respuesta({ intencion: 'guardar', items: [visita] }), opcAgenda());
-    afirmar('un evento de un proyecto parecido en un día ocupado pregunta primero por el proyecto', p1.length === 1 && p1[0].meta.bloqueo === 'crear_proyecto');
+    afirmar('un evento de un proyecto parecido en un día ocupado pregunta solo por el proyecto', p1.length === 1 && p1[0].meta.bloqueo === 'crear_proyecto');
     const p2 = await planificar(respuesta({ intencion: 'guardar', items: [visita] }), opcAgenda({ pendienteId: 'p-1', hiloPrevio: p1[0].cuerpo.hilo }));
-    const t2 = JSON.parse(p2.find((p) => p.etiqueta === 'actualizar mensaje').cuerpo.hilo.at(-1).texto);
-    afirmar('aceptado el proyecto, pregunta por el día ocupado y la pregunta guardada arrastra el proyecto aceptado', p2.some((p) => p.meta.bloqueo === 'confirmar_agenda') && t2.motivo === 'confirmar_agenda' && t2.proyectos.join() === 'mudanzas' && t2.dias.length === 1, JSON.stringify(t2));
-    const p3 = await planificar(respuesta({ intencion: 'guardar', items: [visita] }), opcAgenda({ pendienteId: 'p-2', hiloPrevio: p2.find((p) => p.etiqueta === 'actualizar mensaje').cuerpo.hilo }));
-    afirmar('aceptado también el día, se guarda sin reabrir la pregunta del proyecto', p3.some((p) => p.etiqueta === 'guardar items' && p.cuerpo.some((r) => r.proyecto === 'Mudanzas')), JSON.stringify(p3.map((p) => p.etiqueta)));
-    const alReves = await planificar(respuesta({ intencion: 'guardar', items: [{ ...visita, proyecto: 'Mudanza nueva' }] }), opcAgenda({ pendienteId: 'p-2', hiloPrevio: p2.find((p) => p.etiqueta === 'actualizar mensaje').cuerpo.hilo }));
-    const tAlReves = JSON.parse(alReves.find((p) => p.etiqueta === 'actualizar mensaje').cuerpo.hilo.at(-1).texto);
-    afirmar('los días aceptados antes viajan en una pregunta posterior de otro tipo', tAlReves.motivo === 'crear_proyecto' && tAlReves.dias.length === 1 && tAlReves.proyectos.sort().join() === 'mudanza nueva,mudanzas', JSON.stringify(tAlReves));
+    afirmar('aceptado el proyecto, se guarda sin preguntar por el día ocupado', p2.some((p) => p.etiqueta === 'guardar items' && p.cuerpo.some((r) => r.proyecto === 'Mudanzas')) && p2.every((p) => p.meta.bloqueo === undefined), JSON.stringify(p2.map((p) => p.etiqueta)));
+    const soloDia = await planificar(respuesta({ intencion: 'guardar', items: [{ ...visita, proyecto: null }] }), { agenda, refs: { i1: 'e-1' } });
+    afirmar('un evento en un día con otras cosas se guarda sin preguntar', soloDia.some((p) => p.etiqueta === 'guardar items') && soloDia.every((p) => p.meta.bloqueo === undefined), JSON.stringify(soloDia.map((p) => p.etiqueta)));
+  }
+
+  console.log('Deshacer lo quitado por WhatsApp (base de datos 1.4)');
+  {
+    const hace = (min) => new Date(Date.now() - min * 60000).toISOString();
+    const q = (id, titulo, extra = {}) => ({ id, tipo: 'tarea', titulo, estado: 'archivado', quitado_en: hace(2), recordar_en: null, fecha_limite: null, lista: null, proyecto: null, ...extra });
+    const sinModelo = { error: 'no se llamó al modelo' };
+    const rec = (mensaje, quitados) => planificar(sinModelo, { mensaje, quitados });
+    const idsRec = (plan) => { const u = plan.find((x) => x.etiqueta === 'recuperar lo quitado')?.url; return u ? u.match(/in\.\((.*)\)/)[1].split(',').sort().join() : null; };
+    // Quitar y completar anotan cuándo
+    const sel2 = await planificar(respuesta({ intencion: 'cancelar', items: [], cancelar: { item_ids: ['i1'] } }), { mensaje: 'quita la idea', refs: { i1: 'u-1' }, pendientes: [{ id: 'i1', tipo: 'nota', titulo: 'Idea' }] });
+    afirmar('quitar anota quitado_en (fecha válida) junto al estado', !Number.isNaN(Date.parse(sel2.find((x) => x.etiqueta === 'cancelar items')?.cuerpo.quitado_en)) && sel2.find((x) => x.etiqueta === 'cancelar items').cuerpo.estado === 'archivado');
+
+    // El último lote: lo que quitó la última orden, de una vez (varias filas con segundos de diferencia)
+    const lote = [q('l-1', 'Llamar al banco', { quitado_en: hace(2) }), q('l-2', 'Comprar pan', { quitado_en: new Date(Date.now() - 2 * 60000 + 3000).toISOString() }), q('l-3', 'Idea vieja', { quitado_en: hace(300) })];
+    for (const frase of ['deshaz', 'Deshaz todo', 'deshacer', 'deshaz lo último', 'restaura todo', 'recupera', 'por favor deshaz', '/undo', 'deshaz lo que he quitado']) {
+      const r = await rec(frase, lote);
+      afirmar(`«${frase}»: recupera el último lote (y no lo de hace horas), por código`, idsRec(r) === 'l-1,l-2' && r.find((x) => x.etiqueta === 'recuperar lo quitado').cuerpo.estado === 'pendiente' && r.find((x) => x.etiqueta === 'recuperar lo quitado').cuerpo.quitado_en === null && !r[0].meta.bloqueo, JSON.stringify([frase, idsRec(r)]));
+    }
+    // Algo concreto
+    for (const [frase, esperado] of [['recupera la tarea del banco', 'l-1'], ['deshaz lo de la compra', 'l-2'], ['restaura el pan', 'l-2'], ['recupera idea vieja', 'l-3']]) {
+      const r = await rec(frase, [...lote, q('l-4', 'Leche', { tipo: 'lista', lista: 'compra' })]);
+      afirmar(`«${frase}»: recupera solo lo que encaja`, idsRec(r)?.split(',').includes(esperado) && (frase !== 'recupera la tarea del banco' || idsRec(r) === 'l-1') && !idsRec(r).includes('l-9'), JSON.stringify([frase, idsRec(r)]));
+    }
+    const compra = await rec('deshaz lo de la compra', [q('c-1', 'Pan', { tipo: 'lista', lista: 'compra' }), q('c-2', 'Leche', { tipo: 'lista', lista: 'compra' }), q('t-1', 'Llamar', { })]);
+    afirmar('«deshaz lo de la compra» recupera los elementos de esa lista', idsRec(compra) === 'c-1,c-2', idsRec(compra));
+    // Casos sin nada que recuperar
+    const nada = await rec('deshaz', []);
+    afirmar('sin nada quitado: «No hay nada que recuperar.» y no escribe nada', nada.length === 1 && nada[0].meta.mensajes_fijos[0] === 'No hay nada que recuperar.' && idsRec(nada) === null);
+    const viejo = await rec('deshaz', [q('v-1', 'Algo', { quitado_en: hace(60 * 30) })]);
+    afirmar('lo último se quitó hace más de 24 h: no lo recupera con «deshaz»', viejo[0].meta.mensajes_fijos[0] === 'No hay nada que recuperar de las últimas 24 horas.' && idsRec(viejo) === null);
+    const noHay = await rec('recupera la cita del dentista', lote);
+    afirmar('algo concreto que no está entre lo quitado: lo dice y no escribe', noHay[0].meta.mensajes_fijos[0] === 'No encuentro eso entre lo que has quitado.' && idsRec(noHay) === null);
+    // Dos «deshaz» seguidos recuperan los lotes por orden (la marca se borra al recuperar)
+    const tras = await rec('deshaz', lote.filter((x) => x.id === 'l-3'));
+    afirmar('con solo lo viejo (hace horas, pero menos de 24 h) «deshaz» lo recupera', idsRec(tras) === 'l-3');
+    // Proyectos cerrados: se reabren al recuperar
+    const proy = await rec('deshaz', [q('p-1', 'Llamar al casero', { proyecto: 'Mudanza' }), q('p-2', 'Cajas', { proyecto: 'Mudanza' })]);
+    const reab = proy.find((x) => x.etiqueta === 'reabrir proyectos');
+    afirmar('recuperar algo de un proyecto cerrado lo reabre (una sola petición por proyecto)', Boolean(reab) && reab.metodo === 'PATCH' && decodeURIComponent(reab.url).includes('nombre=in.("Mudanza")') && reab.url.includes('estado=neq.activo') && reab.cuerpo.estado === 'activo', JSON.stringify(reab));
+    afirmar('… y sin proyectos no hay petición extra', !(await rec('deshaz', lote)).some((x) => x.etiqueta === 'reabrir proyectos'));
+    // No interfiere con lo que no es deshacer
+    for (const frase of ['hola', 'recupera la contraseña', 'qué tengo hoy', 'deshaz el nudo']) {
+      const r = await planificar(respuesta({ intencion: 'charla', items: [], respuesta_usuario: 'Vale.' }), { mensaje: frase, quitados: lote });
+      afirmar(`«${frase}»: no recupera nada de lo quitado`, idsRec(r) === null);
+    }
+    // Con una pregunta abierta, «deshaz» no la toca ni la cierra
+    const abierta = await planificar(sinModelo, { mensaje: 'deshaz', quitados: lote, pendienteId: 'p-9', hiloPrevio: [{ rol: 'user', texto: 'x' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', motivo: 'solape', pregunta: '¿A qué otra hora?' }) }] });
+    afirmar('«deshaz» con una pregunta abierta: recupera y no cierra la pregunta', idsRec(abierta) === 'l-1,l-2' && !abierta.some((x) => x.etiqueta === 'cerrar pregunta anterior'));
+    // Resultado: dice lo que se recuperó, con lo que devolvió la base de datos
+    const recMeta = (await rec('deshaz', lote))[0].meta;
+    const resD = (filas, meta = recMeta) => correr(nodo('resultado.js'), { input: [{}], nodos: { Planificar: [{ meta: { ok: true, avisos: [], ahora: '2026-10-20T10:00:00.000Z', ...meta } }], 'Escribir en Supabase': filas } }).then((r) => r[0]);
+    const rd = await resD([{ id: 'l-1', titulo: 'Llamar al banco' }, { id: 'l-2', titulo: 'Comprar pan' }]);
+    afirmar('Resultado: «Recuperados: «a», «b».»', rd.mensajes[0] === 'Recuperados: «Llamar al banco», «Comprar pan».' && rd.ok === true, JSON.stringify(rd.mensajes));
+    const rd1 = await resD([{ id: 'l-1', titulo: 'Llamar al banco' }]);
+    afirmar('Resultado: uno solo, en singular', rd1.mensajes[0] === 'Recuperado: «Llamar al banco».');
+    const rdN = await resD(Array.from({ length: 12 }, (_, i) => ({ id: `m-${i}`, titulo: `Cosa ${i + 1}` })));
+    afirmar('Resultado: más de tres, con la cuenta y «y N más»', rdN.mensajes[0].startsWith('Recuperados 12 elementos: «Cosa 1»') && rdN.mensajes[0].endsWith('y 2 más.'), rdN.mensajes[0]);
+    const rd0 = await resD([{}]);
+    afirmar('Resultado: si la base de datos no devolvió nada, no dice que lo recuperó', !rd0.mensajes[0].startsWith('Recuperad'), JSON.stringify(rd0.mensajes));
+  }
+
+  console.log('Confirmación de lo guardado, redactada por código ');
+  {
+    const resG = (filas, meta = {}) => correr(nodo('resultado.js'), { input: [{}], nodos: { Planificar: [{ meta: { ok: true, intencion: 'guardar', avisos: [], respuesta_usuario: 'Apuntado: lo que diga el modelo, con muchas palabras.', pregunta: null, error: null, ahora: '2026-10-10T12:00:00.000Z', consulta: null, ...meta } }], 'Escribir en Supabase': filas.map((x, i) => ({ id: `r-${i}`, ...x })) } }).then((r) => r[0]);
+    const t1 = await resG([{ tipo: 'tarea', titulo: 'Llamar al banco', fecha_limite: null }]);
+    afirmar('una tarea: «✅ título», sin la frase del modelo', t1.mensajes[0] === '✅ Llamar al banco', JSON.stringify(t1.mensajes));
+    const t2 = await resG([{ tipo: 'tarea', titulo: 'Pagar alquiler', fecha_limite: '2026-10-15T21:59:59Z' }]);
+    afirmar('una tarea con fecha: con el día entre paréntesis', /^✅ Pagar alquiler \(para .+\)$/.test(t2.mensajes[0]), t2.mensajes[0]);
+    const t4 = await resG([{ tipo: 'lista', titulo: 'Pan', lista: 'compra' }, { tipo: 'lista', titulo: 'Leche', lista: 'compra' }, { tipo: 'lista', titulo: 'Tornillos', lista: 'bricolaje' }]);
+    afirmar('listas: una línea por lista, con sus elementos', t4.mensajes[0] === '🛒 Lista de la compra: Pan, Leche.\n🛒 Lista «bricolaje»: Tornillos.', JSON.stringify(t4.mensajes));
+    // Citas y alarmas ya las dicen «Horario:» y «🔔»: no se repite «Apuntado: …»
+    const ev = [{ tipo: 'evento', titulo: 'Dentista', fecha_inicio: '2026-10-13T08:00:00Z', fecha_fin: '2026-10-13T09:00:00Z' }];
+    const t5 = await resG(ev, { eventos: [{ titulo: 'Dentista', inicio: '2026-10-13T08:00:00.000Z', fin: '2026-10-13T09:00:00.000Z', minutos: 60 }] });
+    afirmar('una cita: solo «Horario: …», sin la frase del modelo ni el aviso de duración', t5.mensajes[0] === 'Horario: Dentista, mar 13 oct, de 10:00 a 11:00.', JSON.stringify(t5.mensajes));
+    const al = [{ tipo: 'tarea', titulo: 'Sacar la ropa', recordar_en: '2026-10-10T16:30:00Z', fecha_limite: null }];
+    const t6 = await resG(al, { recordatorios: [{ titulo: 'Sacar la ropa', recordar_en: '2026-10-10T16:30:00Z' }] });
+    afirmar('una alarma: solo «🔔 …», sin la frase del modelo', t6.mensajes[0] === '🔔 Sacar la ropa: hoy a las 18:30.', JSON.stringify(t6.mensajes));
+    const t7 = await resG([...ev, { tipo: 'tarea', titulo: 'Llevar el DNI', fecha_limite: null }], { eventos: [{ titulo: 'Dentista', inicio: '2026-10-13T08:00:00.000Z', fin: '2026-10-13T09:00:00.000Z', minutos: 60 }] });
+    afirmar('una cita y una tarea juntas: la tarea y el horario', t7.mensajes[0] === '✅ Llevar el DNI\nHorario: Dentista, mar 13 oct, de 10:00 a 11:00.', JSON.stringify(t7.mensajes));
+    // Salvaguardas
+    const t8 = await resG([{ id: 'x' }]);
+    afirmar('filas sin título (otros caminos, p. ej. guardar con archivos): se conserva la frase del modelo', t8.mensajes[0] === 'Apuntado: lo que diga el modelo, con muchas palabras.', JSON.stringify(t8.mensajes));
+    const t9 = await resG([{ tipo: 'lista', titulo: 'Miel', lista: 'compra' }], { respuesta_usuario: '🛒 Apuntado en la lista de la compra: Miel.\nYa estaban: Pan.', confirmacion_codigo: true });
+    afirmar('si Planificar ya redactó la confirmación (compra con repetidos), se respeta tal cual', t9.mensajes[0] === '🛒 Apuntado en la lista de la compra: Miel.\nYa estaban: Pan.', JSON.stringify(t9.mensajes));
+    const t10 = await resG(ev, { eventos: [] });
+    afirmar('una cita sin horario que contar no deja un mensaje vacío', t10.mensajes[0] === 'Hecho.', JSON.stringify(t10.mensajes));
+    const t11 = await resG([{ tipo: 'tarea', titulo: '*Llamar* _ya_' }]);
+    afirmar('los caracteres de formato de WhatsApp se quitan del título', t11.mensajes[0] === '✅ Llamar ya', JSON.stringify(t11.mensajes));
+    // Cambio de hora (domingo 25 de octubre de 2026, 25 horas): «mañana» se calcula por calendario y no sumando 24 h
+    const alarmaPara = (ahora, recordar_en) => resG([{ tipo: 'tarea', titulo: 'Llamar', recordar_en, fecha_limite: null }], { ahora, recordatorios: [{ titulo: 'Llamar', recordar_en }] });
+    const c1 = await alarmaPara('2026-10-24T22:30:00.000Z', '2026-10-26T08:00:00.000Z');
+    afirmar('00:30 del domingo del cambio de hora: una alarma del lunes sigue siendo «mañana»', c1.mensajes[0] === '🔔 Llamar: mañana a las 09:00.', JSON.stringify(c1.mensajes));
+    const c2 = await alarmaPara('2026-10-25T10:00:00.000Z', '2026-10-25T17:00:00.000Z');
+    afirmar('mediodía del domingo del cambio: una alarma de esa tarde es «hoy» (18:00 ya en horario de invierno)', c2.mensajes[0] === '🔔 Llamar: hoy a las 18:00.', JSON.stringify(c2.mensajes));
+    const c3 = await alarmaPara('2026-10-25T10:00:00.000Z', '2026-10-26T08:00:00.000Z');
+    afirmar('mediodía del domingo del cambio: una alarma del lunes es «mañana» (09:00)', c3.mensajes[0] === '🔔 Llamar: mañana a las 09:00.', JSON.stringify(c3.mensajes));
   }
 
   console.log('Nombre de la secretaria');
   {
     const pc = (obj, extra = {}) => planificar(respuesta({ items: [], consulta: null, respuesta_usuario: 'Hecho.', ...obj }), extra);
     const sin = await pc({ intencion: 'guardar', items: [itemBase()] }, { pedirNombre: true, mensaje: 'tengo dentista mañana' });
-    afirmar('sin nombre, el primer mensaje se contesta con la pregunta del nombre y no se guarda nada', sin.length === 1 && sin[0].etiqueta === 'actualizar mensaje' && sin[0].meta.bloqueo === 'pedir_nombre' && sin[0].meta.pregunta.startsWith('Antes de empezar: ¿cómo quieres llamarme?') && sin[0].cuerpo.pregunta_pendiente === true, JSON.stringify(sin.map((p) => p.etiqueta)));
+    afirmar('sin nombre, el primer mensaje se contesta con la pregunta del nombre y no se guarda nada', sin.length === 1 && sin[0].etiqueta === 'actualizar mensaje' && sin[0].meta.bloqueo === 'pedir_nombre' && sin[0].meta.pregunta.startsWith('Antes de nada, ¿cómo quieres que me llame?') && sin[0].cuerpo.pregunta_pendiente === true, JSON.stringify(sin.map((p) => p.etiqueta)));
     const hilo = sin[0].cuerpo.hilo;
     afirmar('la pregunta guarda el hilo con su motivo, y el mensaje original queda registrado', hilo.length === 2 && hilo[0].texto === 'tengo dentista mañana' && JSON.parse(hilo[1].texto).motivo === 'pedir_nombre');
     const cierra = await pc({ intencion: 'guardar', items: [itemBase()] }, { pedirNombre: true, mensaje: 'x', pendienteId: 'p-9' });
@@ -214,18 +308,18 @@ async function main() {
       afirmar('un nombre no válido es un error de validación (' + JSON.stringify(malo.slice(0, 20)) + ')', esError(await pc({ intencion: 'recordar', memoria_nueva: { termino: 'nombre de la secretaria', significado: malo } })));
     }
     const bd = await pc({ intencion: 'borrar_drive', items: [{ tipo: 'nota', titulo: 'x' }], respuesta_usuario: 'Borrada.' }, { pendienteId: 'p-3' });
-    afirmar('borrar en Drive sin decir qué (un prompt antiguo): no escribe nada, no toca items y pide qué borrar con el texto del código', bd.length === 1 && bd[0].etiqueta === 'actualizar mensaje' && bd[0].meta.respuesta_usuario.startsWith('Dime qué carpeta o qué archivo de Drive') && bd[0].meta.ok === true, JSON.stringify(bd.map((p) => p.etiqueta)));
+    afirmar('borrar en Drive sin decir qué (un prompt antiguo): no escribe nada, no toca items y pide qué borrar con el texto del código', bd.length === 1 && bd[0].etiqueta === 'actualizar mensaje' && bd[0].meta.respuesta_usuario === 'Dime qué carpeta o archivo de Drive quieres borrar.' && bd[0].meta.ok === true, JSON.stringify(bd.map((p) => p.etiqueta)));
     const bdRes = (await correr(nodo('resultado.js'), { input: [{ id: 'x' }], nodos: { Planificar: [{ meta: bd[0].meta }], 'Escribir en Supabase': [{ id: 'x' }] } }))[0];
-    afirmar('la respuesta llega al usuario', bdRes.respuesta_usuario.startsWith('Dime qué carpeta o qué archivo de Drive') && bdRes.ok === true, bdRes.respuesta_usuario);
+    afirmar('la respuesta llega al usuario', bdRes.respuesta_usuario === 'Dime qué carpeta o archivo de Drive quieres borrar.' && bdRes.ok === true, bdRes.respuesta_usuario);
     const ibi = await pc({ intencion: 'recordar', memoria_nueva: { termino: 'IBI', significado: 'Impuesto de Bienes Inmuebles' } }, { esperaNombre: true, pendienteId: 'p-1', hiloPrevio: hilo });
     afirmar('con la pregunta del nombre abierta, enseñar otro término no lo convierte en el nombre', ibi.find((p) => p.etiqueta === 'guardar memoria').cuerpo.termino === 'IBI' && !ibi[0].meta.nombre_nuevo);
     const otro = await pc({ intencion: 'recordar', memoria_nueva: { termino: 'IBI', significado: 'Impuesto de Bienes Inmuebles' } });
     afirmar('un término cualquiera no se toca ni cuenta como nombre', otro.find((p) => p.etiqueta === 'guardar memoria').cuerpo.termino === 'IBI' && !otro[0].meta.nombre_nuevo);
     const res = (meta) => correr(nodo('resultado.js'), { input: [{ id: 'x' }], nodos: { Planificar: [{ meta }], 'Escribir en Supabase': [{ id: 'x' }] } });
     const r1 = (await res({ ...pone[0].meta, respuesta_usuario: 'Guardado.' }))[0];
-    afirmar('la confirmación del nombre la redacta el código', r1.respuesta_usuario === 'Perfecto: a partir de ahora me llamo Lola. Ya puedes mandarme lo que quieras. Escribe /help para ver qué puedo hacer.', r1.respuesta_usuario);
+    afirmar('la confirmación del nombre la redacta el código', r1.respuesta_usuario === 'Vale, me llamo Lola.', r1.respuesta_usuario);
     const r2 = (await res({ ...cambia[0].meta, respuesta_usuario: 'Guardado.' }))[0];
-    afirmar('al cambiarlo, la confirmación no dice que pueda empezar', r2.respuesta_usuario.startsWith('Perfecto: a partir de ahora me llamo Marta.') && r2.respuesta_usuario.includes('Cuando quieras otro nombre'), r2.respuesta_usuario);
+    afirmar('al cambiarlo, la misma confirmación corta', r2.respuesta_usuario === 'Vale, me llamo Marta.', r2.respuesta_usuario);
     const rp = (await res(sin[0].meta))[0];
     afirmar('la pregunta del nombre llega al usuario tal cual', rp.respuesta_usuario === sin[0].meta.pregunta);
   }
@@ -249,7 +343,7 @@ async function main() {
     const conNombre = await textos('/about', { nombreSecretaria: 'Lola' });
     afirmar('/about explica qué es y para qué sirve, e incluye mi nombre si lo tengo', conNombre.length === 3 && conNombre[0].includes('me llamo Lola') && conNombre[1].includes('*Qué puedo hacer por ti*') && conNombre[1].includes('Citas') && conNombre[1].includes('Alarmas') && conNombre[2].includes('/help'));
     afirmar('sin nombre no dice «me llamo»', !(await textos('/about'))[0].includes('me llamo'));
-    afirmar('/about cuenta que borra en Drive con confirmación y a la papelera', conNombre[2].includes('Borro carpetas y archivos de Drive si me lo pides: antes te enseño la lista y te pregunto, y van a la papelera.'));
+    afirmar('/about cuenta que borra en Drive con confirmación y a la papelera', conNombre[2].includes('Borro carpetas y archivos de Drive si me lo pides, con confirmación (van a la papelera).'));
 
     // /manual
     const indice = await textos('/manual');
@@ -267,12 +361,12 @@ async function main() {
 
     // /examples y /name
     afirmar('/examples da frases de ejemplo', (await textos('/examples'))[0].startsWith('*Frases que entiendo*') && (await textos('/examples'))[0].includes('llámate Marta'));
-    afirmar('/name dice mi nombre y cómo cambiarlo', (await textos('/name', { nombreSecretaria: 'Lola' }))[0] === 'Me llamo Lola. Si quieres cambiármelo, escríbeme por ejemplo «llámate Marta».');
+    afirmar('/name dice mi nombre', (await textos('/name', { nombreSecretaria: 'Lola' }))[0] === 'Me llamo Lola.');
     afirmar('/name sin nombre explica cómo ponérmelo', (await textos('/name'))[0].startsWith('Todavía no me has puesto nombre.'));
 
     // Comandos desconocidos
-    afirmar('un comando que no existe se dice y se sugiere el parecido', (await textos('/fold'))[0] === 'No conozco el comando /fold. ¿Querías decir /folders? Escribe /help para ver los que hay.');
-    afirmar('sin parecido no se sugiere nada', (await textos('/zzz'))[0] === 'No conozco el comando /zzz. Escribe /help para ver los que hay.');
+    afirmar('un comando que no existe se dice y se sugiere el parecido', (await textos('/fold'))[0] === 'No conozco el comando /fold. ¿Querías decir /folders?');
+    afirmar('sin parecido no se sugiere nada', (await textos('/zzz'))[0] === 'No conozco el comando /zzz.');
     afirmar('un comando larguísimo no desborda el mensaje', (await textos('/' + 'a'.repeat(500)))[0].length < 200);
 
     // Tamaño
@@ -334,7 +428,7 @@ async function main() {
     const vacio = async (consulta) => (await resConsulta({ ok: true, error: null, intencion: 'consultar', avisos: [], respuesta_usuario: '', pregunta: null, ahora: '2026-10-10T08:00:00.000Z', consulta: { tipo: null, lista: null, estado: 'pendiente', con_rango: false, limite: 500, ...consulta } }, [{}]))[0].mensajes[0];
     afirmar('sin nada pendiente y sin filtros: «No tienes nada pendiente.»', (await vacio({})) === 'No tienes nada pendiente.');
     afirmar('sin nada en un rango de fechas y sin el día (Planificar antiguo): «No tienes nada con fecha en esas fechas…» y remite a /pending', (await vacio({ con_rango: true })).startsWith('No tienes nada con fecha en esas fechas.') && (await vacio({ con_rango: true })).includes('/pending'));
-    afirmar('«qué tengo hoy» sin nada: nombra el día y avisa de que lo que no tiene fecha no sale', (await vacio({ con_rango: true, rango_texto: 'hoy (mar 20 oct)' })) === 'Hoy (mar 20 oct) no tienes nada con fecha. Lo que no tiene fecha (tareas, listas…) no sale aquí: escribe /pending para verlo todo.');
+    afirmar('«qué tengo hoy» sin nada: nombra el día y avisa de que lo que no tiene fecha no sale', (await vacio({ con_rango: true, rango_texto: 'hoy (mar 20 oct)' })) === 'Hoy (mar 20 oct) no tienes nada con fecha. Lo que no tiene fecha sale con /pending.');
     afirmar('… y con otro día: «No tienes nada con fecha el vie 23 oct.»', (await vacio({ con_rango: true, rango_texto: 'el vie 23 oct' })).startsWith('No tienes nada con fecha el vie 23 oct.'));
     afirmar('con una lista, o un tipo en un rango de fechas: «No encuentro nada con esos criterios.»', (await vacio({ lista: 'compra' })) === 'No encuentro nada con esos criterios.' && (await vacio({ tipo: 'evento', con_rango: true })) === 'No encuentro nada con esos criterios.');
     afirmar('«qué citas / alarmas / tareas / pensamientos / listas tengo» sin nada: lo dice con esa palabra', (await vacio({ tipo: 'evento' })) === 'No tienes ninguna cita pendiente.' && (await vacio({ tipo: 'tarea', vista: 'alarmas' })) === 'No tienes ninguna alarma pendiente.' && (await vacio({ tipo: 'tarea', vista: 'tareas' })) === 'No tienes tareas pendientes.' && (await vacio({ tipo: 'nota' })) === 'No tienes ningún pensamiento guardado.' && (await vacio({ tipo: 'lista' })) === 'No tienes ninguna lista.');
@@ -347,7 +441,7 @@ async function main() {
     const res = (meta) => correr(nodo('resultado.js'), { input: [{ id: 'x' }], nodos: { Planificar: [{ meta }], 'Escribir en Supabase': [{ id: 'x' }] } });
     const rm = (await res((await textos('/manual todo', {}), (await cmd('/manual todo'))[0].meta)))[0];
     afirmar('Resultado entrega los mensajes fijos tal cual, uno por mensaje de WhatsApp', rm.ok === true && rm.mensajes.length === 10 && rm.mensajes[0].startsWith('*Agenda'), JSON.stringify(rm.mensajes).slice(0, 100));
-    afirmar('el mensaje de fallo menciona /help', (await res({ ok: false, error: 'x', intencion: null, avisos: [] }))[0].mensajes[0].includes('/help'));
+    afirmar('el mensaje de fallo ya no manda a /help', !(await res({ ok: false, error: 'x', intencion: null, avisos: [] }))[0].mensajes[0].includes('/help'));
   }
 
   console.log('Planificar: crear carpeta');
@@ -415,7 +509,7 @@ async function main() {
     // Sin seguridad no se apunta nada (regla 5, también por código)
     const dudoso = await planificar(respuesta({ intencion: 'guardar', items: [itemBase({ titulo: 'Llamar a Juan', confianza: 0.5 }), itemBase({ titulo: 'Pan', tipo: 'lista', lista: 'compra', confianza: 0.95 })], respuesta_usuario: 'Apuntado.' }), { mensaje: 'juan pan' });
     const pd = dudoso.find((x) => x.etiqueta === 'actualizar mensaje');
-    afirmar('confianza baja: no guarda nada (ni lo seguro del mismo mensaje) y pregunta enseñando lo entendido', !dudoso.some((x) => x.url.endsWith('/items')) && pd.meta.intencion === 'aclarar' && pd.cuerpo.pregunta_pendiente === true && pd.meta.pregunta.startsWith('No estoy segura de haberte entendido y prefiero no apuntar nada mal. He entendido esto:\n• tarea: «Llamar a Juan»\n• lista: «Pan»') && pd.meta.avisos.some((a) => a.includes('confianza baja')), JSON.stringify(pd.meta));
+    afirmar('confianza baja: no guarda nada (ni lo seguro del mismo mensaje) y pregunta enseñando lo entendido', !dudoso.some((x) => x.url.endsWith('/items')) && pd.meta.intencion === 'aclarar' && pd.cuerpo.pregunta_pendiente === true && pd.meta.pregunta.startsWith('No estoy segura de haberte entendido. He entendido esto:\n• tarea: «Llamar a Juan»\n• lista: «Pan»') && pd.meta.avisos.some((a) => a.includes('confianza baja')), JSON.stringify(pd.meta));
     const dudosoMem = await planificar(respuesta({ intencion: 'guardar', items: [itemBase({ confianza: 0.4 })], memoria_nueva: { termino: 'algo', significado: 'raro' } }), { mensaje: 'x' });
     afirmar('confianza baja: tampoco recuerda nada de ese mensaje', dudosoMem.every((x) => x.etiqueta !== 'guardar memoria'));
     const justo = await planificar(respuesta({ intencion: 'guardar', items: [itemBase({ confianza: 0.7 })] }));
@@ -494,7 +588,7 @@ async function main() {
     afirmar('corregir sin objeto correccion: error', esError(sinCorreccion));
 
     const c1 = await planificar(com({ item_id: 'i1' }), { refs: REFS });
-    afirmar('completar: PATCH estado = hecho y marcar el mensaje', c1.length === 2 && c1[0].etiqueta === 'completar items' && c1[0].url === `${BASE}/items?id=in.(a1-uuid)` && c1[0].cuerpo.estado === 'hecho' && Object.keys(c1[0].cuerpo).length === 1 && c1[1].cuerpo.procesado === true, JSON.stringify(c1.map((p) => p.url)));
+    afirmar('completar: PATCH estado = hecho y marcar el mensaje', c1.length === 2 && c1[0].etiqueta === 'completar items' && c1[0].url === `${BASE}/items?id=in.(a1-uuid)` && c1[0].cuerpo.estado === 'hecho' && Object.keys(c1[0].cuerpo).join() === 'estado,quitado_en' && !Number.isNaN(Date.parse(c1[0].cuerpo.quitado_en)) && c1[1].cuerpo.procesado === true, JSON.stringify(c1.map((p) => p.url)));
     const c2 = await planificar(com('i3'), { refs: REFS });
     afirmar('completar con la referencia como texto suelto', c2[0].url === `${BASE}/items?id=in.(c3-uuid)`);
     const c3 = await planificar(com({ item_ids: ['i1', 'i2'] }), { refs: REFS });
@@ -626,26 +720,22 @@ async function main() {
     afirmar('un evento dentro de otro: bloqueado', bloqueado(await planificar(evento('Reunión', '2026-10-15T10:15:00+02:00', '2026-10-15T10:45:00+02:00'), opc)));
     afirmar('sin hora de fin se usa una hora de duración para detectar el solape', bloqueado(await planificar(evento('Reunión', '2026-10-15T09:30:00+02:00'), opc)));
 
+    // Un día con otras cosas ya no se pregunta : solo bloquea un solape real
     const despues = await planificar(evento('Reunión', '2026-10-15T11:00:00+02:00', '2026-10-15T12:00:00+02:00'), opc);
-    afirmar('empezar justo cuando acaba otro NO es un solape, pero el día está ocupado: pide confirmación', bloqueado(despues) && turno(despues).motivo === 'confirmar_agenda', despues[0].cuerpo.pregunta);
-    afirmar('el texto de confirmación lista lo que ya tienes y pregunta', despues[0].cuerpo.pregunta === 'El jue 15 oct ya tienes:\n• Dentista, 10:00-11:00\n¿Agendo «Reunión» igualmente?', JSON.stringify(despues[0].cuerpo.pregunta));
-    afirmar('la confirmación guarda los días en el turno', JSON.stringify(turno(despues).dias) === '["2026-10-15"]');
-    afirmar('acabar justo cuando empieza otro tampoco es solape', turno(await planificar(evento('Reunión', '2026-10-15T09:00:00+02:00', '2026-10-15T10:00:00+02:00'), opc)).motivo === 'confirmar_agenda');
+    afirmar('empezar justo cuando acaba otro NO es un solape y el día ocupado no pregunta: se agenda', despues[0].etiqueta === 'guardar items' && !bloqueado(despues), despues[0].cuerpo.pregunta);
+    const justo = await planificar(evento('Reunión', '2026-10-15T09:00:00+02:00', '2026-10-15T10:00:00+02:00'), opc);
+    afirmar('acabar justo cuando empieza otro tampoco es solape: se agenda', justo[0].etiqueta === 'guardar items');
 
     const conTarea = await planificar(evento('Cena', '2026-10-17T21:00:00+02:00', '2026-10-17T22:00:00+02:00'), opc);
-    afirmar('un día con una tarea que vence ese día también pide confirmación', bloqueado(conTarea) && conTarea[0].cuerpo.pregunta === 'El sáb 17 oct ya tienes:\n• Entregar informe (tarea que vence ese día)\n¿Agendo «Cena» igualmente?', conTarea[0].cuerpo.pregunta);
+    afirmar('un día con una tarea que vence ese día se agenda sin preguntar', conTarea[0].etiqueta === 'guardar items');
 
     const aceptado = (dias, motivo = 'confirmar_agenda') => [{ rol: 'user', texto: 'x' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', pregunta: 'p', motivo, dias }) }];
-    const confirmado = await planificar(evento('Reunión', '2026-10-15T12:00:00+02:00', '2026-10-15T13:00:00+02:00'), { ...opc, hiloPrevio: aceptado(['2026-10-15']) });
-    afirmar('tras aceptar ese día, ya se agenda', confirmado[0].etiqueta === 'guardar items');
-    const otroDia = await planificar(evento('Reunión', '2026-10-16T12:00:00+02:00', '2026-10-16T13:00:00+02:00'), { ...opc, hiloPrevio: aceptado(['2026-10-15']) });
-    afirmar('aceptar un día no vale para otro día ocupado', bloqueado(otroDia) && turno(otroDia).dias.includes('2026-10-16'));
     const solapeAceptado = await planificar(evento('Reunión', '2026-10-15T10:30:00+02:00', '2026-10-15T11:30:00+02:00'), { ...opc, hiloPrevio: aceptado(['2026-10-15']) });
-    afirmar('aceptar un día NUNCA permite un solape', bloqueado(solapeAceptado) && turno(solapeAceptado).motivo === 'solape');
+    afirmar('un solape sigue bloqueando aunque el hilo traiga días aceptados', bloqueado(solapeAceptado) && turno(solapeAceptado).motivo === 'solape');
     const tras = await planificar(evento('Reunión', '2026-10-15T12:00:00+02:00', '2026-10-15T13:00:00+02:00'), { ...opc, hiloPrevio: aceptado([], 'solape') });
-    afirmar('tras un solape, la hora nueva en un día ocupado vuelve a pedir confirmación', bloqueado(tras) && turno(tras).motivo === 'confirmar_agenda');
-    const hiloRaro = await planificar(evento('Reunión', '2026-10-15T12:00:00+02:00'), { ...opc, hiloPrevio: [{ rol: 'user', texto: 'x' }, { rol: 'model', texto: 'esto no es json' }] });
-    afirmar('un hilo previo que no es JSON no confirma nada', bloqueado(hiloRaro));
+    afirmar('tras un solape, la hora nueva en un día ocupado se agenda', tras[0].etiqueta === 'guardar items');
+    const hiloRaro = await planificar(evento('Reunión', '2026-10-15T10:00:00+02:00'), { ...opc, hiloPrevio: [{ rol: 'user', texto: 'x' }, { rol: 'model', texto: 'esto no es json' }] });
+    afirmar('un hilo previo que no es JSON no impide detectar el solape', bloqueado(hiloRaro));
 
     const dos = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'evento', titulo: 'A', fecha_inicio: '2026-10-20T10:00:00+02:00' }, { tipo: 'evento', titulo: 'B', fecha_inicio: '2026-10-20T10:30:00+02:00' }] }), opc);
     afirmar('dos eventos del mismo mensaje que chocan entre sí: bloqueado', bloqueado(dos) && dos[0].cuerpo.pregunta.includes('«A» y «B», que me pides a la vez, coinciden en el tiempo'), dos[0].cuerpo.pregunta);
@@ -676,13 +766,13 @@ async function main() {
     const tareaAEvento = await mover({ tipo: 'evento', fecha_inicio: '2026-10-15T10:30:00+02:00' }, ['i3']);
     afirmar('convertir una tarea en un evento que choca: bloqueado', bloqueado(tareaAEvento));
     const movDiaOcupado = await mover({ fecha_inicio: '2026-10-16T14:00:00+02:00' });
-    afirmar('mover a un día ocupado sin solape pide confirmación', bloqueado(movDiaOcupado) && turno(movDiaOcupado).motivo === 'confirmar_agenda' && movDiaOcupado[0].cuerpo.pregunta.startsWith('El vie 16 oct ya tienes:\n• Revisión, 11:00-12:00'), movDiaOcupado[0].cuerpo.pregunta);
+    afirmar('mover a un día ocupado sin solape se hace sin preguntar', movDiaOcupado[0].etiqueta === 'corregir items');
 
     const sinMensaje = planificar(evento('Reunión', '2026-10-15T10:00:00+02:00'), { ...opc, mensaje: '' });
     await lanza('un bloqueo sin el texto del mensaje no puede guardar el hilo', sinMensaje, 'falta el texto del mensaje');
     const bloqueConAnterior = await planificar(evento('Reunión', '2026-10-15T10:00:00+02:00'), { ...opc, pendienteId: 'msg-0', hiloPrevio: aceptado(['2026-10-14']) });
     afirmar('un bloqueo cierra primero la pregunta anterior y acumula el hilo', bloqueConAnterior.map((p) => p.etiqueta).join() === 'cerrar pregunta anterior,actualizar mensaje' && bloqueConAnterior[1].cuerpo.hilo.length === 4);
-    const titulosRaros = await planificar(evento('*Reunión* _importante_', '2026-10-15T11:00:00+02:00', '2026-10-15T12:00:00+02:00'), opc);
+    const titulosRaros = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'evento', titulo: '*Reunión* _importante_', fecha_inicio: '2026-10-20T10:00:00+02:00' }, { tipo: 'evento', titulo: 'B', fecha_inicio: '2026-10-20T10:30:00+02:00' }] }), opc);
     afirmar('los caracteres de formato de WhatsApp se quitan de los textos', !titulosRaros[0].cuerpo.pregunta.slice(0, -1).includes('*') && titulosRaros[0].cuerpo.pregunta.includes('«Reunión importante»'), titulosRaros[0].cuerpo.pregunta);
 
     // Descartar
@@ -793,9 +883,9 @@ async function main() {
   {
     const codigo = codigoConstruir();
     const entrada = { mensaje: 'Dentista el jueves a las 10', fecha_actual: 'lunes 5 de octubre 2026, 10:00 (+02:00)' };
-    const montar = (memoria, ent = entrada, pendientes = [{}], pregunta = [{}], archivos = [{}]) =>
+    const montar = (memoria, ent = entrada, pendientes = [{}], pregunta = [{}], archivos = [{}], quitados = null) =>
       correr(codigo, {
-        nodos: { Configuración: [{ config: CONFIG }], Entrada: [ent], 'Juntar mensajes': [ent], 'Leer memoria': memoria, 'Leer items pendientes': pendientes, 'Leer pregunta pendiente': pregunta, 'Leer archivos': archivos, 'Leer proyectos': [{}] },
+        nodos: { Configuración: [{ config: CONFIG }], Entrada: [ent], 'Juntar mensajes': [ent], 'Leer memoria': memoria, 'Leer items pendientes': pendientes, 'Leer pregunta pendiente': pregunta, 'Leer archivos': archivos, 'Leer proyectos': [{}], ...(quitados ? { 'Leer quitados': quitados } : {}), 'Leer respuesta citada': [{}] },
       });
 
     const [vacia] = await montar([{}]);
@@ -873,6 +963,19 @@ async function main() {
       afirmar('el «sí» a una confirmación de borrar tampoco llama al modelo', s5.saltar_modelo === true && s5.pendiente_id === 'q-lote');
       const s3 = await ver('borra todo', []);
       afirmar('«borra todo» no llama al modelo (lo contesta el código)', s3.saltar_modelo === true);
+      // Deshacer : no llama al modelo y pasa lo quitado (solo archivado/hecho con marca) a Planificar
+      const filasQ = [
+        { id: 'k-1', tipo: 'tarea', titulo: 'Llamar al banco', estado: 'archivado', quitado_en: '2026-10-20T10:00:00Z', proyecto: null },
+        { id: 'k-2', tipo: 'nota', titulo: 'Sin marca', estado: 'archivado', quitado_en: null },
+        { id: 'k-3', tipo: 'nota', titulo: 'Pendiente', estado: 'pendiente', quitado_en: '2026-10-20T10:00:00Z' },
+        { error: { message: 'x' } },
+      ];
+      const dq = (await montar([{}], { ...entrada, mensaje: 'deshaz' }, [{}], [{}], [{}], filasQ))[0];
+      afirmar('«deshaz» no llama al modelo y pasa solo lo quitado con marca (archivado u hecho)', dq.saltar_modelo === true && dq.quitados.length === 1 && dq.quitados[0].id === 'k-1' && dq.quitados[0].titulo === 'Llamar al banco', JSON.stringify(dq.quitados));
+      const dq2 = (await montar([{}], { ...entrada, mensaje: 'recupera la tarea del banco' }, [{}], [{}], [{}], filasQ))[0];
+      afirmar('«recupera la tarea del banco» tampoco llama al modelo', dq2.saltar_modelo === true);
+      const dq3 = (await montar([{}], { ...entrada, mensaje: 'deshaz' }))[0];
+      afirmar('sin el nodo Leer quitados (flujo antiguo o sin actualizar la base de datos a la 1.4) no falla: no hay nada que recuperar', dq3.saltar_modelo === true && Array.isArray(dq3.quitados) && dq3.quitados.length === 0);
       const a12 = await ver('Si', []);
       afirmar('un «Si» suelto sin ninguna pregunta abierta no llama al modelo', a12.saltar_modelo === true && a12.pendiente_id === null);
       const f1 = await planificar(respuesta({ intencion: 'guardar', items: [] }), { mensaje: 'Si', hiloPrevio: [] });
@@ -997,7 +1100,7 @@ async function main() {
     const codigo = codigoConstruir();
     const entrada = { mensaje: 'guárdala en Fotos', fecha_actual: 'lunes 5 de octubre 2026, 10:00 (+02:00)', contexto_id: '' };
     const montar = (archivos, ent = entrada) =>
-      correr(codigo, { nodos: { Configuración: [{ config: CONFIG }], Entrada: [ent], 'Juntar mensajes': [ent], 'Leer memoria': [{}], 'Leer items pendientes': [{}], 'Leer pregunta pendiente': [{}], 'Leer archivos': archivos, 'Leer proyectos': [{}] } });
+      correr(codigo, { nodos: { Configuración: [{ config: CONFIG }], Entrada: [ent], 'Juntar mensajes': [ent], 'Leer memoria': [{}], 'Leer items pendientes': [{}], 'Leer pregunta pendiente': [{}], 'Leer archivos': archivos, 'Leer proyectos': [{}], 'Leer respuesta citada': [{}] } });
     // Lo que devuelve la consulta de Supabase: los más recientes primero, con el mensaje del que vienen embebido
     const fila = (n, extra = {}) => ({
       id: `arch-${n}-uuid`,
@@ -1032,6 +1135,32 @@ async function main() {
     const [c4] = await montar(tres, { ...entrada, contexto_id: 'wamid.CONF4' });
     afirmar('un archivo ya clasificado que se cita también se enseña (para moverlo), con su estado y su carpeta', c4.refs_archivos.a4 === 'arch-4-uuid' && sistemaDe(c4).includes('"estado":"asignado"') && sistemaDe(c4).includes('"carpeta":"Fotos"') && sistemaDe(c4).includes('a ninguno): a4\n'));
 
+    // Pie de foto que es una ruta : el archivo citado se archiva por código, sin llamar al modelo.
+    // Con el nombre de la secretaria ya puesto (sin él, el flujo siempre salta el modelo para preguntarlo).
+    const montarConNombre = (archivos, ent) =>
+      correr(codigo, { nodos: { Configuración: [{ config: CONFIG }], Entrada: [ent], 'Juntar mensajes': [ent], 'Leer memoria': [{ id: 'mem-1', termino: 'nombre de la secretaria', significado: 'Marta' }], 'Leer items pendientes': [{}], 'Leer pregunta pendiente': [{}], 'Leer archivos': archivos, 'Leer proyectos': [{}], 'Leer respuesta citada': [{}] } });
+    const [pieRuta] = await montarConNombre(tres, { ...entrada, mensaje: 'Fotos/Viajes', contexto_id: 'wamid.FOTO2' });
+    afirmar('pie con ruta y archivo citado: no hace falta el modelo y viaja el archivo citado', pieRuta.saltar_modelo === true && pieRuta.archivos_citados.join() === 'a2', JSON.stringify({ s: pieRuta.saltar_modelo, c: pieRuta.archivos_citados }));
+    const [pieSinRuta] = await montarConNombre(tres, { ...entrada, mensaje: 'mi DNI', contexto_id: 'wamid.FOTO2' });
+    afirmar('pie que no es una ruta: sigue el camino del modelo (con el archivo citado)', pieSinRuta.saltar_modelo === false && pieSinRuta.archivos_citados.join() === 'a2', JSON.stringify({ s: pieSinRuta.saltar_modelo, c: pieSinRuta.archivos_citados }));
+    for (const [frase, salta] of [['dame la jerarquía de carpetas', true], ['dame todd', true], ['dame la jeraquia', true], ['dame todo completo', true], ['Eh, Marta, dame la jerarquía de carpetas, por favor.', true], ['Marta, dame todo', true], ['Marta, apunta comprar pan', false], ['apunta comprar pan', false], ['dame la foto del DNI', false], ['dame las fotos', false], ['borra todo el dinero', false]]) {
+      const [r] = await montarConNombre(tres, { ...entrada, mensaje: frase });
+      afirmar(`Construir petición: «${frase}» ${salta ? 'no llama al modelo' : 'sí llama al modelo'}`, r.saltar_modelo === salta, String(r.saltar_modelo));
+    }
+    const [rutaSinCita] = await montarConNombre(tres, { ...entrada, mensaje: 'Fotos/Viajes' });
+    afirmar('una ruta suelta sin archivo citado no se archiva por código', rutaSinCita.saltar_modelo === false && rutaSinCita.archivos_citados.length === 0, JSON.stringify({ s: rutaSinCita.saltar_modelo }));
+
+    // Un aviso que juntó varios archivos : los tres comparten el mismo id de mensaje enviado
+    const juntos = [fila(3, { respuesta_wa_id: 'wamid.GRUPO' }), fila(2, { respuesta_wa_id: 'wamid.GRUPO' }), fila(1, { respuesta_wa_id: 'wamid.GRUPO' }), fila(5, { respuesta_wa_id: 'wamid.OTROAVISO' })];
+    const textoUsuario = (r) => r.cuerpo.contents.at(-1).parts[0].text;
+    const [g1] = await montar(juntos, { ...entrada, contexto_id: 'wamid.GRUPO' });
+    afirmar('responder al aviso que junta tres archivos: los tres quedan citados (y el que es de otro aviso, no)', sistemaDe(g1).includes('a ninguno): a1, a2, a3\n'), sistemaDe(g1).split('\n').find((l) => l.startsWith('Archivo al que')));
+    afirmar('… y el mensaje lleva la nota de que lo que pida vale para todos ellos', textoUsuario(g1) === '[El usuario responde a tu aviso de 3 archivos guardados juntos (a1, a2, a3). Lo que pida vale para todos ellos.]\nguárdala en Fotos', textoUsuario(g1));
+    const [g2] = await montar(juntos, { ...entrada, contexto_id: 'wamid.FOTO2' });
+    afirmar('responder a la foto de uno de ellos: solo esa foto y sin nota', sistemaDe(g2).includes('a ninguno): a2\n') && textoUsuario(g2) === 'guárdala en Fotos', textoUsuario(g2));
+    const [g3] = await montar(juntos, { ...entrada, contexto_id: 'wamid.OTROAVISO' });
+    afirmar('responder al aviso de un solo archivo: como siempre, sin nota', sistemaDe(g3).includes('a ninguno): a4\n') && textoUsuario(g3) === 'guárdala en Fotos');
+
     const muchos = Array.from({ length: 40 }, (_, i) => fila(1, { id: `m-${i}`, respuesta_wa_id: `wamid.M${i}`, mensajes: { wa_message_id: `wamid.MF${i}`, texto_original: null } }));
     const [m] = await montar(muchos);
     afirmar('con 40 pendientes solo se enseñan los 30 más recientes', Object.keys(m.refs_archivos).length === 30 && m.refs_archivos.a1 === 'm-0');
@@ -1062,6 +1191,24 @@ async function main() {
     afirmar('un PDF con nombre elegido conserva su extensión', doc[0].cuerpo.nombre === 'Contrato alquiler.pdf');
     const sucio = await pa({ intencion: 'archivar', archivos: { refs: ['a1'], carpeta: 'Fotos', nombre: 'a/b:c*d' } });
     afirmar('el nombre elegido se limpia de caracteres que Drive no admite', sucio[0].cuerpo.nombre === 'a_b_c_d.jpg', sucio[0].cuerpo.nombre);
+    // Pie de foto que es solo una ruta : se archiva por código, sin el modelo
+    const ps = (mensaje, citados = ['a2']) => planificar({ saltar_modelo: true }, { mensaje, refsArchivos: REFS_A, infoArchivos: INFO_A, archivosCitados: citados });
+    for (const [frase, ruta] of [['Fotos/Viajes', 'Fotos/Viajes'], ['guárdala en Fotos / Viajes 2026.', 'Fotos/Viajes 2026'], ['Muévelas a la carpeta Documentos/Contratos', 'Documentos/Contratos'], ['en «Fotos/Playa»', 'Fotos/Playa'], ['PON la foto en a/b/c'.replace('PON la foto en ', 'ponla en '), 'a/b/c']]) {
+      const r = await ps(frase);
+      afirmar(`pie «${frase}»: archiva el archivo citado en ${ruta} sin el modelo`, r[0].etiqueta === `archivar a2 en ${ruta}` && r[0].meta.intencion === 'archivar', JSON.stringify(r.map((x) => x.etiqueta)));
+    }
+    for (const [frase, ruta] of [['Guárdala en Fotos barra Viajes.', 'Fotos/Viajes'], ['fotos barra viajes barra 2026', 'fotos/viajes/2026'], ['Muévela a la carpeta Documentos barra Contratos', 'Documentos/Contratos'], ['guárdalas en Fotos slash Playa', 'Fotos/Playa']]) {
+      const r = await ps(frase);
+      afirmar(`audio «${frase}»: la «barra» hablada es una «/» y archiva en ${ruta}`, r[0].etiqueta === `archivar a2 en ${ruta}`, JSON.stringify(r.map((x) => x.etiqueta)));
+    }
+    afirmar('una frase con «barra» que no es una ruta no se archiva («la barra de pan de Fotos»)', !(await ps('compra la barra de pan en Fotos barra Viajes de mañana')).some((x) => String(x.etiqueta).startsWith('archivar')));
+    const dos = await ps('Fotos/Viajes', ['a1', 'a2']);
+    afirmar('pie de varios archivos citados: los archiva todos', dos.filter((x) => x.etiqueta.startsWith('archivar')).length === 2);
+    for (const frase of ['Fotos', 'mi DNI', 'mañana tengo reunión en Trabajo/Informes', 'a/b/c/d', 'qué hay en Fotos/Viajes', 'Fotos/Viajes y también Trabajo/Informes con los documentos de este mes']) {
+      const r = await ps(frase);
+      afirmar(`«${frase}»: no se archiva por código (lo decide el modelo)`, !r.some((x) => String(x.etiqueta).startsWith('archivar')), JSON.stringify(r.map((x) => x.etiqueta)));
+    }
+    afirmar('sin archivo citado, una ruta suelta no archiva nada', !(await ps('Fotos/Viajes', [])).some((x) => String(x.etiqueta).startsWith('archivar')));
     const dup = await pa({ intencion: 'archivar', archivos: { refs: ['a1', 'a1', 'a2'], carpeta: 'Fotos' } });
     afirmar('una referencia repetida se escribe una sola vez', dup.filter((p) => p.etiqueta.startsWith('archivar')).length === 2);
     const mayus = await pa({ intencion: 'archivar', archivos: { refs: ['a1'], carpeta: 'fotos de verano' } });
@@ -1147,7 +1294,7 @@ async function main() {
 
     // cancelar
     const c1 = await pc({ intencion: 'cancelar', cancelar: { item_ids: ['i1'] }, respuesta_usuario: 'Cancelada la cita.' });
-    afirmar('cancelar: un PATCH que pasa el item a archivado, devolviendo la fila, y el mensaje marcado', c1.length === 2 && c1[0].etiqueta === 'cancelar items' && c1[0].metodo === 'PATCH' && c1[0].url === `${BASE}/items?id=in.(id-evento)` && JSON.stringify(c1[0].cuerpo) === '{"estado":"archivado"}' && c1[0].prefer === 'return=representation' && c1[1].etiqueta === 'actualizar mensaje', JSON.stringify(c1[0]));
+    afirmar('cancelar: un PATCH que pasa el item a archivado, devolviendo la fila, y el mensaje marcado', c1.length === 2 && c1[0].etiqueta === 'cancelar items' && c1[0].metodo === 'PATCH' && c1[0].url === `${BASE}/items?id=in.(id-evento)` && c1[0].cuerpo.estado === 'archivado' && Object.keys(c1[0].cuerpo).join() === 'estado,quitado_en' && !Number.isNaN(Date.parse(c1[0].cuerpo.quitado_en)) && c1[0].prefer === 'return=representation' && c1[1].etiqueta === 'actualizar mensaje', JSON.stringify(c1[0]));
     const loteOk = (accion, ids) => [{ rol: 'user', texto: 'x' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', motivo: 'confirmar_lote', lotes: [{ accion, ids }] }) }];
     const c2 = await pc({ intencion: 'cancelar', cancelar: { item_ids: ['i1', 'i3', 'i1'] } }, { hiloPrevio: loteOk('cancelar', ['id-evento', 'id-lista']), pendienteId: 'p-1' });
     afirmar('cancelar varios (ya confirmado): una sola petición con los ids reales y sin repetir', c2.find((x) => x.etiqueta === 'cancelar items')?.url === `${BASE}/items?id=in.(id-evento,id-lista)`, JSON.stringify(c2.map((x) => x.etiqueta)));
@@ -1159,7 +1306,7 @@ async function main() {
       afirmar('cancelar sin nada que cancelar (' + nombre + ') no es un error: lo dice y no toca items', !esError(v) && v.every((p) => !p.url.includes('/items')) && v.some((p) => p.meta.respuesta_usuario === 'No encuentro nada pendiente que cancelar con eso.'), JSON.stringify(v.map((p) => p.etiqueta)));
     }
     afirmar('cancelar con ids pero sin ningún item pendiente sigue siendo un error (ids inventados)', esError(await pc({ intencion: 'cancelar', cancelar: { item_ids: ['i1'] } }, { refs: {} })));
-    afirmar('cancelar nunca borra: no hay ningún DELETE ni se toca nada más que el estado', c1.every((p) => p.metodo !== 'DELETE') && Object.keys(c1[0].cuerpo).join() === 'estado');
+    afirmar('cancelar nunca borra: no hay ningún DELETE ni se toca nada más que el estado y la marca de cuándo se quitó', c1.every((p) => p.metodo !== 'DELETE') && Object.keys(c1[0].cuerpo).join() === 'estado,quitado_en');
     afirmar('cancelar ignora los items que devuelva el modelo', (await pc({ intencion: 'cancelar', cancelar: { item_ids: ['i1'] }, items: [{ tipo: 'nota', titulo: 'x' }] })).every((p) => !p.url.endsWith('/items')));
     afirmar('cancelar no activa el árbol de carpetas ni la lectura de archivos', c1[0].meta.carpetas === false && c1[0].meta.consulta_url.includes('/mensajes?select=id'));
 
@@ -1240,7 +1387,7 @@ async function main() {
       '*Lista de compra*',
       '• Huevos, leche, café',
       '',
-      '(…) Tiene más detalle. Todo entero: «dámelo todo completo». Solo uno: «enséñame entera la tarea del banco».',
+      '(…) Di «completo» para ver todo.',
     ].join('\n');
 
     const lista = await resultado(metaConsulta(), { lecturas: FILAS });
@@ -1310,7 +1457,7 @@ async function main() {
     // Qué es un fallo del flujo (el que hace saltar el aviso de fallos) y qué no
     afirmar('todo bien: sin fallo del flujo', g.fallo_flujo === false && r.fallo_flujo === false);
     const noEnt = await resultado({ ok: false, no_entendido: true, intencion: null, avisos: [], respuesta_usuario: '', pregunta: null, error: 'Respuesta no válida: x', ahora: AHORA, consulta: null });
-    afirmar('respuesta del modelo que no encaja: «no te he entendido», sin fallo del flujo y sin volver a anotarlo', noEnt.mensajes[0].startsWith('No te he entendido bien, así que no he hecho nada.') && noEnt.fallo_flujo === false && noEnt.anotacion === null, JSON.stringify(noEnt));
+    afirmar('respuesta del modelo que no encaja: «no te he entendido», sin fallo del flujo y sin volver a anotarlo', noEnt.mensajes[0].startsWith('No te he entendido, no he hecho nada.') && noEnt.fallo_flujo === false && noEnt.anotacion === null, JSON.stringify(noEnt));
     afirmar('el modelo no respondió: el mensaje de fallo y fallo del flujo', noOk.fallo_flujo === true && noOk.mensajes[0].startsWith('No he podido procesar'));
     const escr = await resultado(guardar, { escrituras: [{ error: { message: 'connection refused' } }] });
     afirmar('Supabase falla al escribir: fallo del flujo', escr.fallo_flujo === true);
@@ -1332,7 +1479,7 @@ async function main() {
     afirmar('charla: contesta con la frase del modelo', (await res(ch[0].meta)).respuesta_usuario === '¡Me alegro! Aquí sigo.');
     for (const promete of ['Apuntado, todo en orden.', 'Lo he guardado.', 'Vale, te aviso mañana.', 'Te lo recordaré.']) {
       const p = await pc({ intencion: 'charla', respuesta_usuario: promete });
-      afirmar(`charla que promete algo («${promete}»): se cambia por el texto seguro`, p[0].meta.respuesta_usuario === 'No he apuntado nada. Si quieres que apunte o consulte algo, dímelo.', p[0].meta.respuesta_usuario);
+      afirmar(`charla que promete algo («${promete}»): se cambia por el texto seguro`, p[0].meta.respuesta_usuario === 'No he apuntado nada.', p[0].meta.respuesta_usuario);
     }
     const vacia = await pc({ intencion: 'charla', respuesta_usuario: '' });
     afirmar('charla sin texto: el texto seguro', vacia[0].meta.respuesta_usuario.startsWith('No he apuntado nada.'));
@@ -1380,7 +1527,7 @@ async function main() {
     const post = g1.find((x) => x.etiqueta === 'guardar el horario fijo');
     afirmar('«trabajo los viernes de 16 a 20»: un bloque (viernes = 5), sin duplicar (restricción única)', post && post.url.endsWith('/horario_fijo?on_conflict=titulo_norm,dia_semana,hora_inicio,hora_fin') && post.prefer.includes('ignore-duplicates') && JSON.stringify(post.cuerpo) === JSON.stringify([{ titulo: 'Trabajo', dia_semana: 5, hora_inicio: '16:00', hora_fin: '20:00' }]), JSON.stringify(post));
     const r1 = await res(g1, [{ id: 'x' }, {}]);
-    afirmar('la respuesta dice qué ha quedado y que avisará', r1.mensajes[0] === '🗓️ Apuntado en tu horario fijo:\n• viernes de 16:00 a 20:00: Trabajo\nSi apuntas una cita que caiga dentro, te preguntaré antes. /horario para verlo.', r1.mensajes[0]);
+    afirmar('la respuesta dice qué ha quedado y que avisará', r1.mensajes[0] === '🗓️ Horario apuntado:\n• viernes de 16:00 a 20:00: Trabajo', r1.mensajes[0]);
     const g2 = await ph([{ titulo: 'Voluntariado', dias: [1, 3, 3], desde: '9:00', hasta: '14:00' }]);
     afirmar('varios días: un bloque por día (sin repetir) y la hora con dos cifras', g2.find((x) => x.etiqueta === 'guardar el horario fijo').cuerpo.map((b) => `${b.dia_semana} ${b.hora_inicio}`).join() === '1 09:00,3 09:00');
     afirmar('… y la respuesta los agrupa', (await res(g2, [{ id: 'x' }])).mensajes[0].includes('• lunes y miércoles de 09:00 a 14:00: Voluntariado'));
@@ -1393,7 +1540,7 @@ async function main() {
     const lleno = Array.from({ length: 40 }, (_, i) => ({ id: `h-${i}`, titulo: `Bloque ${i}`, dia_semana: (i % 7) + 1, hora_inicio: '08:00', hora_fin: '09:00' }));
     const gl = await ph([{ titulo: 'Gimnasio', dias: [2], desde: '19:00', hasta: '20:00' }], { horario: lleno });
     const rl = await res(gl);
-    afirmar('horario lleno: no guarda y lo dice (no «Apuntado» con la lista vacía)', gl.every((x) => x.etiqueta !== 'guardar el horario fijo') && rl.mensajes[0].startsWith('Tu horario fijo está lleno (40 bloques)'), rl.mensajes[0]);
+    afirmar('horario lleno: no guarda y lo dice (no «Apuntado» con la lista vacía)', gl.every((x) => x.etiqueta !== 'guardar el horario fijo') && rl.mensajes[0].startsWith('Tu horario está lleno (40 bloques)'), rl.mensajes[0]);
 
     // El aviso al apuntar una cita
     const cita = (ini, fin, titulo = 'Médico') => respuesta({ intencion: 'guardar', items: [{ tipo: 'evento', titulo, fecha_inicio: ini, fecha_fin: fin, confianza: 0.95 }], respuesta_usuario: 'Apuntado.' });
@@ -1443,38 +1590,33 @@ async function main() {
     afirmar('/horario quitar de un número que no existe: lo dice', q9[0].meta.mensajes_fijos[0].startsWith('No tengo el bloque número 9.'));
   }
 
-  console.log('La compra: a la lista aunque diga un día, y pregunta si avisa');
+  console.log('La compra: a la lista aunque diga un día, sin preguntar si avisa');
   {
     const res = (meta) => correr(nodo('resultado.js'), { input: [{ id: 'x' }], nodos: { Planificar: [{ meta }], 'Escribir en Supabase': [{ id: 'x' }] } });
     const manana = new Date(Date.now() + 86400000);
     const fl = new Date(Date.UTC(manana.getUTCFullYear(), manana.getUTCMonth(), manana.getUTCDate(), 21, 59, 59)).toISOString();
-    // El modelo lo apunta como tarea «Comprar pan y huevos» con el día: pasa a la lista de la compra y pregunta el aviso
+    // El modelo lo apunta como tarea «Comprar pan y huevos» con el día: pasa a la lista de la compra y ya no se pregunta nada
     const g1 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'tarea', titulo: 'Comprar pan y huevos', fecha_limite: fl, confianza: 0.95 }], respuesta_usuario: 'Apuntado.' }), { mensaje: 'mañana compra pan y huevos' });
     const post1 = g1.find((x) => x.etiqueta === 'guardar items');
     afirmar('«mañana compra pan y huevos» apuntado como tarea: pasa a la lista de la compra, un elemento por cosa y sin fecha', Boolean(post1) && post1.cuerpo.length === 2 && post1.cuerpo.every((f) => f.tipo === 'lista' && f.lista === 'compra' && f.fecha_limite === null) && post1.cuerpo.map((f) => f.titulo).join() === 'Pan,Huevos', JSON.stringify(post1?.cuerpo));
     const marca1 = g1.find((x) => x.etiqueta === 'actualizar mensaje');
-    const turno1 = JSON.parse(marca1.cuerpo.hilo.at(-1).texto);
-    afirmar('… y deja abierta la pregunta del aviso, con el día en el hilo', marca1.cuerpo.pregunta_pendiente === true && marca1.cuerpo.pregunta.startsWith('¿Te aviso mañana (') && turno1.motivo === 'aviso_compra' && /^\d{4}-\d{2}-\d{2}$/.test(turno1.aviso_compra.dia), JSON.stringify(marca1.cuerpo));
+    afirmar('… y no deja ninguna pregunta abierta', !marca1.cuerpo.pregunta_pendiente && !g1[0].meta.aviso_compra, JSON.stringify(marca1.cuerpo));
     const r1 = (await res(g1[0].meta))[0];
-    afirmar('Resultado: primero lo apuntado y después, en otro mensaje, la pregunta del aviso', r1.mensajes.length === 2 && r1.mensajes[1].startsWith('¿Te aviso mañana ('), JSON.stringify(r1.mensajes));
-    // Ya en la lista y sin día: no pregunta
-    const g2 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'lista', lista: 'compra', titulo: 'Pan' }, { tipo: 'lista', lista: 'compra', titulo: 'Huevos' }], respuesta_usuario: 'Apuntado en la compra.' }), { mensaje: 'quiero comprar pan y huevos' });
-    afirmar('«quiero comprar pan y huevos» (sin día): a la lista y sin pregunta', g2.find((x) => x.etiqueta === 'guardar items').cuerpo.length === 2 && !g2.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo.pregunta_pendiente);
+    afirmar('Resultado: un solo mensaje', r1.mensajes.length === 1 && !r1.mensajes[0].includes('¿Te aviso'), JSON.stringify(r1.mensajes));
     const g3 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'lista', lista: 'compra', titulo: 'Leche' }] }), { mensaje: 'el viernes comprar leche' });
-    afirmar('«el viernes comprar leche»: pregunta para el viernes', g3.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo.pregunta.startsWith('¿Te aviso el vie '), g3.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo.pregunta);
-    const g4 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'lista', lista: 'compra', titulo: 'Leche' }] }), { mensaje: 'Bueno pasado compra leche' });
-    afirmar('«pasado»: pasado mañana', g4.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo.pregunta.startsWith('¿Te aviso pasado mañana ('));
+    afirmar('«el viernes comprar leche»: a la lista y sin pregunta', g3.some((x) => x.etiqueta === 'guardar items') && !g3.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo.pregunta_pendiente);
     const g5 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'tarea', titulo: 'Llamar al banco', fecha_limite: fl }] }), { mensaje: 'mañana llamar al banco' });
     afirmar('lo que no es comprar no se toca ni pregunta', g5.find((x) => x.etiqueta === 'guardar items').cuerpo[0].tipo === 'tarea' && !g5.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo.pregunta_pendiente);
     const g6 = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'tarea', titulo: 'Comprar pan', recordar_en: new Date(Date.now() + 3 * 3600000).toISOString() }] }), { mensaje: 'recuérdame a las 20 comprar pan' });
     afirmar('una alarma de comprar («recuérdame a las 20 comprar pan») se queda como alarma', g6.find((x) => x.etiqueta === 'guardar items').cuerpo[0].tipo === 'tarea');
-    // «Quiero ir a comprar mañana»: en vez de «¿alarma, cita o tarea?», el aviso
-    const g7 = await planificar(respuesta({ intencion: 'aclarar', items: [], pregunta: '¿Lo apunto como alarma (te aviso a una hora), cita (en el calendario) o tarea?' }), { mensaje: 'Quiero ir a comprar mañana' });
+    // «Quiero ir a comprar mañana»: la pregunta «¿alarma, cita o tarea?» del modelo se queda tal cual (el usuario la quiere)
+    const g7 = await planificar(respuesta({ intencion: 'aclarar', items: [], pregunta: '¿Lo apunto como alarma, cita o tarea?' }), { mensaje: 'Quiero ir a comprar mañana' });
     const m7 = g7.find((x) => x.etiqueta === 'actualizar mensaje');
-    afirmar('«Quiero ir a comprar mañana»: pregunta si avisa (no «¿alarma, cita o tarea?»)', m7.cuerpo.pregunta.startsWith('¿Te aviso mañana (') && JSON.parse(m7.cuerpo.hilo.at(-1).texto).motivo === 'aviso_compra' && g7[0].meta.pregunta === m7.cuerpo.pregunta, JSON.stringify(m7.cuerpo.pregunta));
-    // Las respuestas, por código
-    const dia = turno1.aviso_compra.dia;
-    const hiloAviso = marca1.cuerpo.hilo;
+    afirmar('«Quiero ir a comprar mañana»: sigue la pregunta «¿alarma, cita o tarea?»', m7.cuerpo.pregunta === '¿Lo apunto como alarma, cita o tarea?' && !m7.cuerpo.hilo.some((t) => t.texto.includes('aviso_compra')), JSON.stringify(m7.cuerpo.pregunta));
+    // Un aviso de la versión anterior que siga abierto se contesta por código igual que antes
+    const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid', year: 'numeric', month: '2-digit', day: '2-digit' }).format(manana);
+    const textoViejo = '¿Te aviso mañana (mié 21) para ir a comprar? Dime a qué hora (o «no»).';
+    const hiloAviso = [{ rol: 'user', texto: 'mañana compra pan' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', motivo: 'aviso_compra', origen: 'codigo', aviso_compra: { dia: fmt, etiqueta: 'mañana (mié 21)' }, pregunta: textoViejo, items: [], respuesta_usuario: textoViejo }) }];
     const sinModelo = { error: 'no se llamó al modelo y el mensaje no es un comando' };
     const resp = (mensaje) => planificar(sinModelo, { mensaje, hiloPrevio: hiloAviso, pendienteId: 'q-aviso' });
     const horaDe = (plan) => {
@@ -1485,15 +1627,9 @@ async function main() {
       return { titulo: it.titulo, tipo: it.tipo, dia: `${p.year}-${p.month}-${p.day}`, hora: `${p.hour}:${p.minute}` };
     };
     const h1 = horaDe(await resp('a las 18'));
-    afirmar('«a las 18»: alarma «Ir a comprar» ese día a las 18:00', h1 && h1.titulo === 'Ir a comprar' && h1.tipo === 'tarea' && h1.dia === dia && h1.hora === '18:00', JSON.stringify(h1));
-    afirmar('«sí, a las 6 y media» → 18:30; «a las 9 de la mañana» → 09:00; «19:15» → 19:15', horaDe(await resp('sí, a las 6 y media'))?.hora === '18:30' && horaDe(await resp('a las 9 de la mañana'))?.hora === '09:00' && horaDe(await resp('19:15'))?.hora === '19:15');
-    const cierra = (await resp('a las 18')).find((x) => x.etiqueta === 'cerrar pregunta anterior');
-    afirmar('… y cierra la pregunta del aviso', Boolean(cierra) && cierra.url.includes('q-aviso'));
+    afirmar('un aviso antiguo abierto: «a las 18» → alarma «Ir a comprar» ese día a las 18:00', h1 && h1.titulo === 'Ir a comprar' && h1.tipo === 'tarea' && h1.dia === fmt && h1.hora === '18:00', JSON.stringify(h1));
     const no = await resp('no');
-    afirmar('«no»: «Vale, sin aviso.», cierra la pregunta y no apunta nada', no[0].meta.respuesta_usuario === 'Vale, sin aviso.' && no.some((x) => x.etiqueta === 'cerrar pregunta anterior') && !no.some((x) => x.etiqueta === 'guardar items'));
-    const si = await resp('sí');
-    const msi = si.find((x) => x.etiqueta === 'actualizar mensaje');
-    afirmar('«sí» sin hora: pregunta la hora y deja la pregunta abierta con el mismo día', msi.cuerpo.pregunta.startsWith('¿A qué hora te aviso mañana (') && JSON.parse(msi.cuerpo.hilo.at(-1).texto).aviso_compra.dia === dia);
+    afirmar('… y «no» lo cierra sin apuntar nada', no[0].meta.respuesta_usuario === 'Vale, sin aviso.' && !no.some((x) => x.etiqueta === 'guardar items'));
     const otra = await planificar(respuesta({ intencion: 'guardar', items: [{ tipo: 'lista', lista: 'compra', titulo: 'Leche' }] }), { mensaje: 'añade leche', hiloPrevio: hiloAviso, pendienteId: 'q-aviso' });
     afirmar('otra cosa («añade leche») no es la respuesta: sigue el camino de siempre (lo del modelo)', otra.find((x) => x.etiqueta === 'guardar items')?.cuerpo[0].titulo === 'Leche');
   }
@@ -1508,6 +1644,122 @@ async function main() {
     afirmar('un rango de varios días: «entre el … y el …»', rango[0].meta.consulta.rango_texto.startsWith('entre el ') && rango[0].meta.consulta.rango_texto.includes(' y el '), rango[0].meta.consulta.rango_texto);
     const sinRango = await planificar(respuesta({ intencion: 'consultar', consulta: { estado: 'pendiente' } }), { mensaje: 'qué tengo pendiente' });
     afirmar('sin rango: rango_texto nulo', sinRango[0].meta.consulta.rango_texto === null);
+  }
+
+  console.log('Oferta de la charla: el «sí» sabe de qué se habla');
+  {
+    const OFERTA = 'Normalmente puedes pedirla directamente desde su app o en la web de tu banco, en el apartado de tarjetas, o yendo a una oficina. ¿Quieres que te lo apunte como tarea, Ana?';
+    const charla = (texto) => respuesta({ intencion: 'charla', items: [], respuesta_usuario: texto });
+    const pregunta = '¿Sabes tú cómo solicitar la tarjeta del banco?';
+    const c1 = await planificar(charla(OFERTA), { mensaje: pregunta });
+    const m1 = c1.find((x) => x.etiqueta === 'actualizar mensaje');
+    const turno1 = JSON.parse(m1.cuerpo.hilo.at(-1).texto);
+    afirmar('una charla que ofrece apuntar algo deja la oferta abierta, con el hilo (tu pregunta + la respuesta) y su hora', m1.cuerpo.pregunta_pendiente === true && m1.cuerpo.pregunta === OFERTA && m1.cuerpo.hilo.length === 2 && m1.cuerpo.hilo[0].texto === pregunta && turno1.motivo === 'oferta' && !Number.isNaN(Date.parse(m1.cuerpo.hilo.at(-1).en)), JSON.stringify(m1.cuerpo));
+    afirmar('… y la respuesta al usuario es la charla tal cual', c1[0].meta.respuesta_usuario === OFERTA);
+    const c2 = await planificar(charla('¡Genial! Me alegro mucho.'), { mensaje: 'hoy me ha ido bien' });
+    afirmar('una charla normal no deja nada abierto', !('hilo' in c2.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo));
+    const sinOferta = [];
+    for (const t of ['¿Quieres que te ayude con los apuntes de redes?', 'Puedo explicarte cómo programar en Python. ¿Quieres?', '¿Quieres que te cuente cómo guardar un archivo en Word?', 'Claro, puedo recordarte lo que quieras. ¿Qué te recuerdo?']) {
+      const pl = await planificar(charla(t), { mensaje: 'cuéntame algo' });
+      if ('hilo' in pl.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo) sinOferta.push(t);
+    }
+    afirmar('una charla que habla de «apuntes», «programar» o «guardar un archivo» no es una oferta de apuntar', sinOferta.length === 0, sinOferta.join(' | '));
+    const conOferta = [];
+    for (const t of ['¿Quieres que lo anote? 😊', '¿Quieres que te lo apunte? (puedo ponerle fecha)', '¿Lo apunto como tarea?', 'Se pide en la app. ¿Quieres que te lo apunte como tarea?']) {
+      const pl = await planificar(charla(t), { mensaje: 'cómo se pide la tarjeta' });
+      if (!('hilo' in pl.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo)) conOferta.push(t);
+    }
+    afirmar('… y sí lo son las ofertas de verdad, con un emoji o una aclaración detrás', conOferta.length === 0, conOferta.join(' | '));
+    const c3 = await planificar(charla('¿Qué tal te ha ido el día?'), { mensaje: 'hola' });
+    afirmar('… ni una pregunta de charla que no ofrece apuntar nada', !('hilo' in c3.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo));
+    const c4 = await planificar(respuesta({ intencion: 'charla', items: [], respuesta_usuario: '¿Quieres que lo apunte?', memoria_nueva: { termino: 'Emma', significado: 'mi hermana' } }), { mensaje: 'Emma es mi hermana' });
+    afirmar('… ni una charla que ya guarda un dato en la memoria', !('hilo' in c4.find((x) => x.etiqueta === 'actualizar mensaje').cuerpo));
+    // Construir petición: el «sí» siguiente
+    const entrada = { mensaje: 'x', fecha_actual: 'martes 20 de octubre 2026, 15:56 (+02:00)' };
+    const codigoCP = codigoConstruir();
+    const montar = (memoria, ent, pendientes = [{}], pregunta = [{}]) =>
+      correr(codigoCP, { nodos: { Configuración: [{ config: CONFIG }], Entrada: [ent], 'Juntar mensajes': [ent], 'Leer memoria': memoria, 'Leer items pendientes': pendientes, 'Leer pregunta pendiente': pregunta, 'Leer archivos': [{}], 'Leer proyectos': [{}], 'Leer respuesta citada': [{}] } });
+    const hilo = [{ rol: 'user', texto: pregunta }, { rol: 'model', texto: m1.cuerpo.hilo.at(-1).texto, en: m1.cuerpo.hilo.at(-1).en }];
+    const PO = { id: 'q-oferta', pregunta: OFERTA, hilo };
+    const enMem = [{ termino: 'nombre de la secretaria', significado: 'Wabel' }];
+    const despues = new Date(Date.parse(hilo[1].en) + 30000).toISOString();
+    const ver = async (mensaje, recibido_at = despues) => (await montar(enMem, { ...entrada, mensaje, recibido_at }, [{}], [PO]))[0];
+    const si = await ver('Sí, apúntalo todo');
+    const textoSi = si.cuerpo.contents.at(-1).parts[0].text;
+    afirmar('«Sí, apúntalo todo» contesta a la oferta: el modelo recibe el hilo (tu pregunta y su respuesta) y qué hacer', si.saltar_modelo !== true && si.pendiente_id === 'q-oferta' && si.hilo_previo.length === 2 && si.cuerpo.contents.length === 3 && textoSi.includes('responde a tu oferta de apuntar algo') && textoSi.endsWith('Sí, apúntalo todo'), textoSi.slice(0, 200));
+    afirmar('… «apúntalo» a secas también (aunque suene a orden nueva), y «vale»', (await ver('apúntalo')).pendiente_id === 'q-oferta' && (await ver('vale')).pendiente_id === 'q-oferta');
+    const no = await ver('no');
+    afirmar('«no» a la oferta no llama al modelo', no.saltar_modelo === true && no.pendiente_id === 'q-oferta');
+    const otro = await ver('qué tengo hoy');
+    afirmar('otro tema («qué tengo hoy») no contesta a la oferta; ésta se cierra en silencio', otro.pendiente_id === null && otro.preguntas_ignoradas.length === 1 && otro.preguntas_ignoradas[0].silenciosa === true && !otro.cuerpo.contents.at(-1).parts[0].text.includes('oferta'));
+    const antes = await ver('qué tengo hoy', new Date(Date.parse(hilo[1].en) - 5000).toISOString());
+    afirmar('… si escribió antes de ver la oferta, sigue abierta', antes.preguntas_ignoradas.length === 0);
+    // Planificar: el «no» y el cierre en silencio
+    const sinModelo = { error: 'no se llamó al modelo y el mensaje no es un comando' };
+    const n1 = await planificar(sinModelo, { mensaje: 'No', hiloPrevio: hilo, pendienteId: 'q-oferta' });
+    afirmar('Planificar: «no» → «Vale, no lo apunto.», cierra la oferta y no guarda nada', n1[0].meta.respuesta_usuario === 'Vale, no lo apunto.' && n1.some((x) => x.etiqueta === 'cerrar pregunta anterior') && !n1.some((x) => x.etiqueta === 'guardar items'));
+    const ID1 = '11111111-1111-4111-8111-111111111111';
+    const silencio = await correr(nodo('planificar.js'), {
+      input: [respuesta({ intencion: 'consultar', consulta: { estado: 'pendiente' } })],
+      nodos: { Configuración: [{ config: CONFIG }], 'Guardar mensaje': [{ id: 'm-1' }], 'Construir petición': [{ refs: {}, agenda: [], pendientes: [], preguntas_ignoradas: [{ id: ID1, pregunta: OFERTA, silenciosa: true }, { id: '22222222-2222-4222-8222-222222222222', pregunta: '¿Otra?' }] }], Entrada: [{ mensaje: 'qué tengo pendiente' }], 'Juntar mensajes': [{ mensaje: 'x' }] },
+    });
+    const cierre = silencio[0];
+    afirmar('Planificar: cierra la oferta ignorada pero solo cuenta como «sin contestar» la que no era una oferta', cierre.url.includes(ID1) && JSON.stringify(cierre.meta.preguntas_ignoradas) === JSON.stringify(['¿Otra?']), JSON.stringify(cierre.meta.preguntas_ignoradas));
+  }
+
+  console.log('Responder citando cualquier respuesta de la secretaria (base de datos 1.4)');
+  {
+    const codigoCP = codigoConstruir();
+    const enMem = [{ termino: 'nombre de la secretaria', significado: 'Wabel' }];
+    const base = { mensaje: 'cámbialo a las 6', fecha_actual: 'martes 20 de octubre 2026, 15:56 (+02:00)', contexto_id: 'wamid.RESP1' };
+    const montar = (ent, citada, { pendientes = [{}], pregunta = [{}], archivos = [{}] } = {}) =>
+      correr(codigoCP, { nodos: { Configuración: [{ config: CONFIG }], Entrada: [ent], 'Juntar mensajes': [ent], 'Leer memoria': enMem, 'Leer items pendientes': pendientes, 'Leer pregunta pendiente': pregunta, 'Leer archivos': archivos, 'Leer proyectos': [{}], 'Leer respuesta citada': citada } }).then((r) => r[0]);
+    const filaApuntado = { id: 'm-1', texto_original: 'mañana compra pan', tipo_entrada: 'texto', pregunta: null, pregunta_pendiente: false, hilo: null, respuesta_texto: '🛒 Apuntado en la lista de la compra: Pan.\n\n¿Te aviso mañana (mié 21) para ir a comprar?', created_at: '2026-10-20T13:00:00Z' };
+    const a = await montar(base, [filaApuntado]);
+    const textoA = a.cuerpo.contents.at(-1).parts[0].text;
+    afirmar('cita una respuesta ya contestada: el modelo recibe delante lo que ella dijo y a qué contestaba', textoA.startsWith('[El usuario responde a tu mensaje: «🛒 Apuntado en la lista de la compra: Pan. ¿Te aviso mañana (mié 21) para ir a comprar?» (que era tu respuesta a: «mañana compra pan»).') && textoA.endsWith('cámbialo a las 6'), textoA);
+    afirmar('… y no cambia la pregunta abierta ni el hilo', a.pendiente_id === null && a.hilo_previo.length === 0);
+    const sinCita = await montar({ ...base, contexto_id: '' }, [filaApuntado]);
+    afirmar('sin cita no se busca ni se añade nada (aunque llegara una fila)', sinCita.cuerpo.contents.at(-1).parts[0].text === 'cámbialo a las 6');
+    const nada = await montar(base, [{}]);
+    afirmar('citando algo que no se anotó (antes de la base de datos 1.4, el «Entendí», un aviso) no hay fila: todo como antes', nada.cuerpo.contents.at(-1).parts[0].text === 'cámbialo a las 6');
+    const conError = await montar(base, [{ error: { message: '400 columna inexistente' } }]);
+    afirmar('sin actualizar la base de datos a la 1.4 el nodo falla sin cortar el flujo: todo como antes', conError.cuerpo.contents.at(-1).parts[0].text === 'cámbialo a las 6');
+    // Una pregunta abierta citada: el mensaje la contesta a ella, aunque ya caducara o haya otras más recientes
+    const hiloQ = [{ rol: 'user', texto: 'médico el viernes a las 17' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', motivo: 'confirmar_horario', items: [], pregunta: '¿La apunto igualmente?', respuesta_usuario: '¿La apunto igualmente?', origen: 'codigo' }) }];
+    const filaQ = { id: 'q-citada', texto_original: 'médico el viernes a las 17', tipo_entrada: 'audio', pregunta: '¿La apunto igualmente?', pregunta_pendiente: true, hilo: hiloQ, respuesta_texto: '«Médico» cae en tu horario. ¿La apunto igualmente?', created_at: new Date(Date.now() - 5 * 60000).toISOString() };
+    const otra = { id: 'q-reciente', pregunta: '¿A qué hora?', hilo: [{ rol: 'user', texto: 'llamar al banco' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', items: [], pregunta: '¿A qué hora?', respuesta_usuario: '¿A qué hora?' }) }] };
+    const q = await montar({ ...base, mensaje: 'sí, apúntala' }, [filaQ], { pregunta: [otra] });
+    afirmar('cita una pregunta que sigue abierta: el mensaje la contesta a ella (no a la más reciente), con su hilo y sin nota añadida', q.pendiente_id === 'q-citada' && q.hilo_previo.length === 2 && q.cuerpo.contents.length === 3 && q.cuerpo.contents.at(-1).parts[0].text === 'sí, apúntala', JSON.stringify([q.pendiente_id, q.hilo_previo.length]));
+    afirmar('… aunque sea un mensaje largo que no encaje con ninguna pregunta (no es una orden nueva)', (await montar({ ...base, mensaje: 'ponla mejor el jueves por la tarde después de comer' }, [filaQ], { pregunta: [otra] })).pendiente_id === 'q-citada');
+    afirmar('… pero si es una orden nueva («dame las tareas»), no es contestarla', (await montar({ ...base, mensaje: 'dame las tareas' }, [filaQ], { pregunta: [otra] })).pendiente_id !== 'q-citada');
+    const hace = (min) => new Date(Date.now() - min * 60000).toISOString();
+    afirmar('… una confirmación citada de hace más de 30 min (caducó) no se fuerza: un «sí» no ejecuta datos viejos', (await montar({ ...base, mensaje: 'sí' }, [{ ...filaQ, created_at: hace(120) }], { pregunta: [] })).pendiente_id !== 'q-citada');
+    const hiloLibre = [{ rol: 'user', texto: 'llamar al banco' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', items: [], pregunta: '¿A qué hora?', respuesta_usuario: '¿A qué hora?' }) }];
+    const filaLibre = { id: 'q-libre', texto_original: 'llamar al banco', tipo_entrada: 'texto', pregunta: '¿A qué hora?', pregunta_pendiente: true, hilo: hiloLibre, respuesta_texto: '¿A qué hora?', created_at: hace(120) };
+    afirmar('… una pregunta libre citada de hace 2 horas sí se contesta (no es una confirmación)', (await montar({ ...base, mensaje: 'a las 10' }, [filaLibre], { pregunta: [] })).pendiente_id === 'q-libre');
+    afirmar('… pero de hace más de un día, no', (await montar({ ...base, mensaje: 'a las 10' }, [{ ...filaLibre, created_at: hace(26 * 60) }], { pregunta: [] })).pendiente_id !== 'q-libre');
+    const cerrada = await montar({ ...base, mensaje: 'sí' }, [{ ...filaQ, pregunta_pendiente: false }], { pregunta: [otra] });
+    afirmar('si esa pregunta ya se cerró, no la reabre: nota al modelo y decide la lógica de siempre', cerrada.pendiente_id === 'q-reciente' || cerrada.pendiente_id === null);
+    // No se pisa lo que ya se entendía: avisos y archivos
+    const avisoFila = { id: '33333333-3333-4333-8333-333333333333', tipo: 'tarea', titulo: 'Sacar la ropa', estado: 'hecho', recordar_en: '2026-10-20T13:00:00Z', aviso: 'alarma' };
+    const alAviso = await correr(codigoCP, { nodos: { Configuración: [{ config: CONFIG }], Entrada: [base], 'Juntar mensajes': [base], 'Leer memoria': enMem, 'Leer items pendientes': [avisoFila], 'Leer pregunta pendiente': [{}], 'Leer archivos': [{}], 'Leer proyectos': [{}], 'Leer avisos': [{ citados: [{ ...avisoFila }], recientes: [] }], 'Leer respuesta citada': [filaApuntado] } });
+    const textoAv = alAviso[0].cuerpo.contents.at(-1).parts[0].text;
+    afirmar('citando un aviso se sigue usando el aviso (nota de aviso) y no se duplica con la nota de respuesta', textoAv.startsWith('[El usuario responde a tu aviso de:') && !textoAv.includes('responde a tu mensaje'), textoAv.slice(0, 160));
+    const arch = [{ id: 'ar-1', nombre: 'foto.jpg', estado: 'pendiente', created_at: '2026-10-20T10:00:00Z', respuesta_wa_id: 'wamid.RESP1', mensajes: { wa_message_id: 'wamid.FOTO' } }];
+    const alArchivo = await montar(base, [filaApuntado], { archivos: arch });
+    afirmar('citando la confirmación de un archivo se sigue usando el archivo y no se añade la nota', !alArchivo.cuerpo.contents.at(-1).parts[0].text.includes('responde a tu mensaje'));
+    const larga = (await montar(base, [{ ...filaApuntado, respuesta_texto: `INICIO ${'r'.repeat(900)} FINAL`, texto_original: 'o'.repeat(900) }])).cuerpo.contents.at(-1).parts[0].text;
+    afirmar('una respuesta larga se recorta por el medio (se ven el principio y el final) y lo que ella contestaba, a 200 caracteres', larga.includes('INICIO') && larga.includes('FINAL') && larga.includes('[…]') && larga.length < 1200, larga.length);
+    // La oferta de la charla: solo un sí, un no o un «apúntalo» la contestan; lo demás es otro tema (revisión independiente)
+    const ofertaEnPrueba = { id: 'q-of', pregunta: '¿Quieres que te lo apunte?', hilo: [{ rol: 'user', texto: '¿Sabes cómo pedir la tarjeta?' }, { rol: 'model', texto: JSON.stringify({ intencion: 'charla', items: [], respuesta_usuario: '¿Quieres que te lo apunte?', motivo: 'oferta', origen: 'codigo', en: new Date().toISOString() }) }] };
+    const ofertaCon = async (m) => (await montar({ ...base, mensaje: m, contexto_id: '' }, [{}], { pregunta: [ofertaEnPrueba] })).pendiente_id === 'q-of';
+    const contestan = [];
+    for (const m of ['Sí, apúntalo todo', 'apúntalo', 'sí', 'vale', 'no', 'no gracias', 'claro, apúntalo']) if (!(await ofertaCon(m))) contestan.push(m);
+    afirmar('un sí, un no o un «apúntalo» contestan a la oferta', contestan.length === 0, contestan.join(' | '));
+    const noContestan = [];
+    for (const m of ['anota que mañana tengo dentista a las 10', 'apunta comprar pan', 'guarda esta nota: la clave del wifi', 'claro, y qué tengo mañana', 'no me acuerdo qué tengo hoy', 'vale gracias', 'sí pero antes dime qué tengo hoy']) if (await ofertaCon(m)) noContestan.push(m);
+    afirmar('una orden normal o un mensaje más largo NO contestan a la oferta', noContestan.length === 0, noContestan.join(' | '));
   }
 
   console.log('Preguntas sin contestar: se cierran y se dice');
@@ -1529,9 +1781,9 @@ async function main() {
     afirmar('… y la meta lleva sus textos', JSON.stringify(cierre.meta.preguntas_ignoradas) === JSON.stringify(['«Médico» cae en tu horario. ¿La apunto igualmente?']));
     const res = (meta) => correr(nodo('resultado.js'), { input: [{ id: 'x' }], nodos: { Planificar: [{ meta }], 'Escribir en Supabase': [{ id: 'x' }] } });
     const r = (await res({ ...cierre.meta, respuesta_usuario: 'Apuntado: Dentista.' }))[0];
-    afirmar('Resultado: primero dice que no hizo nada con la pregunta sin contestar, luego la respuesta', r.mensajes[0] === 'Como no me contestaste a ««Médico» cae en tu horario. ¿La apunto igualmente?», no he hecho nada con eso. Si lo quieres, dímelo otra vez.' && r.mensajes.length >= 2, JSON.stringify(r.mensajes));
+    afirmar('Resultado: primero dice que no hizo nada con la pregunta sin contestar, luego la respuesta', r.mensajes[0] === 'No contestaste a ««Médico» cae en tu horario. ¿La apunto igualmente?», así que no he hecho nada con eso.' && r.mensajes.length >= 2, JSON.stringify(r.mensajes));
     const r2 = (await res({ ...cierre.meta, preguntas_ignoradas: ['¿Uno?', '¿Dos?'] }))[0];
-    afirmar('… con varias, una lista', r2.mensajes[0].startsWith('Como no me contestaste a estas preguntas') && r2.mensajes[0].includes('• «¿Uno?»') && r2.mensajes[0].includes('• «¿Dos?»'));
+    afirmar('… con varias, una lista', r2.mensajes[0].startsWith('No contestaste a estas preguntas') && r2.mensajes[0].includes('• «¿Uno?»') && r2.mensajes[0].includes('• «¿Dos?»'));
   }
 
   console.log('Sin repetidos en las listas');
@@ -1644,7 +1896,7 @@ async function main() {
     const r2c = await res(f2, [{}, { error: { message: 'function olvidar_memoria does not exist' } }]);
     afirmar('sin actualizar la base de datos: es un fallo del flujo (falta la función)', r2c.fallo_flujo === true);
     const f3 = await pm('/forget 3');
-    afirmar('/forget del nombre de la secretaria: no se olvida', f3.length === 1 && f3[0].meta.mensajes_fijos[0].startsWith('Mi nombre no lo olvido'));
+    afirmar('/forget del nombre de la secretaria: no se olvida', f3.length === 1 && f3[0].meta.mensajes_fijos[0].startsWith('Mi nombre no se olvida'));
     const f9 = await pm('/forget 9');
     afirmar('/forget de un número que no existe: lo dice y enseña la lista', f9[0].meta.mensajes_fijos[0].startsWith('No tengo el dato número 9.') && f9.every((x) => x.etiqueta !== 'olvidar un dato'));
 
@@ -1660,11 +1912,11 @@ async function main() {
     afirmar('«no»: no olvida nada', no.every((x) => x.etiqueta !== 'olvidar un dato') && no.find((x) => x.etiqueta === 'actualizar mensaje').meta.respuesta_usuario === 'Vale, no quito nada.');
     const t2 = await pm('olvida el dato del trabajo');
     const q2 = t2.find((x) => x.etiqueta === 'actualizar mensaje');
-    afirmar('varios que encajan: los enseña todos con su número y sugiere /forget N', q2.meta.respuesta_usuario.startsWith('Esto es lo que encuentro:\n2. horario de trabajo: los viernes por la mañana\n5. trabajo: en un banco\n¿Lo olvido todo?'), q2.meta.respuesta_usuario);
+    afirmar('varios que encajan: los enseña todos con su número y sugiere /forget N', q2.meta.respuesta_usuario.startsWith('Encuentro esto:\n2. horario de trabajo: los viernes por la mañana\n5. trabajo: en un banco\n¿Lo olvido todo?'), q2.meta.respuesta_usuario);
     const t3 = await pm('borra de tu memoria lo del gimnasio');
     afirmar('nada que encaje: lo dice', t3[0].meta.mensajes_fijos[0].startsWith('No encuentro nada en mi memoria sobre «gimnasio»'));
     const t4 = await pm('olvida de tu memoria lo de Lola');
-    afirmar('con palabras, el nombre de la secretaria tampoco se olvida', t4[0].meta.mensajes_fijos[0].startsWith('Mi nombre no lo olvido'));
+    afirmar('con palabras, el nombre de la secretaria tampoco se olvida', t4[0].meta.mensajes_fijos[0].startsWith('Mi nombre no se olvida'));
     const leche = await planificar(respuesta({ intencion: 'cancelar', items: [], cancelar: { item_ids: ['i1'] } }), { mensaje: 'olvida lo de la leche', memoria: MEM, refs: REFS });
     afirmar('«olvida lo de la leche» (sin nombrar la memoria) sigue siendo quitar una tarea', leche.every((x) => x.etiqueta !== 'olvidar un dato') && leche.some((x) => x.url.includes('/items')));
     const falso = [{ rol: 'user', texto: 'x' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', motivo: 'confirmar_memoria', olvidar: [uid(2)], pregunta: '¿Lo olvido?' }) }];
@@ -1674,12 +1926,12 @@ async function main() {
     // Tope de 50 datos
     const llena = Array.from({ length: 50 }, (_, i) => ({ id: `00000000-0000-4000-8000-${String(100 + i).padStart(12, '0')}`, termino: `dato ${i}`, significado: 'x' }));
     const nuevo = await planificar(respuesta({ intencion: 'recordar', items: [], memoria_nueva: { termino: 'gimnasio', significado: 'los martes' }, respuesta_usuario: 'Lo recordaré.' }), { memoria: llena });
-    afirmar('memoria llena: un dato nuevo no se guarda y se dice', nuevo.every((x) => x.etiqueta !== 'guardar memoria') && nuevo[0].meta.respuesta_usuario.startsWith('Mi memoria está llena (50 datos) y no he guardado «gimnasio»') && nuevo[0].meta.respuesta_fija === true);
+    afirmar('memoria llena: un dato nuevo no se guarda y se dice', nuevo.every((x) => x.etiqueta !== 'guardar memoria') && nuevo[0].meta.respuesta_usuario.startsWith('Tengo la memoria llena (50 datos) y no he guardado «gimnasio»') && nuevo[0].meta.respuesta_fija === true);
     const cambia = await planificar(respuesta({ intencion: 'recordar', items: [], memoria_nueva: { termino: 'Dato 3', significado: 'y' } }), { memoria: llena });
     afirmar('memoria llena: cambiar un dato que ya existe sí se puede', cambia.some((x) => x.etiqueta === 'guardar memoria'));
     const conGuardar = await planificar(respuesta({ intencion: 'guardar', items: [itemBase()], memoria_nueva: { termino: 'gimnasio', significado: 'los martes' }, respuesta_usuario: 'Apuntado.' }), { memoria: llena });
     const rg = await res(conGuardar, [{ id: 'x' }, {}]);
-    afirmar('memoria llena junto a guardar: guarda lo pedido y avisa de que no recuerda el dato', conGuardar.some((x) => x.url.endsWith('/items')) && rg.mensajes[0].includes('Mi memoria está llena (50 datos) y no he guardado «gimnasio»'), rg.mensajes[0]);
+    afirmar('memoria llena junto a guardar: guarda lo pedido y avisa de que no recuerda el dato', conGuardar.some((x) => x.url.endsWith('/items')) && rg.mensajes[0].includes('Tengo la memoria llena (50 datos) y no he guardado «gimnasio»'), rg.mensajes[0]);
   }
 
   console.log('Enviar archivos por WhatsApp (ver_archivos con enviar)');
@@ -1706,12 +1958,12 @@ async function main() {
     const r3 = await res({}, tres);
     afirmar('tres archivos de una carpeta: se mandan los tres, con su id, nombre, tipo y carpeta, y el texto solo cuenta cuántos', r3.ok === true && r3.envios_archivos.length === 3 && r3.envios_archivos[0].drive_file_id === 'ID_DRIVE_0001' && r3.envios_archivos[0].nombre === 'foto-1.jpg' && r3.envios_archivos[0].tipo_mime === 'image/jpeg' && r3.envios_archivos[0].ruta === 'Fotos' && r3.mensajes[0] === 'Te mando 3 archivos:', JSON.stringify(r3));
     const r1 = await res({}, [arch({})]);
-    afirmar('un solo archivo: singular', r1.envios_archivos.length === 1 && r1.mensajes[0].startsWith('Te mando este archivo:'));
+    afirmar('un solo archivo: singular', r1.envios_archivos.length === 1 && r1.mensajes[0].startsWith('Aquí tienes el archivo:'));
     const siete = Array.from({ length: 7 }, () => arch({}));
     const r7 = await res({}, siete);
     const veinticinco = Array.from({ length: 25 }, () => arch({}));
     const r25 = await res({}, veinticinco);
-    afirmar('25 archivos: solo los 20 más recientes (los primeros de la lista) y se explica', r25.envios_archivos.length === 20 && r25.envios_archivos.map((x) => x.nombre).join() === veinticinco.slice(0, 20).map((x) => x.nombre).join() && r25.mensajes[0].startsWith('Hay 25 archivos con esos criterios. Te mando los 20 más recientes'), r25.mensajes[0]);
+    afirmar('25 archivos: solo los 20 más recientes (los primeros de la lista) y se explica', r25.envios_archivos.length === 20 && r25.envios_archivos.map((x) => x.nombre).join() === veinticinco.slice(0, 20).map((x) => x.nombre).join() && r25.mensajes[0].startsWith('Hay 25 archivos. Te mando los 20 más recientes'), r25.mensajes[0]);
     afirmar('siete archivos: se mandan los siete (el tope ya no es 5)', r7.envios_archivos.length === 7);
     // Varias carpetas: agrupados por carpeta, en el orden alfabético de las listas, y dentro de cada una del más reciente al más antiguo
     const mezclados = [arch({ nombre: 'v1.jpg', carpeta_destino: 'Fotos/Viajes' }), arch({ nombre: 'f1.jpg', carpeta_destino: 'Fotos' }), arch({ nombre: 'v2.jpg', carpeta_destino: 'Fotos/Viajes' }), arch({ nombre: 'f2.jpg', carpeta_destino: 'Fotos' }), arch({ nombre: 'n1.jpg', carpeta_destino: null, items: { tipo: 'nota' } })];
@@ -1720,7 +1972,7 @@ async function main() {
     afirmar('varias carpetas: el texto dice cuántos archivos y de cuántas carpetas', rm.mensajes[0] === 'Te mando 5 archivos de 3 carpetas:', rm.mensajes[0]);
     const mas = Array.from({ length: 22 }, (_, i) => arch({ nombre: 'g' + i + '.jpg', carpeta_destino: i % 2 === 0 ? 'Fotos' : 'Zeta' }));
     const rmas = await res({}, mas);
-    afirmar('más del tope con varias carpetas: se cogen los 20 más recientes y luego se agrupan; el texto lo explica', rmas.envios_archivos.length === 20 && rmas.envios_archivos.slice(0, 10).every((x) => x.ruta === 'Fotos') && rmas.envios_archivos.slice(10).every((x) => x.ruta === 'Zeta') && rmas.mensajes[0].startsWith('Hay 22 archivos con esos criterios. Te mando los 20 más recientes de 2 carpetas;'), rmas.mensajes[0]);
+    afirmar('más del tope con varias carpetas: se cogen los 20 más recientes y luego se agrupan; el texto lo explica', rmas.envios_archivos.length === 20 && rmas.envios_archivos.slice(0, 10).every((x) => x.ruta === 'Fotos') && rmas.envios_archivos.slice(10).every((x) => x.ruta === 'Zeta') && rmas.mensajes[0].startsWith('Hay 22 archivos. Te mando los 20 más recientes de 2 carpetas:'), rmas.mensajes[0]);
     const rt = await res({ tipo: 'documento' }, [arch({}), arch({ nombre: 'Contrato.pdf', tipo_mime: 'application/pdf', carpeta_destino: null, items: { tipo: 'nota' } })]);
     afirmar('el filtro de tipo se respeta al mandar', rt.envios_archivos.length === 1 && rt.envios_archivos[0].nombre === 'Contrato.pdf');
     const rc = await res({ carpeta: 'fotos' }, [arch({}), arch({ carpeta_destino: 'Facturas' })]);
@@ -1732,11 +1984,11 @@ async function main() {
     const vacia = await res({}, [{}]);
     afirmar('sin ningún archivo guardado: se dice y no se manda nada', vacia.envios_archivos.length === 0 && vacia.mensajes[0] === 'Todavía no has guardado ningún archivo.');
     const malId = await res({}, [arch({ drive_file_id: 'a b/c' }), arch({ drive_file_id: null }), arch({ drive_file_id: '../../x' }), arch({})]);
-    afirmar('un archivo sin id de Drive válido no se manda', malId.envios_archivos.length === 1 && malId.mensajes[0].startsWith('Te mando este archivo:'));
+    afirmar('un archivo sin id de Drive válido no se manda', malId.envios_archivos.length === 1 && malId.mensajes[0].startsWith('Aquí tienes el archivo:'));
     const solo = await res({}, [arch({ drive_file_id: null })]);
     afirmar('si ninguno tiene id válido se dice que no hay nada que mandar', solo.envios_archivos.length === 0);
     const rareza = await res({}, [arch({ nombre: '*raro* _nombre_.jpg' })]);
-    afirmar('el nombre del archivo se conserva tal cual para mandarlo (la limpieza de formato va en el texto que se escribe)', rareza.envios_archivos[0].nombre === '*raro* _nombre_.jpg' && rareza.mensajes[0] === 'Te mando este archivo:');
+    afirmar('el nombre del archivo se conserva tal cual para mandarlo (la limpieza de formato va en el texto que se escribe)', rareza.envios_archivos[0].nombre === '*raro* _nombre_.jpg' && rareza.mensajes[0] === 'Aquí tienes el archivo:');
 
     const lista = (await correr(nodo('resultado.js'), { input: tres, nodos: { Planificar: [{ meta: { ok: true, intencion: 'ver_archivos', avisos: [], respuesta_usuario: 'x', pregunta: null, error: null, ahora: AHORA, consulta_archivos: { carpeta: null, tipo: null, solo_pendientes: false, enviar: false } } }], 'Escribir en Supabase': [{ id: 'm1' }] } }))[0];
     afirmar('sin enviar: se enseña la lista de siempre y no se manda ningún archivo', lista.envios_archivos.length === 0 && lista.mensajes[0].includes('*Fotos* (3)') && lista.mensajes[0].includes('https://drive.google.com/x'));
@@ -1806,13 +2058,13 @@ async function main() {
     const conMeta = async (extra) =>
       (await correr(nodo('resultado.js'), { input: [{}], nodos: { Planificar: [{ meta: { ok: true, intencion: 'guardar', avisos: [], respuesta_usuario: 'Apuntado.', pregunta: null, error: null, ahora: AHORA, consulta: null, ...extra } }], 'Escribir en Supabase': [{ id: 'x' }] } }))[0];
     const r1 = await conMeta({ recordatorios: [{ titulo: 'Sacar la ropa', recordar_en: '2026-10-10T16:30:00.000Z' }] });
-    afirmar('confirmación: a las 18:30 de hoy, con los tres avisos', r1.mensajes[0] === 'Apuntado.\n🔔 Sacar la ropa: hoy a las 18:30. Te avisaré 1 hora antes, 30 minutos antes y a la hora.', r1.mensajes[0]);
+    afirmar('confirmación: a las 18:30 de hoy, sin explicar los avisos', r1.mensajes[0] === 'Apuntado.\n🔔 Sacar la ropa: hoy a las 18:30.', r1.mensajes[0]);
     const r2 = await conMeta({ recordatorios: [{ titulo: 'Horno', recordar_en: '2026-10-10T12:40:00.000Z' }] });
-    afirmar('a 40 minutos: ya no se promete el aviso de 1 hora antes', r2.mensajes[0].endsWith('hoy a las 14:40. Te avisaré 30 minutos antes y a la hora.'), r2.mensajes[0]);
+    afirmar('a 40 minutos: solo la hora', r2.mensajes[0].endsWith('hoy a las 14:40.'), r2.mensajes[0]);
     const r3 = await conMeta({ recordatorios: [{ titulo: 'Horno', recordar_en: '2026-10-10T12:10:00.000Z' }] });
-    afirmar('a 10 minutos: solo a la hora', r3.mensajes[0].endsWith('hoy a las 14:10. Te avisaré a la hora.'), r3.mensajes[0]);
+    afirmar('a 10 minutos: solo la hora', r3.mensajes[0].endsWith('hoy a las 14:10.'), r3.mensajes[0]);
     const r4 = await conMeta({ recordatorios: [{ titulo: 'Llamar al médico', recordar_en: '2026-10-11T07:00:00.000Z' }] });
-    afirmar('mañana se dice «mañana»', r4.mensajes[0].includes('Llamar al médico: mañana a las 09:00. Te avisaré 1 hora antes, 30 minutos antes y a la hora.'), r4.mensajes[0]);
+    afirmar('mañana se dice «mañana»', r4.mensajes[0].includes('Llamar al médico: mañana a las 09:00.'), r4.mensajes[0]);
     const r5 = await conMeta({ recordatorios: [{ titulo: 'Informe', recordar_en: '2026-10-14T08:00:00.000Z' }] });
     afirmar('más adelante se dice el día', r5.mensajes[0].includes('Informe: mié 14 oct a las 10:00.'), r5.mensajes[0]);
     const r6 = await conMeta({ recordatorios_pasados: ['Sacar la ropa'] });
@@ -1873,8 +2125,8 @@ async function main() {
     const filas = [{ carpeta_id: 'r1', estado: 'asignado' }, { carpeta_id: 'r1', estado: 'asignado' }, { carpeta_id: 'p1', estado: 'asignado' }, { carpeta_id: null, estado: 'pendiente' }, { carpeta_id: null, estado: 'pendiente' }, { carpeta_id: null, estado: 'asignado' }, {}];
     const r = await resultadoC(metaCarpetas, [N1, N2, N3], filas);
     const texto = r.mensajes[0];
-    afirmar('el árbol se redacta con código: cabecera, bloque de código y jerarquía', r.ok === true && texto.startsWith('*Carpetas en Drive*\n```\nSecretaria\n') && texto.includes('\n```\n('), texto);
-    const arbol = texto.split('```\n')[1].trimEnd();
+    afirmar('el árbol se redacta con código: cabecera, bloque de código y jerarquía', r.ok === true && texto.startsWith('*Carpetas en Drive*\n```\nSecretaria\n') && texto.endsWith('\n```'), texto);
+    const arbol = texto.split('```')[1].trim();
     afirmar('las carpetas van ordenadas por nombre y las hijas cuelgan de su padre', arbol === ['Secretaria', '├─ Entrada (2)', '├─ Fotos', '│  └─ Viajes', '│     └─ Playa (1)', '├─ Notas', '└─ Trabajo', '   ├─ Facturas (2)', '   └─ Informes técnicos'].join('\n'), `\n${arbol}`);
     afirmar('los pendientes cuentan en Entrada; los ya movidos, en su carpeta; los asignados sin carpeta no cuentan', arbol.includes('Entrada (2)') && arbol.includes('Facturas (2)') && arbol.includes('Playa (1)') && !arbol.includes('Notas ('));
 
@@ -1911,9 +2163,150 @@ async function main() {
     const p2 = await pd({ carpeta: null, archivos: ['a2', 'a9'], solo_archivos: true });
     afirmar('pedir archivos: las referencias pasan a ids reales, las que no existen se ignoran y solo_archivos sin carpeta no vale', JSON.stringify(p2[0].meta.borrar_drive) === JSON.stringify({ carpeta: null, archivo_ids: ['ar-3'], solo_archivos: false }) && p2[0].meta.avisos.some((a) => a.includes('a9')));
     const p3 = await pd({ carpeta: null, archivos: [] });
-    afirmar('pedir sin decir qué: contesta pidiéndolo y no lee Drive', p3[0].meta.respuesta_fija === true && p3[0].meta.respuesta_usuario.startsWith('Dime qué carpeta o qué archivo') && !p3[0].meta.carpetas);
+    afirmar('pedir sin decir qué: contesta pidiéndolo y no lee Drive', p3[0].meta.respuesta_fija === true && p3[0].meta.respuesta_usuario === 'Dime qué carpeta o archivo de Drive quieres borrar.' && !p3[0].meta.carpetas);
     afirmar('pedir una ruta no válida es un error de validación', esError(await pd({ carpeta: '../secreto' })));
     afirmar('la respuesta del modelo («Borrado.») nunca llega: Resultado redacta', p1[0].meta.respuesta_usuario === '');
+
+    // --- Mover una carpeta dentro de otra  ---
+    const pm = (mensaje) => planificar({ saltar_modelo: true }, { mensaje });
+    for (const [frase, origen, destino] of [
+      ['mete la carpeta Viajes dentro de Fotos', 'Viajes', 'Fotos'],
+      ['Mueve la carpeta Fotos/Viajes a Notas', 'Fotos/Viajes', 'Notas'],
+      ['pon la carpeta Redes en la carpeta Trabajo', 'Redes', 'Trabajo'],
+      ['Por favor, mueve la carpeta «Viajes» dentro de «Fotos».', 'Viajes', 'Fotos'],
+      ['mete la carpeta Viaje a Roma en Fotos', 'Viaje a Roma', 'Fotos'],
+      ['quiero que muevas la carpeta Viajes a Fotos', 'Viajes', 'Fotos'],
+      ['Mete la carpeta Viajes dentro de Fotos barra 2026', 'Viajes', 'Fotos/2026'],
+      ['mueve la carpeta Fotos barra Viajes a Notas', 'Fotos/Viajes', 'Notas'],
+      ['eh, mete la carpeta Viajes en Fotos', 'Viajes', 'Fotos'],
+      ['llévala... lleva la carpeta Playa a la carpeta Fotos'.replace('llévala... ', ''), 'Playa', 'Fotos'],
+    ]) {
+      const r = await pm(frase);
+      afirmar(`«${frase}»: mover ${origen} → ${destino} por código, sin el modelo`, r[0].meta.intencion === 'mover_carpeta' && r[0].meta.carpetas === true && JSON.stringify(r[0].meta.mover_carpeta?.origenes) === JSON.stringify([origen]) && r[0].meta.mover_carpeta?.destino === destino && r[0].meta.mover_carpeta?.crear === false && r[0].meta.respuesta_usuario === '' && r.length === 1, JSON.stringify(r[0].meta.mover_carpeta ?? r[0].meta.intencion));
+    }
+    for (const frase of ['mete las fotos en Viajes', 'mueve la cita al viernes', 'crea la carpeta Proyectos dentro de Trabajo', 'borra la carpeta Fotos/Viajes', 'guárdala en la carpeta Fotos', 'qué hay en la carpeta Fotos', 'mete la carpeta Viajes', 'pon la carpeta', 'cambia la carpeta Viajes a Fotos', 'renombra la carpeta Viajes a Fotos', 'mete la carpeta a/b/c/d en Fotos', 'mueve la carpeta Uni/Redes/Tema1/Extra a Fotos']) {
+      const r = await pm(frase);
+      afirmar(`«${frase}»: no es mover una carpeta`, r[0].meta.intencion !== 'mover_carpeta', r[0].meta.intencion);
+    }
+    afirmar('mover carpetas no cierra otra pregunta abierta ni escribe nada más que el mensaje', (await planificar({ saltar_modelo: true }, { mensaje: 'mete la carpeta Viajes dentro de Fotos', pendienteId: 'p-9' })).every((x) => x.etiqueta === 'actualizar mensaje'));
+    const [mv] = await correr(nodo('revisar-drive.js'), { nodos: { Planificar: [{ meta: { ok: true, intencion: 'mover_carpeta', carpetas: true, mover_carpeta: { origenes: ['x'], destino: 'y', crear: false } } }] , Configuración: [{ config: { ...CONFIG, carpeta_raiz_id: RAIZ } }] } }).catch((e) => [{ fallo: String(e.message).slice(0, 80) }]);
+    afirmar('Revisar Drive sin el árbol leído no inventa nada (falla de forma visible o dice que no pudo leer)', Boolean(mv.fallo || mv.mover_plan?.error_global), JSON.stringify(mv).slice(0, 120));
+
+    // Revisar Drive: qué carpeta es, adónde va y si se puede
+    const MV = (origen, destino, niveles, filasA, crear = false) => revisar({ ok: true, intencion: 'mover_carpeta', carpetas: true, mover_carpeta: { origenes: Array.isArray(origen) ? origen : [origen], destino, crear } }, niveles, filasA).then((x) => x[0].mover_plan);
+    const MVerr = (pl) => pl.error_global?.error ?? pl.rechazos[0]?.error ?? 'ninguno';
+    const m1 = await MV('Fotos/Viajes', 'Notas');
+    afirmar('mover Fotos/Viajes a Notas: ids reales, rutas nuevas y cuánto viaja (2 archivos registrados y 1 subcarpeta)', m1.movimientos.length === 1 && m1.movimientos[0].id === ID_V1 && m1.movimientos[0].nuevo_padre_id === 'n1' && m1.movimientos[0].viejo_padre_id === 'f1' && m1.movimientos[0].ruta_origen === 'Fotos/Viajes' && m1.movimientos[0].ruta_destino === 'Notas/Viajes' && m1.movimientos[0].archivos === 2 && m1.movimientos[0].subcarpetas === 1 && m1.crear === null, JSON.stringify(m1));
+    afirmar('sin tildes ni mayúsculas, y con el nombre suelto si solo hay una con ese nombre', (await MV('playa', 'NOTAS')).movimientos[0]?.ruta_destino === 'Notas/Playa');
+    afirmar('un nombre que está en dos sitios (Fotos/Viajes y Trabajo/Viajes): no elige, enseña las rutas', JSON.stringify((await MV('viajes', 'Notas')).rechazos[0]) === JSON.stringify({ origen: 'viajes', error: 'origen_ambiguo', rutas: ['Fotos/Viajes', 'Trabajo/Viajes'] }));
+    afirmar('origen que no existe', MVerr(await MV('Fotos/Nada', 'Notas')) === 'origen_no_encontrado');
+    afirmar('destino que no existe', MVerr(await MV('Fotos/Viajes', 'Nada')) === 'destino_no_encontrado');
+    for (const p of ['Entrada', 'Notas']) afirmar(`no se mueve «${p}» (Entrada y Notas)`, MVerr(await MV(p, 'Fotos')) === 'protegida');
+    afirmar('una carpeta no se mete dentro de sí misma ni de una suya', MVerr(await MV('Fotos/Viajes', 'Fotos/Viajes')) === 'dentro_de_si' && MVerr(await MV('Fotos/Viajes', 'Fotos/Viajes/Playa')) === 'dentro_de_si' && MVerr(await MV('Fotos', 'Playa')) === 'dentro_de_si');
+    afirmar('si ya está ahí, se dice', MVerr(await MV('Fotos/Viajes', 'Fotos')) === 'ya_esta');
+    const M2choque = lista([carp('r1', 'Facturas', 'u1'), carp(ID_V1, 'Viajes', 'f1'), carp('x-viajes', 'Viajes', 'n1'), carp('a1', 'Informes técnicos', 'u1')]);
+    afirmar('si en el destino ya hay otra con ese nombre, no la pisa', MVerr(await MV('Fotos/Viajes', 'Notas', [M1, M2choque, M3])) === 'choque');
+    afirmar('a más de 3 niveles no (Fotos con Viajes y Playa dentro, a Notas, serían 4)', MVerr(await MV('Fotos', 'Notas')) === 'profundidad');
+    afirmar('…pero justo hasta el tercer nivel sí', (await MV('Fotos/Viajes', 'Notas')).movimientos[0]?.ruta_destino === 'Notas/Viajes' && (await MV('Fotos/Viajes/Playa', 'Notas')).movimientos[0]?.ruta_destino === 'Notas/Playa');
+    const conDestinoArchivo = ARCH2.map((f) => (f.id === 'ar-2' ? { ...f, carpeta_destino: 'Fotos/Viajes/Playa' } : f));
+    afirmar('cuenta también hasta dónde llegan los archivos ya clasificados dentro (carpeta_destino)', (await MV('Fotos/Viajes', 'Notas', undefined, conDestinoArchivo)).movimientos[0]?.ruta_destino === 'Notas/Viajes');
+    afirmar('con el árbol incompleto no se mueve nada', MVerr(await MV('Fotos/Viajes', 'Notas', [M1, lista([], { nextPageToken: 'x' }), M3])) === 'arbol');
+    afirmar('un pedido sin origen o sin destino no revienta: error visible', (await MV(null, 'Notas')).error_global?.error === 'pedido' && (await MV('Fotos', '')).error_global?.error === 'pedido');
+
+    // Varias carpetas a la vez y crear el destino
+    const MV2 = await MV(['Fotos/Viajes/Playa', 'Notas'], 'Trabajo');
+    afirmar('varias carpetas: una protegida se rechaza y las demás se mueven', MV2.movimientos.length === 1 && MV2.movimientos[0].nombre === 'Playa' && MV2.rechazos[0]?.error === 'protegida' && MV2.rechazos[0].ruta === 'Notas', JSON.stringify(MV2));
+    const MC = await MV(['Fotos/Viajes', 'Notas'], 'Cosas', undefined, undefined, true);
+    afirmar('crear el destino: se crea en la raíz, solo con lo que sí se puede mover, y los movimientos apuntan a «@nueva»', MC.crear?.nombre === 'Cosas' && MC.crear.padre_id === RAIZ && MC.movimientos.length === 1 && MC.movimientos[0].nuevo_padre_id === '@nueva' && MC.movimientos[0].ruta_destino === 'Cosas/Viajes' && MC.rechazos[0]?.error === 'protegida', JSON.stringify(MC));
+    afirmar('crear el destino con todo rechazado: no se crea nada', (await MV(['Notas'], 'Cosas', undefined, undefined, true)).crear === null);
+    afirmar('crear a más de 3 niveles: no', MVerr(await MV(['Fotos/Viajes'], 'Fotos/Viajes/Playa/Hondo', undefined, undefined, true)) === 'profundidad');
+    afirmar('dos carpetas una dentro de otra: solo se mueve la de fuera', (await MV(['Fotos', 'Fotos/Viajes'], 'Notas')).rechazos.some((x) => x.error === 'anidada') === true || (await MV(['Fotos/Viajes', 'Fotos'], 'Notas')).rechazos.some((x) => x.error === 'anidada') === true);
+
+    // Frases reales
+    for (const [frase, origenes, destino, crear] of [
+      ['Crea una carpeta llamada viajes y mete dentro viaje Budapest y el tren de hierro', ['viaje Budapest', 'tren de hierro'], 'Viajes', true],
+      ['No, quiero que crees la carpeta Viajes y metas dentro la carpeta de Viaje Budapest y Viaje tren de hierro', ['Viaje Budapest', 'Viaje tren de hierro'], 'Viajes', true],
+      ['mete las carpetas Viajes y Playa dentro de Fotos', ['Viajes', 'Playa'], 'Fotos', false],
+    ]) {
+      const r = await pm(frase);
+      afirmar(`«${frase}»: ${origenes.join(' + ')} → ${destino}${crear ? ' (creándola)' : ''}`, r[0].meta.intencion === 'mover_carpeta' && JSON.stringify(r[0].meta.mover_carpeta?.origenes.map((x) => x.toLowerCase())) === JSON.stringify(origenes.map((x) => x.toLowerCase())) && r[0].meta.mover_carpeta?.destino.toLowerCase() === destino.toLowerCase() && r[0].meta.mover_carpeta?.crear === crear, JSON.stringify(r[0].meta.mover_carpeta ?? r[0].meta.intencion));
+    }
+
+    // Resultado: lo que se le cuenta
+    const metaMover = { ok: true, intencion: 'mover_carpeta', avisos: [], respuesta_usuario: '', pregunta: null, error: null, ahora: AHORA, consulta_url: 'x', consulta: null, carpetas: true, mover_carpeta: { origenes: ['Fotos/Viajes'], destino: 'Notas', crear: false } };
+    const mov = (n, nuevo = 'n1') => ({ mover: { id: `id${n}`, nuevo_padre_id: nuevo, viejo_padre_id: 'f1', nombre: `Carp${n}`, ruta_origen: `Fotos/Carp${n}`, ruta_destino: `Notas/Carp${n}`, archivos: 0, subcarpetas: 0 } });
+    const OKD = { statusCode: 200, body: {} };
+    const OKA = { arbol: 3, archivos: 2, carpetas_pedidas: 0, omitidos: 0 };
+    const resMover = (plan, extra = {}) => resultadoD(metaMover, [{ mover_plan: { crear: null, movimientos: [], rechazos: [], error_global: null, ...plan } }], { 'Preparar movimientos': [mov(1)], 'Mover en Drive': [OKD], 'Anotar movimiento': [OKA], ...extra });
+    const ok1 = await resMover({ movimientos: [mov(1).mover] });
+    afirmar('éxito con una: una frase corta con la ruta antigua y la nueva', ok1.mensajes.length === 1 && ok1.mensajes[0] === 'Hecho: «Fotos/Carp1» está ahora en «Notas/Carp1».' && ok1.ok === true && !ok1.anotacion, JSON.stringify(ok1.mensajes));
+    const ok3 = await resMover({ movimientos: [mov(1).mover, mov(2).mover, mov(3).mover] }, { 'Preparar movimientos': [mov(1), mov(2), mov(3)], 'Mover en Drive': [OKD, OKD, OKD], 'Anotar movimiento': [OKA, OKA, OKA] });
+    afirmar('éxito con varias: un solo mensaje con la lista', ok3.mensajes.length === 1 && ok3.mensajes[0] === 'He metido en «Notas»:\n• Carp1\n• Carp2\n• Carp3' && !ok3.anotacion, JSON.stringify(ok3.mensajes));
+    const okc = await resMover({ crear: { nombre: 'Viajes', padre_id: RAIZ, ruta: 'Viajes' }, movimientos: [mov(1, '@nueva').mover, mov(2, '@nueva').mover].map((m) => ({ ...m, ruta_destino: m.ruta_destino.replace('Notas', 'Viajes') })) }, { 'Crear en Drive': [OKD], 'Preparar movimientos': [mov(1), mov(2)], 'Mover en Drive': [OKD, OKD], 'Anotar movimiento': [OKA, OKA] });
+    afirmar('creando el destino: lo dice', okc.mensajes[0].startsWith('He creado «Viajes» y he metido:\n• Carp1\n• Carp2'), JSON.stringify(okc.mensajes));
+    const okc1 = await resMover({ crear: { nombre: 'Viajes', padre_id: RAIZ, ruta: 'Viajes' }, movimientos: [mov(1, '@nueva').mover] }, { 'Crear en Drive': [OKD] });
+    afirmar('creando el destino con una sola: una frase', okc1.mensajes[0] === 'He creado «Viajes» y he metido dentro «Carp1».', JSON.stringify(okc1.mensajes));
+    const om = await resMover({ movimientos: [mov(1).mover] }, { 'Anotar movimiento': [{ ...OKA, omitidos: 2 }] });
+    afirmar('si alguna ruta no encajó, lo dice', om.mensajes[0].includes('2 rutas no encajaban y se han dejado como estaban.'));
+    const f403 = await resMover({ movimientos: [mov(1).mover] }, { 'Mover en Drive': [{ statusCode: 403, body: {} }] });
+    afirmar('si Drive no la mueve: lo dice y avisa (fallo del flujo)', f403.mensajes[0].includes('Drive no me ha dejado mover «Carp1»') && f403.anotacion?.error?.includes('Mover en Drive') === true, JSON.stringify(f403.mensajes));
+    const parcial = await resMover({ movimientos: [mov(1).mover, mov(2).mover] }, { 'Preparar movimientos': [mov(1), mov(2)], 'Mover en Drive': [OKD, { statusCode: 404, body: {} }], 'Anotar movimiento': [OKA, OKA] });
+    afirmar('si una falla y otra no: cuenta las dos cosas', parcial.mensajes[0].startsWith('Hecho: «Fotos/Carp1» está ahora en «Notas/Carp1».') && parcial.mensajes[0].includes('Drive no me ha dejado mover «Carp2»') && Boolean(parcial.anotacion));
+    const fdb = await resMover({ movimientos: [mov(1).mover] }, { 'Anotar movimiento': [{ error: { message: 'boom' } }] });
+    afirmar('si Drive la movió y la base de datos no se anotó: lo dice y avisa', fdb.mensajes[0].includes('Hecho: «Fotos/Carp1»') && fdb.mensajes[0].includes('No he podido anotarlo en la base de datos') && fdb.anotacion?.error?.includes('Anotar movimiento') === true, JSON.stringify(fdb.mensajes));
+    const fcrea = await resMover({ crear: { nombre: 'Viajes', padre_id: RAIZ, ruta: 'Viajes' }, movimientos: [mov(1, '@nueva').mover] }, { 'Crear en Drive': [{ statusCode: 403, body: {} }], 'Preparar movimientos': [{ sin_movimientos: true }], 'Mover en Drive': [], 'Anotar movimiento': [] });
+    afirmar('si no se pudo crear la carpeta: no se mueve nada y avisa', fcrea.mensajes[0].startsWith('Drive no me ha dejado crear la carpeta «Viajes»') && Boolean(fcrea.anotacion), JSON.stringify(fcrea.mensajes));
+    const solo = await resMover({ rechazos: [{ origen: 'x', error: 'protegida', ruta: 'Notas' }, { origen: 'y', error: 'origen_no_encontrado', nombre: 'y' }] }, { 'Preparar movimientos': [{ sin_movimientos: true }], 'Mover en Drive': [], 'Anotar movimiento': [] });
+    afirmar('todo rechazado: una frase por rechazo, sin avisar', solo.mensajes[0] === 'No muevo «Notas»: la uso yo para ordenar tus cosas.\nNo encuentro la carpeta «y» en Drive.' && solo.ok === true && !solo.anotacion, JSON.stringify(solo.mensajes));
+    for (const [error, texto] of [
+      [{ error: 'destino_no_encontrado', nombre: 'Zzz' }, 'No encuentro la carpeta «Zzz» en Drive.'],
+      [{ error: 'destino_ambiguo', rutas: ['Fotos/Viajes', 'Trabajo/Viajes'] }, 'Hay varias carpetas con ese nombre:\n• Fotos/Viajes\n• Trabajo/Viajes\nDime la ruta completa.'],
+      [{ error: 'profundidad', ruta: 'Notas/Fotos' }, 'Así quedaría en «Notas/Fotos», a más de 3 niveles. Prueba con otro destino.'],
+    ]) {
+      const rr = await resMover({ error_global: error }, { 'Preparar movimientos': [{ sin_movimientos: true }] });
+      afirmar(`error del pedido «${error.error}»: ${texto.split('\n')[0]}`, rr.mensajes[0] === texto && rr.ok === true && !rr.anotacion, JSON.stringify(rr.mensajes));
+    }
+    for (const [rechazo, texto] of [
+      [{ error: 'origen_no_encontrado', nombre: 'Nada' }, 'No encuentro la carpeta «Nada» en Drive.'],
+      [{ error: 'origen_ambiguo', rutas: ['Fotos/Viajes', 'Trabajo/Viajes'] }, 'Hay varias carpetas con ese nombre:\n• Fotos/Viajes\n• Trabajo/Viajes\nDime la ruta completa.'],
+      [{ error: 'dentro_de_si', ruta: 'Fotos/Viajes' }, 'No puedo meter «Fotos/Viajes» dentro de sí misma.'],
+      [{ error: 'anidada', ruta: 'Fotos/Viajes' }, '«Fotos/Viajes» ya va dentro de otra de las que mueves.'],
+      [{ error: 'ya_esta', origen: 'Viajes', destino: 'Fotos' }, '«Viajes» ya está dentro de «Fotos».'],
+      [{ error: 'choque', nombre: 'Viajes', destino: 'Notas' }, 'Ya hay una carpeta «Viajes» dentro de «Notas».'],
+      [{ error: 'profundidad', ruta: 'Notas/Fotos' }, 'Así quedaría en «Notas/Fotos», a más de 3 niveles. Prueba con otro destino.'],
+    ]) {
+      const rr = await resMover({ rechazos: [{ origen: 'x', ...rechazo }] }, { 'Preparar movimientos': [{ sin_movimientos: true }] });
+      afirmar(`rechazo «${rechazo.error}»: ${texto.split('\n')[0]}`, rr.mensajes[0] === texto && rr.ok === true && !rr.anotacion, JSON.stringify(rr.mensajes));
+    }
+    const ra = await resMover({ error_global: { error: 'arbol', detalle: 'No se pudo leer el nivel 2 de carpetas de Drive' } }, { 'Preparar movimientos': [{ sin_movimientos: true }] });
+    afirmar('sin poder leer el árbol: no se ha movido nada y avisa', ra.mensajes[0] === 'No he podido leer tus carpetas de Drive y no he movido nada. Inténtalo en un rato.' && Boolean(ra.anotacion));
+
+    // Los nodos nuevos del flujo
+    const fm = construirFlujo();
+    const nm = (n) => fm.nodes.find((x) => x.name === n);
+    afirmar('Mover en Drive: PATCH a files/{id} con addParents, removeParents y supportsAllDrives, con la credencial de Drive y sin cortar el flujo si falla', nm('Mover en Drive').parameters.method === 'PATCH' && nm('Mover en Drive').parameters.url.includes('addParents=') && nm('Mover en Drive').parameters.url.includes('removeParents=') && nm('Mover en Drive').parameters.url.includes('supportsAllDrives=true') && nm('Mover en Drive').parameters.nodeCredentialType === 'googleDriveOAuth2Api' && nm('Mover en Drive').onError === 'continueRegularOutput');
+    afirmar('Crear en Drive: POST a files con mimeType de carpeta, su padre y la marca de la secretaria, con la credencial de Drive y sin cortar el flujo si falla', nm('Crear en Drive').parameters.method === 'POST' && nm('Crear en Drive').parameters.url.includes('supportsAllDrives=true') && nm('Crear en Drive').parameters.jsonBody.includes('application/vnd.google-apps.folder') && nm('Crear en Drive').parameters.jsonBody.includes("secretaria: '1'") && nm('Crear en Drive').parameters.nodeCredentialType === 'googleDriveOAuth2Api' && nm('Crear en Drive').onError === 'continueRegularOutput');
+    afirmar('Anotar movimiento: RPC mover_carpeta_drive con los cuatro parámetros, con Supabase y sin cortar el flujo si falla', nm('Anotar movimiento').parameters.url.endsWith('/rest/v1/rpc/mover_carpeta_drive') && ['p_id', 'p_nuevo_padre_id', 'p_ruta_origen', 'p_ruta_destino'].every((x) => nm('Anotar movimiento').parameters.jsonBody.includes(x)) && nm('Anotar movimiento').parameters.nodeCredentialType === 'supabaseApi' && nm('Anotar movimiento').onError === 'continueRegularOutput' && !nm('Anotar movimiento').executeOnce);
+    // Las expresiones de n8n de los nodos nuevos, evaluadas con datos de ejemplo (son JavaScript: un fallo de sintaxis solo saldría en producción)
+    const EJ = { id: 'abc 123', nuevo_padre_id: 'n1', viejo_padre_id: 'f1', ruta_origen: 'Fotos/Viajes', ruta_destino: 'Notas/Viajes' };
+    const evalua = (expr, json) => new Function('$json', '$', `return (${expr.trim().slice(3, -2)});`)(json, () => ({ item: { json: { mover: EJ } } }));
+    afirmar('Mover en Drive: la URL lleva el id, el padre nuevo, el viejo y supportsAllDrives (con los ids codificados)', evalua(nm('Mover en Drive').parameters.url, { mover: EJ }) === 'https://www.googleapis.com/drive/v3/files/abc%20123?addParents=n1&removeParents=f1&supportsAllDrives=true' && evalua(nm('Mover en Drive').parameters.jsonBody, { mover: EJ }) === '{}');
+    afirmar('Crear en Drive: el cuerpo lleva el nombre, el padre y el tipo carpeta', JSON.stringify(JSON.parse(evalua(nm('Crear en Drive').parameters.jsonBody, { mover_plan: { crear: { nombre: 'Viajes', padre_id: 'raiz1' } } }))) === JSON.stringify({ name: 'Viajes', mimeType: 'application/vnd.google-apps.folder', parents: ['raiz1'], appProperties: { secretaria: '1' } }));
+    const sn = (nombre, json) => evalua(nm(nombre).parameters.conditions.conditions[0].leftValue, json);
+    afirmar('¿Hay carpetas que mover?, ¿Crear carpeta primero? y ¿Mover carpeta? deciden bien', sn('¿Hay carpetas que mover?', { mover_plan: {} }) === 'si' && sn('¿Hay carpetas que mover?', {}) === 'no' && sn('¿Crear carpeta primero?', { mover_plan: { crear: { nombre: 'x' } } }) === 'si' && sn('¿Crear carpeta primero?', { mover_plan: { crear: null } }) === 'no' && sn('¿Mover carpeta?', { mover: EJ }) === 'si' && sn('¿Mover carpeta?', { sin_movimientos: true }) === 'no');
+    const cuerpo = (json) => JSON.parse(evalua(nm('Anotar movimiento').parameters.jsonBody, json));
+    afirmar('Anotar movimiento: si Drive devolvió 2xx manda los cuatro parámetros; si no, los manda en blanco (la función los rechaza sin tocar nada)', JSON.stringify(cuerpo({ statusCode: 200 })) === JSON.stringify({ p_id: 'abc 123', p_nuevo_padre_id: 'n1', p_ruta_origen: 'Fotos/Viajes', p_ruta_destino: 'Notas/Viajes' }) && [{ statusCode: 403 }, { error: { message: 'x' } }, {}].every((j) => Object.values(cuerpo(j)).every((v) => v === '')));
+    // Preparar movimientos: pone el id real de la carpeta recién creada
+    const prep = (plan, creado) => correr(nodo('preparar-movimientos.js'), { nodos: { 'Revisar Drive': [{ mover_plan: plan }], ...(creado ? { 'Crear en Drive': [creado] } : {}) } });
+    const pl = { crear: { nombre: 'Viajes', padre_id: RAIZ, ruta: 'Viajes' }, movimientos: [mov(1, '@nueva').mover, mov(2, '@nueva').mover] };
+    const pr1 = await prep(pl, { statusCode: 200, body: { id: 'NUEVA' } });
+    afirmar('Preparar movimientos: un item por carpeta, con el id real de la recién creada', pr1.length === 2 && pr1.every((x) => x.mover.nuevo_padre_id === 'NUEVA'), JSON.stringify(pr1));
+    afirmar('Preparar movimientos: si la creación falló, no se mueve nada', (await prep(pl, { statusCode: 403, body: {} }))[0].sin_movimientos === true && (await prep(pl, { error: { message: 'x' } }))[0].sin_movimientos === true && (await prep(pl, { statusCode: 200, body: {} }))[0].sin_movimientos === true);
+    const pr2 = await prep({ crear: null, movimientos: [mov(1).mover], rechazos: [] });
+    afirmar('Preparar movimientos: sin crear nada, deja el padre como estaba', pr2.length === 1 && pr2[0].mover.nuevo_padre_id === 'n1');
+    afirmar('Preparar movimientos: sin plan o sin movimientos, un item «sin_movimientos»', (await prep({ crear: null, movimientos: [] }))[0].sin_movimientos === true);
+    const cx = fm.connections;
+    afirmar('¿Hay carpetas que mover? → ¿Crear carpeta primero? → (Crear en Drive) → Preparar movimientos → ¿Mover carpeta? → Mover en Drive → Anotar movimiento → Resultado; lo demás, directo a Resultado', cx['¿Hay carpetas que mover?'].main[0][0].node === '¿Crear carpeta primero?' && cx['¿Hay carpetas que mover?'].main[1][0].node === 'Resultado' && cx['¿Crear carpeta primero?'].main[0][0].node === 'Crear en Drive' && cx['¿Crear carpeta primero?'].main[1][0].node === 'Preparar movimientos' && cx['Crear en Drive'].main[0][0].node === 'Preparar movimientos' && cx['Preparar movimientos'].main[0][0].node === '¿Mover carpeta?' && cx['¿Mover carpeta?'].main[0][0].node === 'Mover en Drive' && cx['¿Mover carpeta?'].main[1][0].node === 'Resultado' && cx['Mover en Drive'].main[0][0].node === 'Anotar movimiento' && cx['Anotar movimiento'].main[0][0].node === 'Resultado');
 
     // Revisar Drive al pedir
     const [r1] = await revisar(metaPide({ carpeta: 'Fotos/Viajes', archivo_ids: [], solo_archivos: false }));
@@ -1939,13 +2332,13 @@ async function main() {
     // Resultado al pedir: la lista y la pregunta guardada con su hilo
     const q1 = await resultadoD(metaPide({ carpeta: 'Fotos/Viajes', archivo_ids: [], solo_archivos: false }), [r1]);
     const tq = q1.mensajes[0];
-    afirmar('la pregunta enseña lo que se borraría, avisa de lo subido a mano y de la papelera, y pregunta', tq.startsWith('Voy a mandar a la papelera de Drive:\n📁 Fotos/Viajes (la carpeta entera)\n   📁 Fotos/Viajes/Playa\n') && tq.includes('• Fotos/Viajes/mapa.pdf') && tq.includes('también lo que subieras a mano') && tq.includes('papelera de Drive durante unos 30 días') && tq.endsWith('¿Lo mando todo a la papelera?'), tq);
+    afirmar('la pregunta enseña lo que se borraría, avisa de lo subido a mano y de la papelera, y pregunta', tq.startsWith('Voy a mandar a la papelera de Drive:\n📁 Fotos/Viajes (la carpeta entera)\n   📁 Fotos/Viajes/Playa\n') && tq.includes('• Fotos/Viajes/mapa.pdf') && tq.includes('también lo que subiste a mano') && tq.includes('papelera de Drive durante unos 30 días') && tq.endsWith('¿Lo mando todo a la papelera?'), tq);
     const hq = JSON.parse(q1.anotacion.hilo.at(-1).texto);
     afirmar('la pregunta queda abierta con el hilo que escribe el código (motivo, origen y los ids exactos)', q1.ok === true && q1.anotacion.pregunta_pendiente === true && q1.anotacion.pregunta === tq && hq.motivo === 'confirmar_drive' && hq.origen === 'codigo' && JSON.stringify(hq.papelera) === JSON.stringify([{ tipo: 'carpeta', id: ID_V1, nombre: 'Fotos/Viajes' }]) && q1.anotacion.hilo[0].texto === 'borra la carpeta Viajes de Fotos' && !('error' in q1.anotacion), JSON.stringify(q1.anotacion));
     const q2 = await resultadoD(metaPide({ carpeta: 'viajes' }), [r2]);
     afirmar('dos carpetas con el mismo nombre: pide la ruta entera y no deja pregunta abierta', q2.mensajes[0].startsWith('Hay varias carpetas con ese nombre:\n• Fotos/Viajes\n• Trabajo/Viajes') && q2.anotacion === null);
     const q4 = await resultadoD(metaPide({ carpeta: 'Notas' }), [r4]);
-    afirmar('carpeta protegida: lo explica y ofrece borrar lo de dentro', q4.mensajes[0].startsWith('No borro la carpeta «Notas»') && q4.anotacion === null);
+    afirmar('carpeta protegida: lo explica y ofrece borrar lo de dentro', q4.mensajes[0].startsWith('No borro «Notas»') && q4.anotacion === null);
     const q6 = await resultadoD(metaPide({ carpeta: 'Fotos/Nada' }), [r6]);
     afirmar('carpeta que no existe: lo dice, sin pregunta', q6.mensajes[0].startsWith('No encuentro la carpeta «Fotos/Nada»') && q6.anotacion === null);
     const q8 = await resultadoD(metaPide({ carpeta: 'Fotos' }), [r8]);
@@ -1964,7 +2357,7 @@ async function main() {
     const no1 = await planificar({ error: { message: 'no debería usarse' } }, { mensaje: 'no', hiloPrevio: hiloQ, pendienteId: 'p-1' });
     afirmar('«no»: no borra nada y cierra la pregunta', no1[0].etiqueta === 'cerrar pregunta anterior' && no1[1].meta.respuesta_usuario === 'Vale, no quito nada.' && !no1[1].meta.papelera);
     const largo = await planificar(respuesta({ intencion: 'aclarar', pregunta: '¿Cuál?', items: [] }), { mensaje: 'sí pero deja la carpeta Playa', hiloPrevio: hiloQ, pendienteId: 'p-1' });
-    afirmar('un «sí, pero…» largo no confirma: va al modelo', !largo.some((x) => x.meta?.papelera));
+      afirmar('un mensaje largo tras la sección no se toma por una sección: lo interpreta el modelo', !largo.some((x) => x.etiqueta === 'cancelar items'));
     const falso = [{ rol: 'user', texto: 'x' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', motivo: 'confirmar_drive', papelera: [{ tipo: 'carpeta', id: 'cualquiera-0001', nombre: 'Todo' }], pregunta: '¿Lo borro?' }) }];
     const siFalso = await planificar(respuesta({ intencion: 'descartar', items: [] }), { mensaje: 'sí', hiloPrevio: falso, pendienteId: 'p-1' });
     afirmar('un hilo sin la marca del código (origen) no confirma ningún borrado', !siFalso.some((x) => x.meta?.papelera));
@@ -1992,8 +2385,8 @@ async function main() {
     const e4 = await resultadoD(metaSi([]), c2);
     afirmar('nada válido: no borra nada y dice por qué', e4.mensajes[0].startsWith('No he borrado nada:\n• Personal: ya no está en Secretaria') && e4.mensajes[0].includes('• Notas: es una carpeta que uso para ordenar'));
     const e5 = await resultadoD(metaSi([]), c3);
-    afirmar('sin árbol: dice que no ha borrado nada', e5.mensajes[0].startsWith('No he podido leer tus carpetas de Drive, así que no he borrado nada'));
-    afirmar('avisa de que se muestran hasta 3 niveles', texto.includes('hasta 3 niveles'));
+    afirmar('sin árbol: dice que no ha borrado nada', e5.mensajes[0].startsWith('No he podido leer tus carpetas de Drive y no he borrado nada'));
+    afirmar('ya no lleva la nota de pie (paréntesis, niveles, actualización)', !texto.includes('Entre paréntesis') && !texto.includes('niveles') && !texto.includes('actualizarse'));
     afirmar('los caracteres de formato de WhatsApp no estropean un nombre de carpeta', (await resultadoC(metaCarpetas, [lista([carp('x1', 'Foto*s_bonitas', RAIZ)]), lista([]), lista([])])).mensajes[0].includes('└─ Fotosbonitas'));
     const vacia = await resultadoC(metaCarpetas, [lista([]), lista([]), lista([])]);
     afirmar('sin carpetas: lo dice', vacia.ok === true && vacia.mensajes[0] === 'Todavía no hay carpetas dentro de Secretaria.');
@@ -2027,7 +2420,7 @@ async function main() {
       (await correr(nodo('resultado.js'), { input: filas, nodos: { Planificar: [{ meta: metaCons(consultaMeta) }], 'Escribir en Supabase': [{}], 'Leer archivos': archivos } }))[0];
     const pend = (n, extra = {}) => ({ id: `p${n}`, nombre: `2026-10-12 183${n} · WhatsApp.jpg`, estado: 'pendiente', created_at: `2026-10-12T16:3${n}:00+00:00`, drive_url: `https://drive.google.com/file/d/ID${n}/view`, ...extra });
     const cA = await consulta({}, [pend(2), pend(1), pend(0, { estado: 'asignado' })]);
-    afirmar('la consulta general añade la sección de archivos sin clasificar, con nombre, fecha y enlace, solo los pendientes', cA.ok === true && cA.mensajes[0].includes('*Archivos sin clasificar*\n• 2026-10-12 1832 · WhatsApp.jpg (recibido lun 12 oct, 18:32)\n  https://drive.google.com/file/d/ID2/view\n• 2026-10-12 1831') && !cA.mensajes[0].includes('1830'), cA.mensajes[0]);
+    afirmar('la consulta general añade la sección de archivos sin clasificar, con nombre, fecha y enlace, solo los pendientes', cA.ok === true && cA.mensajes[0].includes('*Archivos sin clasificar*\n• 2026-10-12 1832 · WhatsApp.jpg\n  https://drive.google.com/file/d/ID2/view\n• 2026-10-12 1831') && !cA.mensajes[0].includes('1830'), cA.mensajes[0]);
     afirmar('va después de lo demás y se separa por un bloque propio', cA.mensajes[0].indexOf('*Tareas*') < cA.mensajes[0].indexOf('*Archivos sin clasificar*'));
     const cSolo = await consulta({}, [pend(1)], [{}]);
     afirmar('sin nada más pendiente, la consulta enseña solo los archivos (no dice que no hay nada)', cSolo.mensajes[0].startsWith('*Archivos sin clasificar*') && !cSolo.mensajes[0].includes('No tienes nada pendiente'));
@@ -2037,7 +2430,7 @@ async function main() {
     const quince = await consulta({}, Array.from({ length: 20 }, (_, i) => pend(1, { id: `q${i}`, nombre: `foto-${i}.jpg` })), [{}]);
     afirmar('con muchos archivos enseña 15 y dice cuántos más hay', (quince.mensajes.join('').match(/foto-\d+\.jpg/g) || []).length === 15 && quince.mensajes.join('').includes('… y 5 más'));
     const sinEnlace = await consulta({}, [pend(1, { drive_url: null })], [{}]);
-    afirmar('un archivo sin enlace se enseña igualmente, sin línea de enlace', sinEnlace.mensajes[0] === '*Archivos sin clasificar*\n• 2026-10-12 1831 · WhatsApp.jpg (recibido lun 12 oct, 18:31)', sinEnlace.mensajes[0]);
+    afirmar('un archivo sin enlace se enseña igualmente, sin línea de enlace', sinEnlace.mensajes[0] === '*Archivos sin clasificar*\n• 2026-10-12 1831 · WhatsApp.jpg', sinEnlace.mensajes[0]);
     const sucio = await consulta({}, [pend(1, { nombre: 'a*b_c~d.jpg' })], [{}]);
     afirmar('los caracteres de formato de WhatsApp no estropean el nombre', sucio.mensajes[0].includes('• abcd.jpg'));
   }
@@ -2052,9 +2445,9 @@ async function main() {
 
     // crear_carpeta: el texto lo redacta el código (lista las carpetas pedidas y avisa de que Drive tarda), no el modelo
     const okF = await res({ intencion: 'crear_carpeta', respuesta_usuario: 'Voy a crearla ahora mismo, ya está lista.', carpetas_pedidas: ['Trabajo/Proyectos'] }, { escrituras: [{ id: 'f-1', ruta: 'Trabajo/Proyectos' }, {}] });
-    afirmar('crear_carpeta: confirma con texto de código, sin prometer que ya existe', okF.ok === true && okF.mensajes[0] === 'Carpeta «Trabajo/Proyectos» pedida. Aparecerá en Drive en unos minutos (creo un nivel por minuto).', okF.mensajes[0]);
+    afirmar('crear_carpeta: confirma con texto de código, sin prometer que ya existe', okF.ok === true && okF.mensajes[0] === 'Carpeta «Trabajo/Proyectos» pedida.', okF.mensajes[0]);
     const okF2 = await res({ intencion: 'crear_carpeta', carpetas_pedidas: ['Fotos', 'Trabajo/Proyectos'] }, { escrituras: [{ id: 'f-1' }, { id: 'f-2' }, {}] });
-    afirmar('crear_carpeta: varias carpetas', okF2.ok === true && okF2.mensajes[0] === 'Carpetas pedidas: «Fotos», «Trabajo/Proyectos». Aparecerán en Drive en unos minutos (creo un nivel por minuto).', okF2.mensajes[0]);
+    afirmar('crear_carpeta: varias carpetas', okF2.ok === true && okF2.mensajes[0] === 'Carpetas pedidas: «Fotos», «Trabajo/Proyectos».', okF2.mensajes[0]);
     const ceroF = await res({ intencion: 'crear_carpeta', carpetas_pedidas: ['Fotos'] }, { escrituras: [{}] });
     afirmar('crear_carpeta que no registra ninguna fila: error y mensaje honesto', ceroF.ok === false && ceroF.mensajes[0].startsWith('No he podido procesar'));
     const falloF = await res({ intencion: 'crear_carpeta', carpetas_pedidas: ['Fotos'] }, { escrituras: [{ error: { message: 'violates check constraint carpetas_pedidas_ruta_valida' } }] });
@@ -2088,7 +2481,7 @@ async function main() {
     const t0 = todos.mensajes.join('\n\n');
     afirmar('sin filtros: todos los archivos, agrupados por carpeta y ordenadas por nombre, con el número de cada una', todos.ok === true && ['*Entrada* (1)', '*Fotografía* (1)', '*Fotos* (1)', '*Fotos/Viajes* (1)', '*Notas* (2)', '*Trabajo/Informes técnicos* (2)'].every((c) => t0.includes(c)) && t0.indexOf('*Entrada*') < t0.indexOf('*Fotos*') && t0.indexOf('*Notas*') < t0.indexOf('*Trabajo/'), t0);
     afirmar('la carpeta de un archivo es la pedida, si no Notas (si cuelga de un elemento), si no Entrada', t0.includes('*Trabajo/Informes técnicos* (2)\n• ') && t0.includes('*Notas* (2)') && t0.includes('*Entrada*'));
-    afirmar('cada archivo lleva nombre, fecha de recepción y su enlace de Drive', t0.includes('• f2.jpg (recibido lun 12 oct, 18:32)\n  https://drive.google.com/file/d/F2/view') && t0.includes('• Contrato.pdf (recibido'));
+    afirmar('cada archivo lleva nombre y su enlace de Drive, sin la fecha de recepción', t0.includes('• f2.jpg\n  https://drive.google.com/file/d/F2/view') && t0.includes('• Contrato.pdf') && !t0.includes('(recibido'));
     afirmar('una fila sin nombre se ignora', !t0.includes('sin nombre'));
     const cf = (await ver({ carpeta: 'Fotos' })).mensajes.join('\n');
     afirmar('carpeta Fotos: esa y sus subcarpetas, y "Fotografía" no cuenta', cf.includes('*Fotos* (1)') && cf.includes('*Fotos/Viajes* (1)') && !cf.includes('Fotografía') && !cf.includes('Trabajo/') && !cf.includes('Entrada'), cf);
@@ -2105,12 +2498,12 @@ async function main() {
     const cc = (await ver({ carpeta: 'Trabajo', tipo: 'documento' })).mensajes.join('\n');
     afirmar('filtros combinados: el PDF de Trabajo y nada más', cc.includes('*Trabajo/Informes técnicos* (1)') && cc.includes('Contrato.pdf') && !cc.includes('f5.jpg'));
     const nada = await ver({ carpeta: 'Vacaciones' });
-    afirmar('sin coincidencias con filtro: lo dice y ofrece verlos todos', nada.ok === true && nada.mensajes[0] === 'No tengo archivos con esos criterios. Dime «qué archivos tengo» y te los enseño todos.');
+    afirmar('sin coincidencias con filtro: lo dice y ofrece verlos todos', nada.ok === true && nada.mensajes[0] === 'No tengo archivos con esos criterios.');
     afirmar('sin archivos y sin filtro: lo dice', (await ver({}, [{}])).mensajes[0] === 'Todavía no has guardado ningún archivo.');
     const muchos = await ver({}, Array.from({ length: 55 }, (_, i) => mk(i + 100, { nombre: `m-${i}.jpg`, carpeta_destino: 'Fotos' })));
     const mt = muchos.mensajes.join('\n');
-    afirmar('con muchos archivos enseña 40 y dice cuántos más hay', (mt.match(/m-\d+\.jpg/g) || []).length === 40 && mt.includes('… y 15 más. Pídemelos por carpeta o por tipo.'));
-    afirmar('un archivo sin enlace se enseña igualmente', (await ver({}, [mk(1, { drive_url: null })])).mensajes[0].includes('• f1.jpg (recibido lun 12 oct, 18:31)') && !(await ver({}, [mk(1, { drive_url: null })])).mensajes[0].includes('http'));
+    afirmar('con muchos archivos enseña 40 y dice cuántos más hay', (mt.match(/m-\d+\.jpg/g) || []).length === 40 && mt.includes('… y 15 más.'));
+    afirmar('un archivo sin enlace se enseña igualmente', (await ver({}, [mk(1, { drive_url: null })])).mensajes[0].includes('• f1.jpg') && !(await ver({}, [mk(1, { drive_url: null })])).mensajes[0].includes('http'));
     afirmar('los caracteres de formato de WhatsApp no estropean nombres ni carpetas', (await ver({}, [mk(1, { nombre: 'a*b_c.jpg', carpeta_destino: 'Fo*tos' })])).mensajes[0].includes('*Fotos* (1)') && (await ver({}, [mk(1, { nombre: 'a*b_c.jpg' })])).mensajes[0].includes('• abc.jpg'));
     const errL = await ver({}, [{ error: { message: 'timeout' } }]);
     afirmar('con un fallo al leer: mensaje honesto', errL.ok === false && errL.error.includes('timeout'));
@@ -2121,11 +2514,11 @@ async function main() {
     // horario
     const hor = (eventos) => res({ intencion: 'guardar', respuesta_usuario: 'Apuntado: dentista mañana a las 10.', eventos }, { escrituras: [{ id: 'x' }] });
     const e1 = await hor([{ titulo: 'Dentista', inicio: '2026-10-13T08:00:00.000Z', fin: '2026-10-13T09:00:00.000Z', minutos: 60 }]);
-    afirmar('un evento de una hora: la confirmación lleva el horario y avisa de que se puede cambiar', e1.mensajes[0] === 'Apuntado: dentista mañana a las 10.\nHorario: Dentista, mar 13 oct, de 10:00 a 11:00. Si dura distinto, dime cuánto.', e1.mensajes[0]);
+    afirmar('un evento de una hora: la confirmación lleva el horario y no avisa de la duración', e1.mensajes[0] === 'Apuntado: dentista mañana a las 10.\nHorario: Dentista, mar 13 oct, de 10:00 a 11:00.', e1.mensajes[0]);
     const e2 = await hor([{ titulo: 'Entrevista', inicio: '2026-10-15T07:00:00.000Z', fin: '2026-10-15T09:30:00.000Z', minutos: 150 }]);
     afirmar('un evento de otra duración: horario sin el aviso', e2.mensajes[0].endsWith('Horario: Entrevista, jue 15 oct, de 09:00 a 11:30.'));
     const e3 = await hor([{ titulo: 'A', inicio: '2026-10-13T08:00:00.000Z', fin: '2026-10-13T09:00:00.000Z', minutos: 60 }, { titulo: 'B', inicio: '2026-10-14T08:00:00.000Z', fin: '2026-10-14T10:00:00.000Z', minutos: 120 }]);
-    afirmar('varios eventos: un horario por evento y un solo aviso si alguno dura una hora', e3.mensajes[0].includes('Horario: A, mar 13 oct, de 10:00 a 11:00; B, mié 14 oct, de 10:00 a 12:00. Si dura distinto, dime cuánto.'));
+    afirmar('varios eventos: un horario por evento y sin aviso de duración', e3.mensajes[0].includes('Horario: A, mar 13 oct, de 10:00 a 11:00; B, mié 14 oct, de 10:00 a 12:00.') && !e3.mensajes[0].includes('dime cuánto'));
     afirmar('sin eventos (o con la lista vacía) la confirmación no cambia', (await hor(undefined)).mensajes[0] === 'Apuntado: dentista mañana a las 10.' && (await hor([])).mensajes[0] === 'Apuntado: dentista mañana a las 10.');
     const otra = await res({ intencion: 'corregir', respuesta_usuario: 'Cambiado.', eventos: [{ titulo: 'A', inicio: '2026-10-13T08:00:00.000Z', fin: '2026-10-13T09:00:00.000Z', minutos: 60 }] }, { escrituras: [{ id: 'x' }] });
     afirmar('el horario solo se añade al guardar', otra.mensajes[0] === 'Cambiado.');
@@ -2178,13 +2571,13 @@ async function main() {
     const sel = (intencion, valor, extra) => planificar(respuesta({ intencion, items: [], [intencion]: valor, respuesta_usuario: 'Hecho.' }), opc(extra));
     const loteOk = (accion, ids) => ({ hiloPrevio: [{ rol: 'user', texto: 'x' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', motivo: 'confirmar_lote', lotes: [{ accion, ids }] }) }], pendienteId: 'p-1' });
     const f0 = await sel('cancelar', { filtro: { tipo: 'nota' } });
-    afirmar('«quita todos los pensamientos» (sin confirmar): enseña la lista de lo que se va a quitar y pregunta, aunque sean solo 2', f0[0].meta.bloqueo === 'confirmar_lote' && f0[0].meta.pregunta === 'Voy a quitar 2 elementos:\n• Idea app gimnasio\n• Wifi de casa\n¿Los quito?' && !f0.some((x) => x.etiqueta === 'cancelar items'), JSON.stringify(f0[0].meta.pregunta));
+    afirmar('«quita todos los pensamientos»: se quitan sin preguntar ', f0.find((x) => x.etiqueta === 'cancelar items')?.url === `${BASE}/items?id=in.(id-1,id-2)` && !f0[0].meta.bloqueo, JSON.stringify(f0.map((x) => x.etiqueta)));
     const f1 = await sel('cancelar', { filtro: { tipo: 'nota' } }, loteOk('cancelar', ['id-1', 'id-2']));
     afirmar('«quita todos los pensamientos» (tras el «sí»): las notas sin proyecto (2)', f1.find((x) => x.etiqueta === 'cancelar items')?.url === `${BASE}/items?id=in.(id-1,id-2)`, JSON.stringify(f1.map((x) => x.etiqueta)));
     const f2 = await sel('completar', { filtro: { tipo: 'tarea' } });
     afirmar('«ya hice todas las tareas»: las tareas cotidianas, sin las alarmas ni las del proyecto', f2[0].url === `${BASE}/items?id=in.(id-3)` && f2[0].cuerpo.estado === 'hecho', f2[0].url);
     const f3a = await sel('cancelar', { filtro: { tipo: 'alarma' } });
-    afirmar('«quita todas las alarmas» con UNA sola alarma: también pregunta (en singular) y la nombra', f3a[0].meta.pregunta === 'Voy a quitar 1 elemento:\n• Sacar la ropa\n¿Lo quito?', JSON.stringify(f3a[0].meta.pregunta));
+    afirmar('«quita todas las alarmas» con UNA sola alarma: la quita sin preguntar', f3a.find((x) => x.etiqueta === 'cancelar items')?.url === `${BASE}/items?id=in.(id-4)` && !f3a[0].meta.bloqueo, JSON.stringify(f3a.map((x) => x.etiqueta)));
     const f3 = await sel('cancelar', { filtro: { tipo: 'alarma' } }, loteOk('cancelar', ['id-4']));
     afirmar('«quita todas las alarmas» (tras el «sí»): solo la tarea con aviso', f3.find((x) => x.etiqueta === 'cancelar items')?.url === `${BASE}/items?id=in.(id-4)`);
     const f4 = await sel('completar', { filtro: { tipo: 'lista', lista: 'Compra' } });
@@ -2192,47 +2585,48 @@ async function main() {
     const f5 = await sel('cancelar', { filtro: { proyecto: 'mudanza' } }, loteOk('cancelar', ['id-5', 'id-6']));
     afirmar('«quita todo lo del proyecto Mudanza» (tras el «sí»): sus dos elementos', f5.find((x) => x.etiqueta === 'cancelar items')?.url === `${BASE}/items?id=in.(id-5,id-6)`);
 
-    // «Borra todo»: nunca de golpe; pregunta la sección con lo que tiene cada una
+    // «Borra todo» y varias secciones a la vez : se quitan sin preguntar y se dice lo que se quitó
+    const idsDe = (plan) => { const u = plan.find((x) => x.etiqueta === 'cancelar items')?.url; return u ? u.match(/in\.\((.*)\)/)[1].split(',').sort().join() : null; };
+    const TODOS = 'id-1,id-2,id-3,id-4,id-5,id-6,id-7,id-8';
     const tt = await sel('cancelar', { filtro: {} });
-    afirmar('cancelar sin sección (filtro vacío): pregunta qué sección, con cuántos tiene cada una, y no borra nada', tt[0].meta.bloqueo === 'elegir_seccion' && tt[0].meta.pregunta.startsWith('No borro todo de golpe. ¿Qué sección quieres borrar?') && tt[0].meta.pregunta.includes('• Alarmas (1)') && tt[0].meta.pregunta.includes('• Tareas (1)') && tt[0].meta.pregunta.includes('• Pensamientos (2)') && tt[0].meta.pregunta.includes('• Lista de la compra (2)') && tt[0].meta.pregunta.includes('• Proyecto «Mudanza» (2)') && !tt.some((x) => x.etiqueta === 'cancelar items'), JSON.stringify(tt[0].meta.pregunta));
+    afirmar('cancelar sin sección (filtro vacío): quita todo lo pendiente, también lo de los proyectos, sin preguntar', idsDe(tt) === TODOS && !tt[0].meta.bloqueo, JSON.stringify(tt.map((x) => x.etiqueta)));
     for (const frase of ['borra todo', 'Bórralo todo', 'elimina todo lo que tengo', 'quiero borrar todo', 'quita todo', 'limpia todo por favor']) {
-      const r = await planificar(respuesta({ intencion: 'guardar', items: [itemBase()] }), opc({ mensaje: frase }));
-      afirmar(`«${frase}»: por código, pregunta la sección`, r[0].meta.bloqueo === 'elegir_seccion' && !r.some((x) => x.etiqueta?.startsWith('cancelar') || x.etiqueta?.startsWith('guardar')), JSON.stringify(r[0].meta.bloqueo));
+      const r = await planificar({ error: 'no se llamó al modelo' }, opc({ mensaje: frase }));
+      afirmar(`«${frase}»: por código, quita todo sin preguntar`, idsDe(r) === TODOS && !r[0].meta.bloqueo, JSON.stringify(r.map((x) => x.etiqueta)));
     }
     for (const frase of ['borra todas las alarmas', 'quita todo lo del proyecto Mudanza', 'borra la tarea del banco', 'todo bien']) {
       const r = await planificar(respuesta({ intencion: 'guardar', items: [itemBase()] }), opc({ mensaje: frase }));
-      afirmar(`«${frase}» no es «borra todo»: decide el modelo`, r[0].meta.bloqueo !== 'elegir_seccion');
+      afirmar(`«${frase}» no es «borra todo»: no quita todo`, (idsDe(r) ?? '').split(',').length < 8);
     }
     const tv = await planificar(respuesta({ intencion: 'guardar', items: [] }), { mensaje: 'borra todo' });
     afirmar('«borra todo» sin nada pendiente: lo dice y no pregunta', tv[0].meta.respuesta_usuario === 'No tienes nada pendiente que borrar.' && !tv[0].meta.bloqueo);
     const mezcla = await sel('cancelar', { item_ids: ['i1', 'i3', 'i4', 'i7', 'i5'] });
-    afirmar('quitar más de 3 cosas de secciones distintas a la vez: pregunta la sección', mezcla[0].meta.bloqueo === 'elegir_seccion');
+    afirmar('quitar más de 3 cosas de secciones distintas a la vez: se quitan sin preguntar', idsDe(mezcla) === 'id-1,id-3,id-4,id-5,id-7' && !mezcla[0].meta.bloqueo, JSON.stringify(mezcla.map((x) => x.etiqueta)));
     const dos = await sel('cancelar', { item_ids: ['i1', 'i3'] });
-    afirmar('quitar 2 cosas concretas de secciones distintas: pide confirmación con la lista (no la sección)', dos[0].meta.bloqueo === 'confirmar_lote' && dos[0].meta.pregunta.includes('• Idea app gimnasio') && dos[0].meta.pregunta.includes('• Llamar al banco'));
+    afirmar('quitar 2 cosas concretas de secciones distintas: se quitan sin preguntar', dos.find((x) => x.etiqueta === 'cancelar items')?.url === `${BASE}/items?id=in.(id-1,id-3)` && !dos[0].meta.bloqueo, JSON.stringify(dos.map((x) => x.etiqueta)));
     const una = await sel('cancelar', { item_ids: ['i3'] });
     afirmar('quitar UNA cosa concreta por su nombre: sin preguntar', una.some((x) => x.etiqueta === 'cancelar items') && !una[0].meta.bloqueo);
-    // Una conversación entera: «Borra todo» → «Tareas» → «Si». Cada paso usa el hilo que guardó el anterior
+    // Varias secciones a la vez, por código y sin el modelo (solo en plural o con nombre inequívoco)
+    for (const [frase, esperado] of [['borra las alarmas y las tareas', 'id-3,id-4'], ['quita las alarmas, las tareas y los pensamientos', 'id-1,id-2,id-3,id-4'], ['elimina todas las alarmas y la compra', 'id-4,id-7,id-8'], ['borra las alarmas y el proyecto Mudanza', 'id-4,id-5,id-6']]) {
+      const r = await planificar({ error: 'no se llamó al modelo' }, opc({ mensaje: frase }));
+      afirmar(`«${frase}»: varias secciones a la vez, sin preguntar ni usar el modelo`, idsDe(r) === esperado && !r[0].meta.bloqueo, JSON.stringify([idsDe(r), r.map((x) => x.etiqueta)]));
+    }
+    for (const frase of ['borra la cita y la alarma', 'borra las alarmas y los zapatos', 'quita las tareas y']) {
+      const r = await planificar(respuesta({ intencion: 'guardar', items: [itemBase()] }), opc({ mensaje: frase }));
+      afirmar(`«${frase}» (singular o no son secciones): no lo hace el código`, idsDe(r) === null);
+    }
+    // Una pregunta de la sección que ya estuviera abierta (versión anterior) se sigue contestando por código, sin segunda confirmación
     {
-      const hiloDe = (plan) => plan.find((x) => x.cuerpo?.pregunta_pendiente === true)?.cuerpo.hilo;
-      const p1 = await planificar(respuesta({ intencion: 'guardar', items: [] }), opc({ mensaje: 'Borra todo' }));
-      afirmar('conversación 1: «Borra todo» → pregunta la sección', p1[0].meta.bloqueo === 'elegir_seccion');
-      const p2 = await planificar(respuesta({ intencion: 'consultar', consulta: { tipo: 'tarea' } }), opc({ mensaje: 'Tareas', hiloPrevio: hiloDe(p1), pendienteId: 'q-1' }));
-      afirmar('conversación 2: «Tareas» es la sección (no el listado de tareas): confirmación con la lista de las tareas', p2[0].meta.bloqueo === 'confirmar_lote' && p2[0].meta.pregunta === 'Voy a quitar 1 elemento:\n• Llamar al banco\n¿Lo quito?' && p2.some((x) => x.etiqueta === 'cerrar pregunta anterior') && !p2.some((x) => x.etiqueta === 'cancelar items'), JSON.stringify(p2[0].meta));
-      const p3 = await planificar(respuesta({ intencion: 'cancelar', cancelar: { filtro: {} } }), opc({ mensaje: 'Si', hiloPrevio: hiloDe(p2), pendienteId: 'q-2' }));
-      afirmar('conversación 3: «Si» quita exactamente lo confirmado, aunque el modelo hubiera dicho otra cosa', p3.find((x) => x.etiqueta === 'cancelar items')?.url === `${BASE}/items?id=in.(id-3)` && p3.some((x) => x.etiqueta === 'cerrar pregunta anterior'), JSON.stringify(p3.map((x) => x.etiqueta)));
-      const p4 = await planificar(respuesta({ intencion: 'cancelar', cancelar: { filtro: {} } }), opc({ mensaje: 'no', hiloPrevio: hiloDe(p2), pendienteId: 'q-2' }));
-      afirmar('«no» a la confirmación: no quita nada, lo dice y cierra la pregunta', p4.length === 2 && p4[0].etiqueta === 'cerrar pregunta anterior' && p4[1].meta.respuesta_usuario === 'Vale, no quito nada.');
-      for (const [frase, esperado] of [['las alarmas', 'alarma'], ['borra las citas', 'evento'], ['pensamientos', 'nota'], ['la lista de la compra', 'lista'], ['todas las tareas', 'tarea']]) {
-        const r = await planificar(respuesta({ intencion: 'guardar', items: [] }), opc({ mensaje: frase, hiloPrevio: hiloDe(p1), pendienteId: 'q-1' }));
-        const ok = r[0].meta.bloqueo === 'confirmar_lote' || r[0].meta.respuesta_usuario?.startsWith('No encuentro nada pendiente');
-        afirmar(`tras la pregunta de la sección, «${frase}» es la sección ${esperado}`, ok && r[0].meta.filtro?.tipo === esperado, JSON.stringify(r[0].meta));
+      const pregunta = 'No borro todo de golpe. ¿Qué sección quieres borrar?';
+      const hiloAbierto = [{ rol: 'user', texto: 'Borra todo' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', motivo: 'elegir_seccion', origen: 'codigo', pregunta, items: [], respuesta_usuario: pregunta }) }];
+      const p2 = await planificar(respuesta({ intencion: 'consultar', consulta: { tipo: 'tarea' } }), opc({ mensaje: 'Tareas', hiloPrevio: hiloAbierto, pendienteId: 'q-1' }));
+      afirmar('con la pregunta de la sección abierta, «Tareas» es la sección: se quita sin segunda pregunta y se cierra la pregunta', idsDe(p2) === 'id-3' && p2.some((x) => x.etiqueta === 'cerrar pregunta anterior') && !p2[0].meta.bloqueo, JSON.stringify(p2.map((x) => x.etiqueta)));
+      for (const [frase, esperado] of [['las alarmas', 'id-4'], ['pensamientos', 'id-1,id-2'], ['la lista de la compra', 'id-7,id-8'], ['todas las tareas', 'id-3'], ['el proyecto Mudanza', 'id-5,id-6']]) {
+        const r = await planificar(respuesta({ intencion: 'guardar', items: [] }), opc({ mensaje: frase, hiloPrevio: hiloAbierto, pendienteId: 'q-1' }));
+        afirmar(`con la pregunta de la sección abierta, «${frase}» es esa sección`, idsDe(r) === esperado && !r[0].meta.bloqueo, JSON.stringify(r.map((x) => x.etiqueta)));
       }
-      const pr = await planificar(respuesta({ intencion: 'guardar', items: [] }), opc({ mensaje: 'el proyecto Mudanza', hiloPrevio: hiloDe(p1), pendienteId: 'q-1' }));
-      afirmar('«el proyecto Mudanza» es esa sección: confirma sus dos elementos', pr[0].meta.bloqueo === 'confirmar_lote' && pr[0].meta.pregunta.includes('• Llamar al casero') && pr[0].meta.pregunta.includes('• Idea para la mudanza'), JSON.stringify(pr[0].meta.pregunta));
       const sinPreg = await planificar(respuesta({ intencion: 'guardar', items: [] }), opc({ mensaje: 'Tareas' }));
       afirmar('sin la pregunta de la sección, «Tareas» sigue siendo el listado', sinPreg[0].meta.intencion === 'consultar' && sinPreg[0].meta.consulta?.vista === 'tareas');
-      const largo = await planificar(respuesta({ intencion: 'guardar', items: [] }), opc({ mensaje: 'si pero solo las de esta semana por favor', hiloPrevio: hiloDe(p2), pendienteId: 'q-2' }));
-      afirmar('un «sí, pero…» largo no se toma por un sí: lo interpreta el modelo', !largo.some((x) => x.etiqueta === 'cancelar items'));
     }
     const comp = await sel('completar', { filtro: { tipo: 'nota' } });
     afirmar('marcar como hechas 2 cosas no pide confirmación (solo borrar)', comp.some((x) => x.etiqueta === 'completar items'), JSON.stringify(comp.map((x) => x.etiqueta)));
@@ -2247,12 +2641,9 @@ async function main() {
     const MUCHAS = Array.from({ length: 5 }, (_, n) => ({ id: `i${n + 1}`, tipo: 'nota', titulo: `Nota ${n + 1}` }));
     const RM = Object.fromEntries(MUCHAS.map((p, n) => [p.id, `n-${n + 1}`]));
     const l1 = await planificar(respuesta({ intencion: 'cancelar', items: [], cancelar: { filtro: { tipo: 'nota' } }, respuesta_usuario: 'Quitadas.' }), { refs: RM, pendientes: MUCHAS, mensaje: 'quita todos los pensamientos' });
-    const turnoL = JSON.parse(l1[0].cuerpo.hilo.at(-1).texto);
-    afirmar('cancelar 5 de golpe: no toca nada, enseña la lista y pregunta', l1.length === 1 && l1[0].meta.bloqueo === 'confirmar_lote' && l1[0].meta.pregunta.startsWith('Voy a quitar 5 elementos:') && l1[0].meta.pregunta.includes('• Nota 5') && l1[0].meta.pregunta.endsWith('¿Los quito?') && turnoL.lotes[0].accion === 'cancelar' && turnoL.lotes[0].ids.length === 5, l1[0].meta.pregunta);
-    const l2 = await planificar(respuesta({ intencion: 'cancelar', items: [], cancelar: { filtro: { tipo: 'nota' } }, respuesta_usuario: 'Quitadas.' }), { refs: RM, pendientes: MUCHAS, mensaje: 'sí', pendienteId: 'p-1', hiloPrevio: l1[0].cuerpo.hilo });
-    afirmar('tras el «sí», se quitan las 5 y se cierra la pregunta', l2[0].etiqueta === 'cerrar pregunta anterior' && l2[1].url === `${BASE}/items?id=in.(n-1,n-2,n-3,n-4,n-5)`, JSON.stringify(l2.map((p) => p.etiqueta)));
-    const l3 = await planificar(respuesta({ intencion: 'completar', items: [], completar: { filtro: { tipo: 'nota' } }, respuesta_usuario: 'Hecho.' }), { refs: RM, pendientes: MUCHAS, mensaje: 'márcalas hechas', pendienteId: 'p-1', hiloPrevio: l1[0].cuerpo.hilo });
-    afirmar('aceptar quitar no vale para completar: se vuelve a preguntar', l3[l3.length - 1].meta.bloqueo === 'confirmar_lote' && l3[l3.length - 1].meta.pregunta.endsWith('¿Los marco como hechos?'));
+    afirmar('cancelar 5 de golpe: se quitan sin preguntar', l1.length === 2 && l1[0].etiqueta === 'cancelar items' && l1[0].url === `${BASE}/items?id=in.(n-1,n-2,n-3,n-4,n-5)` && !l1[0].meta.bloqueo, JSON.stringify(l1.map((p) => p.etiqueta)));
+    const l3 = await planificar(respuesta({ intencion: 'completar', items: [], completar: { filtro: { tipo: 'nota' } }, respuesta_usuario: 'Hecho.' }), { refs: RM, pendientes: MUCHAS, mensaje: 'márcalas hechas' });
+    afirmar('completar 5 de golpe: se marcan sin preguntar', l3.some((x) => x.etiqueta === 'completar items') && !l3[0].meta.bloqueo, JSON.stringify(l3.map((p) => p.etiqueta)));
 
     // Añadir al contenido
     const a1 = await planificar(cor({ item_ids: ['i3'], cambios: { anadir_contenido: ' Llevar el DNI ' } }), opc());
@@ -2269,15 +2660,13 @@ async function main() {
     const p1 = await pro('crear', 'Huerto');
     afirmar('crear un proyecto nuevo: upsert por nombre sin mayúsculas', p1[0].metodo === 'POST' && p1[0].url === `${BASE}/proyectos?on_conflict=nombre_norm` && p1[0].cuerpo.nombre === 'Huerto' && p1[0].cuerpo.estado === 'activo' && p1[0].prefer.includes('merge-duplicates'));
     const p2 = await pro('crear', 'mudanza');
-    afirmar('crear uno que ya existe y está activo: no toca nada y lo dice', p2.length === 1 && p2[0].meta.respuesta_fija === true && p2[0].meta.respuesta_usuario.startsWith('Ya tienes el proyecto «Mudanza»'));
+    afirmar('crear uno que ya existe y está activo: no toca nada y lo dice', p2.length === 1 && p2[0].meta.respuesta_fija === true && p2[0].meta.respuesta_usuario.startsWith('El proyecto «Mudanza» ya existe'));
     const p3 = await pro('crear', 'Web del club');
     afirmar('crear uno que estaba cerrado: lo reabre (upsert con estado activo)', p3[0].url === `${BASE}/proyectos?on_conflict=nombre_norm` && p3[0].cuerpo.nombre === 'Web del club');
     const p4 = await pro('cerrar', 'Jardín');
     afirmar('cerrar uno que no existe: lo dice con la lista de los activos', p4.length === 1 && p4[0].meta.respuesta_usuario === 'No tengo ningún proyecto «Jardín». Tus proyectos: «Mudanza».');
     const p5 = await pro('cerrar', 'mudanza', { mensaje: 'cierra el proyecto mudanza' });
-    afirmar('cerrar uno con cosas pendientes: pregunta antes enseñándolas', p5.length === 1 && p5[0].meta.bloqueo === 'confirmar_lote' && p5[0].meta.pregunta.startsWith('El proyecto «Mudanza» tiene 2 cosas pendientes:') && p5[0].meta.pregunta.includes('• Llamar al casero') && p5[0].meta.pregunta.endsWith('¿Lo cierro?'), p5[0].meta.pregunta);
-    const p6 = await pro('cerrar', 'Mudanza', { mensaje: 'sí', pendienteId: 'p-1', hiloPrevio: p5[0].cuerpo.hilo });
-    afirmar('tras el «sí»: cierra el proyecto y archiva lo pendiente', p6.some((p) => p.url === `${BASE}/proyectos?nombre=eq.Mudanza` && p.metodo === 'PATCH' && p.cuerpo.estado === 'cerrado') && p6.some((p) => p.url === `${BASE}/items?id=in.(id-5,id-6)` && p.cuerpo.estado === 'archivado') && p6[0].meta.proyecto.quitados === 2);
+    afirmar('cerrar uno con cosas pendientes: lo cierra y archiva lo pendiente sin preguntar', p5.some((p) => p.url === `${BASE}/proyectos?nombre=eq.Mudanza` && p.cuerpo.estado === 'cerrado') && p5.some((p) => p.url === `${BASE}/items?id=in.(id-5,id-6)` && p.cuerpo.estado === 'archivado') && !p5[0].meta.bloqueo, JSON.stringify(p5.map((p) => p.etiqueta)));
     const p7 = await planificar(respuesta({ intencion: 'proyecto', items: [], proyecto: { accion: 'cerrar', nombre: 'Web del club' } }), opc());
     afirmar('cerrar uno sin nada pendiente: solo el PATCH del proyecto, sin preguntar', p7.filter((p) => p.metodo === 'PATCH' && p.url.includes('/proyectos?')).length === 1 && !p7.some((p) => p.url.includes('/items?')));
     const p8 = await pro('borrar', 'Mudanza');
@@ -2361,7 +2750,7 @@ async function main() {
     afirmar('Construir petición: el contenido va recortado a 120 caracteres', sis.includes(`"contenido":"${'y'.repeat(120)}…"`) && !sis.includes('y'.repeat(121)));
     afirmar('Construir petición: pasa a Planificar los pendientes (con proyecto) y todos los proyectos', cp.pendientes.length === 2 && cp.pendientes[1].proyecto === 'Mudanza' && cp.pendientes[1].id === 'i2' && cp.proyectos.length === 2);
     afirmar('Construir petición: el mensaje es el juntado', cp.cuerpo.contents.at(-1).parts[0].text === 'quita todos los pensamientos');
-    const [cpSin] = await correr(codigoCP, { nodos: { Configuración: [{ config: CONFIG }], Entrada: [ent], 'Leer memoria': [{}], 'Leer pregunta pendiente': [{}], 'Leer archivos': [{}], 'Leer items pendientes': [{}], 'Leer proyectos': [{}] } });
+    const [cpSin] = await correr(codigoCP, { nodos: { Configuración: [{ config: CONFIG }], Entrada: [ent], 'Leer memoria': [{}], 'Leer pregunta pendiente': [{}], 'Leer archivos': [{}], 'Leer items pendientes': [{}], 'Leer proyectos': [{}], 'Leer respuesta citada': [{}] } });
     afirmar('Construir petición: sin proyectos, «(ninguno todavía)»', cpSin.cuerpo.systemInstruction.parts[0].text.includes('Proyectos que ya existen: (ninguno todavía)'));
   }
 
@@ -2384,7 +2773,7 @@ async function main() {
     afirmar('listado: una tarea sin contexto no lleva «…»', /• Pagar alquiler$/m.test(t1) && /• Ir al taller$/m.test(t1), t1);
     afirmar('listado: un contenido largo tampoco sale, solo « …»', t1.includes('• Comprar regalo …') && !t1.includes('yyyy'));
     afirmar('listado: nunca sale lo que escribió el usuario', !t1.includes('Lo que escribiste') && !t1.includes('tengo que llamar al banco'));
-    afirmar('listado: al final explica cómo pedir el detalle', r1.mensajes.at(-1).endsWith('(…) Tiene más detalle. Todo entero: «dámelo todo completo». Solo uno: «enséñame entera la tarea del banco».'), r1.mensajes.at(-1));
+    afirmar('listado: al final, una pista corta para el detalle', r1.mensajes.at(-1).endsWith('(…) Di «completo» para ver todo.'), r1.mensajes.at(-1));
     const r2 = await resD({ intencion: 'consultar', consulta: { ...consulta, completo: true } }, filas);
     const t2 = r2.mensajes.join('\n');
     afirmar('completo: el contexto entero de lo que lo tiene', t2.includes('• Llamar al banco: Pedir el certificado de titularidad') && t2.includes(`• Comprar regalo: ${'y'.repeat(200)}`), t2);
@@ -2400,12 +2789,76 @@ async function main() {
     afirmar('la consulta ya no pide el mensaje original (sí el contenido, para marcar «…»)', !parametro(pq[0].meta.consulta_url, 'select').includes('mensajes') && parametro(pq[0].meta.consulta_url, 'select').includes('contenido'));
   }
 
+  console.log('Órdenes de lectura con tus palabras ');
+  {
+    const charla = respuesta({ intencion: 'charla', items: [], respuesta_usuario: 'ok' });
+    const meta = async (mensaje) => (await planificar(charla, { mensaje }))[0].meta;
+    const pendiente = (m) => m.intencion === 'consultar' && m.consulta?.estado === 'pendiente' && !m.consulta.tipo && m.consulta.con_rango === false;
+    const casos = [
+      // [frase, comprobación]
+      ...['dame la jerarquía', 'dame la jerarquía de carpetas', 'dame la jeraquia de carpetas', 'dame las carpteas', 'muéstrame las carpetas', 'qué carpetas tengo', 'enséñame el árbol de carpetas', 'dime mi estructura de carpetas', 'ver carpetas', 'lista de carpetas', 'DAME LA JERARQUÍA!!', 'hola, ¿me das la jerarquía de carpetas por favor?'.replace('me das', 'dame'), 'quiero ver mis carpetas', 'mis carpetas', 'show my folders'].map((f) => [f, (m) => m.intencion === 'carpetas']),
+      ...['dame todo', 'dame todd', 'dímelo todo', 'dame tdoo', 'enséñame todo lo que tengo', 'dame todo lo pendiente', 'ver pendientes', 'dame mis pendientes', 'dame los pendientes por favor', 'dime todo lo que tengo pendiente', 'quiero ver todo', 'pasame todo', 'dame todo lo que hay'].map((f) => [f, pendiente]),
+      ...['dame todo completo', 'dame todo completo por favor', 'dame todo entero', 'dame todo con detalle', 'dame los pendientes completos', 'dame todo completoo'].map((f) => [f, (m) => m.intencion === 'consultar' && m.consulta?.completo === true && m.consulta.estado === 'pendiente' && !m.consulta.tipo]),
+      ...['dame lo de hoy', 'qué tengo para hoy', 'dime mi agenda de hoy'.replace('mi agenda de', 'lo de'), 'enséñame lo de hoy', 'dame los pendientes de hoy', 'ver hoy', 'what do i have today'.replace('what do i have today', 'dame today')].map((f) => [f, (m) => m.intencion === 'consultar' && m.consulta?.con_rango === true && /^hoy/.test(m.consulta.rango_texto ?? '')]),
+      ...['dame las tareas', 'dame mis tareas pendientes', 'ver tareas', 'dame todas las tareas', 'enséñame las tareas', 'dime las tareaas'].map((f) => [f, (m) => m.intencion === 'consultar' && m.consulta?.tipo === 'tarea' && m.consulta.vista === 'tareas']),
+      ...['dame las alarmas', 'ver mis alarmas', 'enséñame los recordatorios', 'dame mis alarmas pendientes'].map((f) => [f, (m) => m.intencion === 'consultar' && m.consulta?.vista === 'alarmas']),
+      ...['dame las citas', 'ver mis citas', 'dame los eventos', 'enséñame mis citas pendientes'].map((f) => [f, (m) => m.intencion === 'consultar' && m.consulta?.tipo === 'evento']),
+      ...['dame las notas', 'ver mis ideas', 'enséñame mis apuntes'].map((f) => [f, (m) => m.intencion === 'consultar' && m.consulta?.tipo === 'nota']),
+      ...['dame mis listas', 'ver mis listas', 'enséñame mis listas'].map((f) => [f, (m) => m.intencion === 'consultar' && m.consulta?.tipo === 'lista']),
+      ...['ver mis archivos', 'enséñame las fotos', 'qué documentos tengo', 'ver mis archivos guardados', 'lista de archivos', 'dime qué archivos tengo'].map((f) => [f, (m) => m.intencion === 'ver_archivos']),
+      ...['dame mis proyectos', 'ver proyectos', 'enséñame mis proyectos'].map((f) => [f, (m) => m.intencion === 'proyectos']),
+      ['dame mi horario', (m) => m.intencion !== 'charla'],
+      ['dame mi memoria', (m) => m.intencion !== 'charla'],
+    ];
+    for (const [frase, ok] of casos) {
+      const m = await meta(frase);
+      afirmar(`«${frase}»: se resuelve por código, sin el modelo`, ok(m), JSON.stringify({ i: m.intencion, c: m.consulta }));
+    }
+
+    // Lo que NO debe confundirse con una lectura: acciones, frases con más cosas y mensajes sueltos
+    for (const frase of ['apunta comprar pan', 'borra todo', 'quita las tareas', 'borra la carpeta Fotos', 'crea la carpeta Proyectos', 'dame la foto del DNI', 'dame el teléfono del dentista',
+      'dame la jerarquía de carpetas del trabajo', 'enséñame las tareas del proyecto Mudanza', 'mañana dentista', 'todo', 'ya lo tengo todo', 'tengo todo', 'tareas', 'hoy', 'carpetas',
+      'dame las tareas y las alarmas', 'dame la carpeta de las fotos', 'qué hay en la carpeta Fotos', 'envíame las fotos', 'guarda todo', 'completa todo', 'dame todo el dinero que debo', 'cuánto tengo de saldo',
+      'dame la cita del dentista', 'muéstrame las tareas de hoy del trabajo', 'dame las fotos', 'dame mis archivos', 'dame los documentos', 'pásame los pdf', 'dame la compra', 'lista de la compra', 'qué hay en la lista de la compra', 'olvida mi memoria', 'cambia mi horario', 'dame algo']) {
+      const m = await meta(frase);
+      afirmar(`«${frase}»: no es una lectura por código (decide el modelo o la regla que ya había)`, m.intencion === 'charla' || (m.intencion !== 'carpetas' && m.intencion !== 'ver_archivos' && m.intencion !== 'proyectos' && !(m.intencion === 'consultar' && m.consulta?.estado === 'pendiente' && !m.consulta.tipo)), JSON.stringify({ i: m.intencion, c: m.consulta }));
+    }
+    // Frases como las escribe la transcripción de un audio: muletillas, signos, mayúsculas y la secretaria llamada por su nombre
+    const metaNombre = async (mensaje) => (await planificar(charla, { mensaje, nombreSecretaria: 'Marta' }))[0].meta;
+    for (const [frase, ok] of [
+      ['Eh, dame la jerarquía de carpetas, por favor.', (m) => m.intencion === 'carpetas'],
+      ['Pues, a ver, ¿me enseñas las carpetas que tengo?'.replace('me enseñas', 'enséñame'), (m) => m.intencion === 'carpetas'],
+      ['Marta, dame todo.', pendiente],
+      ['Hola Marta, dame todo completo', (m) => m.intencion === 'consultar' && m.consulta?.completo === true],
+      ['Buenos días, Marta. Dime lo de hoy.', (m) => m.intencion === 'consultar' && m.consulta?.con_rango === true],
+      ['Mmm... dame las tareas pendientes, venga.', (m) => m.intencion === 'consultar' && m.consulta?.tipo === 'tarea'],
+      ['Oye Marta, ver mis proyectos', (m) => m.intencion === 'proyectos'],
+    ]) {
+      const m = await metaNombre(frase);
+      afirmar(`audio «${frase}»: se resuelve por código`, ok(m), JSON.stringify({ i: m.intencion, c: m.consulta }));
+    }
+    for (const frase of ['Eh, apunta comprar pan', 'Marta, borra todo', 'Pues dame la foto del DNI', 'Marta, dame las fotos', 'Eh... mañana tengo dentista']) {
+      const m = await metaNombre(frase);
+      afirmar(`audio «${frase}»: no es una lectura por código`, m.intencion === 'charla' || (m.intencion !== 'carpetas' && m.intencion !== 'ver_archivos' && !(m.intencion === 'consultar' && m.consulta?.estado === 'pendiente' && !m.consulta.tipo)), JSON.stringify({ i: m.intencion }));
+    }
+    afirmar('sin el nombre puesto, «Marta» es una palabra desconocida y decide el modelo', (await meta('Marta, dame todo')).intencion === 'charla');
+    afirmar('«dame todo completo» sigue dando el detalle y «dame todo» no', (await meta('dame todo')).consulta.completo === false && (await meta('dame todo completo')).consulta.completo === true);
+  }
+
   console.log('Todo completo');
   {
     const consultaDe = async (mensaje, resp = respuesta({})) => (await planificar(resp, { mensaje }))[0].meta.consulta;
     for (const frase of ['dámelo todo completo', 'Dame todo completo', 'damelo completo', 'enséñamelo todo entero', 'quiero todo con detalle', 'dame lo pendiente completo', 'completo']) {
       const c = await consultaDe(frase);
       afirmar(`«${frase}»: atajo de lo pendiente con todo el detalle (sin el modelo)`, c && c.completo === true && c.estado === 'pendiente' && !c.tipo, JSON.stringify(c));
+    }
+    for (const frase of ['dame todo', 'Dámelo todo', 'dime todo', 'enséñame todo lo que tengo', 'muéstrame todo lo que tengo pendiente', 'ponme todo']) {
+      const c = await consultaDe(frase);
+      afirmar(`«${frase}»: lo mismo que /pending (lo pendiente sin más detalle), sin el modelo`, c && c.completo === false && c.estado === 'pendiente' && !c.tipo, JSON.stringify(c));
+    }
+    for (const frase of ['todo', 'dame todo lo de la compra', 'borra todo', 'quiero todo el dinero']) {
+      const c = await consultaDe(frase, respuesta({ intencion: 'charla', items: [] }));
+      afirmar(`«${frase}»: no es el atajo de «dame todo»`, !(c && c.estado === 'pendiente' && !c.tipo && c.completo === false), JSON.stringify(c));
     }
     afirmar('/pending completo: con todo el detalle; /pending a secas, no', (await consultaDe('/pending completo')).completo === true && (await consultaDe('/pending')).completo === false);
     const conModelo = await consultaDe('¿qué tareas tengo? dámelas enteras', respuesta({ intencion: 'consultar', items: [], consulta: { tipo: 'tarea' } }));
@@ -2433,7 +2886,7 @@ async function main() {
     await lanza('un nivel inventado se rechaza', correr(cfgCod.replace("const NIVEL_RAZONAMIENTO = '';", "const NIVEL_RAZONAMIENTO = 'bajo';")), 'NIVEL_RAZONAMIENTO');
     const codigoCP = codigoConstruir();
     const ent = { mensaje: 'hola', fecha_actual: 'x' };
-    const montarN = (nivel) => correr(codigoCP, { nodos: { Configuración: [{ config: { ...CONFIG, nivel_razonamiento: nivel } }], Entrada: [ent], 'Leer memoria': [{}], 'Leer items pendientes': [{}], 'Leer pregunta pendiente': [{}], 'Leer archivos': [{}], 'Leer proyectos': [{}] } }).then((r) => r[0].cuerpo.generationConfig);
+    const montarN = (nivel) => correr(codigoCP, { nodos: { Configuración: [{ config: { ...CONFIG, nivel_razonamiento: nivel } }], Entrada: [ent], 'Leer memoria': [{}], 'Leer items pendientes': [{}], 'Leer pregunta pendiente': [{}], 'Leer archivos': [{}], 'Leer proyectos': [{}], 'Leer respuesta citada': [{}] } }).then((r) => r[0].cuerpo.generationConfig);
     const sin = await montarN('');
     afirmar('sin nivel: la petición no lleva thinkingConfig', !('thinkingConfig' in sin) && sin.temperature === 0 && sin.responseMimeType === 'application/json');
     const bajo = await montarN('low');
@@ -2472,7 +2925,7 @@ async function main() {
       (await correr(codigoConstruir(), {
         nodos: {
           Configuración: [{ config: CONFIG }], Entrada: [{ mensaje, fecha_actual: 'miércoles 14 de octubre 2026, 10:00 (+02:00)' }], 'Leer memoria': memoria,
-          'Leer pregunta pendiente': pendiente, 'Leer archivos': [{}], 'Leer items pendientes': [{}], 'Leer proyectos': [{}],
+          'Leer pregunta pendiente': pendiente, 'Leer archivos': [{}], 'Leer items pendientes': [{}], 'Leer proyectos': [{}], 'Leer respuesta citada': [{}],
         },
       }))[0];
     for (const f of ['¿Cuál es su nombre?', 'cómo te llamas', '/help', '/pending completo', 'qué tengo hoy', 'dámelo todo completo', 'llámate Marta', 'ayuda']) {
@@ -2552,9 +3005,9 @@ async function main() {
     // Resultado: la confirmación sale de lo guardado
     const resM = async (filas) => (await correr(nodo('resultado.js'), { input: [{}], nodos: { Planificar: [{ meta: { ok: true, intencion: 'corregir', avisos: [], hora_movida: true, respuesta_usuario: 'Lo que diga el modelo', ahora: '2026-10-10T08:00:00.000Z' } }], 'Escribir en Supabase': filas } }))[0];
     const m1 = await resM([{ id: ALARMA, tipo: 'tarea', titulo: 'Sacar la ropa', recordar_en: '2026-10-10T08:10:00+00:00' }]);
-    afirmar('confirmación de la alarma: hora real y qué avisos quedan («a la hora»)', m1.mensajes[0] === 'Alarma cambiada.\n🔔 Sacar la ropa: hoy a las 10:10. Te avisaré a la hora.', m1.mensajes[0]);
+    afirmar('confirmación de la alarma: hora real, sin explicar los avisos', m1.mensajes[0] === 'Alarma cambiada.\n🔔 Sacar la ropa: hoy a las 10:10.', m1.mensajes[0]);
     const m2 = await resM([{ id: ALARMA, tipo: 'tarea', titulo: 'Sacar la ropa', recordar_en: '2026-10-10T10:00:00+00:00' }]);
-    afirmar('… con más margen promete también los avisos de antes', m2.mensajes[0].endsWith('Te avisaré 1 hora antes, 30 minutos antes y a la hora.'), m2.mensajes[0]);
+    afirmar('… con más margen tampoco los explica', !m2.mensajes[0].includes('Te avisaré'), m2.mensajes[0]);
     const m3 = await resM([{ id: CITA, tipo: 'evento', titulo: 'Dentista', fecha_inicio: '2026-10-10T09:00:00+00:00', fecha_fin: '2026-10-10T10:00:00+00:00' }]);
     afirmar('confirmación de la cita: día y horario reales', /^📅 Cita «Dentista» cambiada: .+, de 11:00 a 12:00\.$/.test(m3.mensajes[0]), m3.mensajes[0]);
 
@@ -2565,7 +3018,7 @@ async function main() {
           Configuración: [{ config: CONFIG }], Entrada: [{ mensaje, fecha_actual: 'sábado 10 de octubre 2026, 10:00 (+02:00)', contexto_id: 'wamid.aviso' }],
           'Leer memoria': [{ termino: 'nombre de la secretaria', significado: 'Lola' }], 'Leer pregunta pendiente': [{}], 'Leer archivos': [{}],
           'Leer items pendientes': extra.pendientes ?? [{ id: CITA, tipo: 'evento', titulo: 'Dentista', estado: 'pendiente', fecha_inicio: cita.fecha_inicio, fecha_fin: cita.fecha_fin }],
-          'Leer proyectos': [{}], 'Leer avisos': [avisos],
+          'Leer proyectos': [{}], 'Leer respuesta citada': [{}], 'Leer avisos': [avisos],
         },
       }))[0];
     const filaSonada = { id: ALARMA, tipo: 'tarea', titulo: 'Sacar la ropa', estado: 'hecho', aviso: 'alarma', recordar_en: sonada.recordar_en, fecha_inicio: null, fecha_fin: null };
@@ -2636,7 +3089,7 @@ async function main() {
     // Resultado: la confirmación sale de lo guardado y es honesta
     const resC = async (a, filas) => (await correr(nodo('resultado.js'), { input: [{}], nodos: { Planificar: [{ meta: { ok: true, intencion: 'corregir', avisos: [], conversion: a, respuesta_usuario: 'Hecho (lo que diga el modelo)', ahora: '2026-10-10T08:00:00.000Z' } }], 'Escribir en Supabase': filas, 'Construir petición': [{}] } }))[0];
     const rc1 = await resC('alarma', [{ id: U1, tipo: 'tarea', estado: 'pendiente', titulo: 'Coger la cartera', recordar_en: '2026-10-11T06:00:00+00:00', fecha_limite: null }]);
-    afirmar('confirmación alarma: con lo guardado y los avisos que llegarán', rc1.ok && rc1.mensajes[0].startsWith('Hecho: «Coger la cartera» ahora es una alarma.\n🔔 Coger la cartera: mañana a las 08:00. Te avisaré 1 hora antes, 30 minutos antes y a la hora.'), rc1.mensajes[0]);
+    afirmar('confirmación alarma: con lo guardado, sin explicar los avisos', rc1.ok && rc1.mensajes[0] === 'Hecho: «Coger la cartera» ahora es una alarma.\n🔔 Coger la cartera: mañana a las 08:00.', rc1.mensajes[0]);
     const rc2 = await resC('cita', [{ id: U1, tipo: 'evento', estado: 'pendiente', titulo: 'Reunión', fecha_inicio: '2026-10-11T09:00:00+00:00', fecha_fin: '2026-10-11T10:00:00+00:00' }]);
     afirmar('confirmación cita: día y horario reales', rc2.ok && /^📅 «Reunión» ahora es una cita: .+, de 11:00 a 12:00\./.test(rc2.mensajes[0]), rc2.mensajes[0]);
     const rc3 = await resC('tarea', [{ id: U1, tipo: 'tarea', estado: 'pendiente', titulo: 'Llamar', recordar_en: null, fecha_limite: '2026-10-12T21:59:59+00:00' }]);
@@ -2648,10 +3101,10 @@ async function main() {
     const dent = { id: U2, tipo: 'evento', titulo: 'Dentista', fecha_inicio: '2026-10-15T08:00:00+00:00', fecha_fin: '2026-10-15T09:00:00+00:00' };
     const guardaCita = (titulo, ini, fin) => respuesta({ intencion: 'guardar', items: [itemBase({ tipo: 'evento', titulo, fecha_inicio: ini, fecha_fin: fin })] });
     const r1 = await planificar(guardaCita('Dentista', '2026-10-15T12:00:00+02:00', '2026-10-15T13:00:00+02:00'), { mensaje: 'dentista el jueves a las 12', pendientes: [dent], agenda: [{ ...dent, id: 'i9' }], refs: { i9: U2 } });
-    afirmar('una cita con el mismo nombre que otra pendiente: pregunta si cambia o añade', r1[0].meta.bloqueo === 'repetido' && r1[0].meta.pregunta.startsWith('Ya tienes «Dentista» (cita, ') && r1[0].meta.pregunta.endsWith('¿La cambio o añado otra con el mismo nombre?') && !pet(r1, 'guardar items') && !r1.some((x) => x.etiqueta?.startsWith('guardar')), JSON.stringify(r1[0].meta));
-    afirmar('… y deja en el hilo qué nombre se preguntó', r1.some((x) => x.cuerpo?.hilo?.at(-1)?.texto.includes('"repetidos":["dentista"]')));
+    afirmar('una cita con el mismo nombre que otra pendiente: se guarda sin preguntar ', !r1[0].meta.bloqueo && r1.some((x) => x.etiqueta === 'guardar items'), JSON.stringify(r1.map((x) => x.etiqueta)));
+    afirmar('… y no deja ninguna pregunta abierta', !r1.some((x) => x.cuerpo?.pregunta_pendiente === true));
     const r2 = await planificar(guardaCita('Cita dentista', '2026-10-15T12:00:00+02:00', '2026-10-15T13:00:00+02:00'), { mensaje: 'x', pendientes: [dent] });
-    afirmar('un nombre parecido (contiene al otro) también pregunta', r2[0].meta.bloqueo === 'repetido');
+    afirmar('un nombre parecido (contiene al otro) tampoco pregunta', !r2[0].meta.bloqueo && r2.some((x) => x.etiqueta === 'guardar items'));
     const hiloAceptado = [{ rol: 'user', texto: 'dentista el jueves a las 12' }, { rol: 'model', texto: JSON.stringify({ intencion: 'aclarar', pregunta: 'Ya tienes…', motivo: 'repetido', repetidos: ['dentista'] }) }];
     const r3 = await planificar(guardaCita('Dentista', '2026-10-15T12:00:00+02:00', '2026-10-15T13:00:00+02:00'), { mensaje: 'añade otra', pendientes: [dent], hiloPrevio: hiloAceptado, pendienteId: 'p-1' });
     afirmar('tras «añade otra» (el nombre ya se preguntó en el hilo) se guarda sin volver a preguntar', !r3[0].meta.bloqueo && r3.some((x) => x.etiqueta === 'guardar items'), JSON.stringify(r3.map((x) => x.etiqueta)));
@@ -2663,7 +3116,7 @@ async function main() {
     afirmar('compartir solo una palabra («Reunión») no cuenta como parecido', !r6[0].meta.bloqueo);
     const alarmaNueva = respuesta({ intencion: 'guardar', items: [itemBase({ titulo: 'Sacar la ropa', recordar_en: '2026-10-10T15:00:00+02:00' })] });
     const r7 = await planificar(alarmaNueva, { mensaje: 'recuérdame a las 15 sacar la ropa', pendientes: [{ id: U2, tipo: 'tarea', titulo: 'Sacar la ropa', recordar_en: '2026-10-10T18:00:00+00:00' }] });
-    afirmar('una alarma repetida pregunta y la llama alarma', r7[0].meta.bloqueo === 'repetido' && r7[0].meta.pregunta.includes('(alarma, '), JSON.stringify(r7[0].meta.pregunta));
+    afirmar('una alarma repetida tampoco pregunta', !r7[0].meta.bloqueo && r7.some((x) => x.etiqueta === 'guardar items'), JSON.stringify(r7.map((x) => x.etiqueta)));
     // «¿Cuáles hay?»: la lista de las que existen y la pregunta sigue abierta
     const r8 = await planificar(guardaCita('Dentista', '2026-10-15T12:00:00+02:00', '2026-10-15T13:00:00+02:00'), { mensaje: 'cuáles hay', pendientes: [dent, { id: 'x', tipo: 'tarea', titulo: 'Llamar al banco' }], hiloPrevio: hiloAceptado, pendienteId: 'p-1' });
     afirmar('«cuáles hay»: solo las parecidas, con su hora, y sin cerrar la pregunta pendiente', r8.length === 1 && r8[0].etiqueta === 'actualizar mensaje' && r8[0].meta.respuesta_usuario.startsWith('Esto es lo que ya tienes:\n• «Dentista» (cita, ') && !r8[0].meta.respuesta_usuario.includes('banco') && r8[0].meta.respuesta_usuario.endsWith('¿La cambio o añado otra con el mismo nombre?') && !r8.some((x) => x.etiqueta === 'cerrar pregunta anterior'), JSON.stringify(r8.map((x) => x.etiqueta)));
@@ -2713,10 +3166,10 @@ async function main() {
     const nombres = flujo.nodes.map((n) => n.name);
     const porNombre = (n) => flujo.nodes.find((x) => x.name === n);
 
-    afirmar('31 nodos de trabajo y 6 notas', codigoNodos.length === 31 && flujo.nodes.length === 37, `${codigoNodos.length}/${flujo.nodes.length}`);
+    afirmar('40 nodos de trabajo y 6 notas', codigoNodos.length === 40 && flujo.nodes.length === 46, `${codigoNodos.length}/${flujo.nodes.length}`);
     afirmar('nombres e ids únicos', new Set(nombres).size === nombres.length && new Set(flujo.nodes.map((n) => n.id)).size === flujo.nodes.length);
     afirmar('las conexiones solo nombran nodos existentes', Object.entries(flujo.connections).every(([origen, c]) => nombres.includes(origen) && c.main[0].every((d) => nombres.includes(d.node))));
-    afirmar('cadena lineal, la rama de carpetas y la papelera, el segundo disparador y la salida con anotación', Object.keys(flujo.connections).length === 30, String(Object.keys(flujo.connections).length));
+    afirmar('cadena lineal, la rama de carpetas y la papelera, el segundo disparador y la salida con anotación', Object.keys(flujo.connections).length === 39, String(Object.keys(flujo.connections).length));
     afirmar('el flujo principal ya no espera ni lleva la cola (vive en el flujo de WhatsApp: un Wait en un subflujo no es fiable)', !flujo.nodes.some((n) => n.type === 'n8n-nodes-base.wait') && !nombres.some((n) => ['Reclamar mensajes', 'Juntar mensajes', 'Liberar turno', 'Sin respuesta'].includes(n)) && flujo.connections['Guardar mensaje'].main[0][0].node === 'Leer memoria');
     const guardar = porNombre('Guardar mensaje');
     afirmar('Guardar mensaje: upsert por wa_message_id (la fila ya la creó la cola) con el texto juntado y la cita', guardar.parameters.url.endsWith('/rest/v1/mensajes?on_conflict=wa_message_id') && guardar.parameters.headerParameters.parameters[0].value === 'resolution=merge-duplicates,return=representation' && guardar.parameters.jsonBody.includes('texto_original: $json.mensaje') && guardar.parameters.jsonBody.includes('contexto_wa_id') && !guardar.parameters.jsonBody.includes('en_cola'));
@@ -2724,11 +3177,20 @@ async function main() {
     afirmar('Leer proyectos: POST a resumen_proyectos, siempre con salida y sin cortar el flujo, entre Leer archivos y Construir petición', leerPro.parameters.url.endsWith('/rest/v1/rpc/resumen_proyectos') && leerPro.alwaysOutputData === true && leerPro.onError === 'continueRegularOutput' && flujo.connections['Leer archivos'].main[0][0].node === 'Leer proyectos' && flujo.connections['Leer proyectos'].main[0][0].node === 'Leer avisos');
     const leerAv = porNombre('Leer avisos');
     afirmar('Leer avisos: POST a contexto_avisos con el id del mensaje citado, siempre con salida y sin cortar el flujo, antes de Construir petición', leerAv.parameters.url.endsWith('/rest/v1/rpc/contexto_avisos') && leerAv.parameters.jsonBody.includes("$('Entrada').first().json.contexto_id") && leerAv.alwaysOutputData === true && leerAv.onError === 'continueRegularOutput' && flujo.connections['Leer avisos'].main[0][0].node === 'Leer horario');
-    for (const nombre of ['Guardar mensaje', 'Leer memoria', 'Leer items pendientes', 'Leer pregunta pendiente', 'Leer archivos', 'Leer proyectos', 'Leer avisos', 'Leer horario']) {
+    for (const nombre of ['Guardar mensaje', 'Leer memoria', 'Leer items pendientes', 'Leer pregunta pendiente', 'Leer archivos', 'Leer proyectos', 'Leer avisos', 'Leer horario', 'Leer respuesta citada', 'Leer quitados']) {
       afirmar(`${nombre}: Execute Once (va encadenado; sin esto se repite por cada fila del anterior y duplica lo que ve el modelo)`, porNombre(nombre).executeOnce === true);
     }
     const leerHor = porNombre('Leer horario');
-    afirmar('Leer horario: GET del horario fijo ordenado, siempre con salida y sin cortar el flujo (con la base de datos sin actualizar falla y no hay horario), antes de Construir petición', leerHor.parameters.method === 'GET' && leerHor.parameters.url.includes('/rest/v1/horario_fijo?select=id,titulo,dia_semana,hora_inicio,hora_fin&order=dia_semana.asc,hora_inicio.asc') && leerHor.alwaysOutputData === true && leerHor.onError === 'continueRegularOutput' && leerHor.parameters.nodeCredentialType === 'supabaseApi' && flujo.connections['Leer horario'].main[0][0].node === 'Construir petición');
+    afirmar('Leer horario: GET del horario fijo ordenado, siempre con salida y sin cortar el flujo (con la base de datos sin actualizar falla y no hay horario), antes de Construir petición', leerHor.parameters.method === 'GET' && leerHor.parameters.url.includes('/rest/v1/horario_fijo?select=id,titulo,dia_semana,hora_inicio,hora_fin&order=dia_semana.asc,hora_inicio.asc') && leerHor.alwaysOutputData === true && leerHor.onError === 'continueRegularOutput' && leerHor.parameters.nodeCredentialType === 'supabaseApi' && flujo.connections['Leer horario'].main[0][0].node === 'Leer respuesta citada');
+    const leerCit = porNombre('Leer respuesta citada');
+    afirmar('Leer respuesta citada: GET a mensajes por el id citado (cs.{"id"}, codificado; sin cita, un id que no existe), el último primero y uno solo; siempre con salida y sin cortar el flujo (sin actualizar la base de datos a la 1.4 falla), antes de Construir petición', leerCit.parameters.method === 'GET' && leerCit.parameters.url.includes('/rest/v1/mensajes?select=id,texto_original,tipo_entrada,pregunta,pregunta_pendiente,hilo,respuesta_texto,created_at&respuesta_wa_ids=cs.%7B%22{{ encodeURIComponent($(\'Entrada\').first().json.contexto_id || \'sin-cita\') }}%22%7D&order=created_at.desc&limit=1') && leerCit.alwaysOutputData === true && leerCit.onError === 'continueRegularOutput' && leerCit.executeOnce === true && leerCit.parameters.nodeCredentialType === 'supabaseApi' && flujo.connections['Leer respuesta citada'].main[0][0].node === 'Leer quitados');
+    const leerQ = porNombre('Leer quitados');
+    afirmar('Leer quitados: GET de lo quitado por el usuario (con quitado_en) en los últimos 7 días, archivado u hecho, lo último primero, siempre con salida y sin cortar el flujo (sin actualizar la base de datos a la 1.4 falla), antes de Construir petición', leerQ.parameters.method === 'GET' && leerQ.parameters.url.includes('/rest/v1/items?select=id,tipo,titulo,estado,quitado_en,recordar_en,fecha_limite,lista,proyecto&quitado_en=gte.') && leerQ.parameters.url.includes('&estado=in.(archivado,hecho)&order=quitado_en.desc&limit=300') && leerQ.alwaysOutputData === true && leerQ.onError === 'continueRegularOutput' && leerQ.executeOnce === true && leerQ.parameters.nodeCredentialType === 'supabaseApi' && flujo.connections['Leer quitados'].main[0][0].node === 'Construir petición');
+    {
+      const exp = leerCit.parameters.url.match(/\{\{ (encodeURIComponent.*?) \}\}/)[1];
+      const ev = (ctx) => new Function('$', 'return ' + exp)(() => ({ first: () => ({ json: { contexto_id: ctx } }) }));
+      afirmar('… la URL codifica un id de WhatsApp tal cual llega y, sin cita, usa uno que no existe', ev('wamid.HBgM=+/-_') === 'wamid.HBgM%3D%2B%2F-_' && ev('') === 'sin-cita');
+    }
     const llamado = porNombre('Al ser llamado');
     afirmar('Al ser llamado: disparador de subflujo que acepta todos los datos', llamado.type === 'n8n-nodes-base.executeWorkflowTrigger' && llamado.parameters.inputSource === 'passthrough');
     afirmar('Al ser llamado entra por Configuración, como el disparador manual', flujo.connections['Al ser llamado'].main[0][0].node === 'Configuración' && flujo.connections['Disparador manual'].main[0][0].node === 'Configuración');
@@ -2763,7 +3225,7 @@ async function main() {
     afirmar('¿Listar carpetas?: mira la meta de Planificar; sí va a los listados de Drive y no directo a Resultado', si.type === 'n8n-nodes-base.if' && JSON.stringify(si.parameters).includes("$('Planificar').first().json.meta.carpetas") && flujo.connections['¿Listar carpetas?'].main[0][0].node === 'Listar nivel 1' && flujo.connections['¿Listar carpetas?'].main[1][0].node === 'Resultado');
     const rama = ['Listar nivel 1', 'Listar nivel 2', 'Listar nivel 3', 'Contar archivos', 'Revisar Drive', '¿Mandar a la papelera?'];
     afirmar('la rama de carpetas encadena los tres listados, el recuento y la revisión de Drive', rama.slice(0, -1).every((n, i) => flujo.connections[n].main[0][0].node === rama[i + 1]));
-    afirmar('¿Mandar a la papelera?: sí → Mandar a la papelera → Marcar borrado → Resultado; no → Resultado', flujo.connections['¿Mandar a la papelera?'].main[0][0].node === 'Mandar a la papelera' && flujo.connections['¿Mandar a la papelera?'].main[1][0].node === 'Resultado' && flujo.connections['Mandar a la papelera'].main[0][0].node === 'Marcar borrado' && flujo.connections['Marcar borrado'].main[0][0].node === 'Resultado' && JSON.stringify(porNombre('¿Mandar a la papelera?').parameters).includes('$json.papelera'));
+    afirmar('¿Mandar a la papelera?: sí → Mandar a la papelera → Marcar borrado → Resultado; no → ¿Hay carpetas que mover?', flujo.connections['¿Mandar a la papelera?'].main[0][0].node === 'Mandar a la papelera' && flujo.connections['¿Mandar a la papelera?'].main[1][0].node === '¿Hay carpetas que mover?' && flujo.connections['Mandar a la papelera'].main[0][0].node === 'Marcar borrado' && flujo.connections['Marcar borrado'].main[0][0].node === 'Resultado' && JSON.stringify(porNombre('¿Mandar a la papelera?').parameters).includes('$json.papelera'));
     const papel = porNombre('Mandar a la papelera');
     afirmar('Mandar a la papelera: PATCH trashed true (nunca DELETE) con la credencial de Drive, una por cosa, sin cortar el flujo', papel.parameters.method === 'PATCH' && papel.parameters.jsonBody === '={{ JSON.stringify({ trashed: true }) }}' && papel.parameters.url.includes('/drive/v3/files/') && papel.parameters.url.includes('$json.papelera.id') && papel.parameters.nodeCredentialType === 'googleDriveOAuth2Api' && papel.parameters.options.response.response.neverError === true && papel.onError === 'continueRegularOutput' && !papel.executeOnce);
     const marcar = porNombre('Marcar borrado');
@@ -2781,7 +3243,7 @@ async function main() {
     }
     afirmar('los listados piden nextPageToken y los padres, para detectar más de una página y colgar cada carpeta de su padre', porNombre('Listar nivel 1').parameters.url.includes("nextPageToken,files(id,name,parents)") && porNombre('Listar nivel 1').parameters.url.includes('carpeta_raiz_id') && porNombre('Listar nivel 2').parameters.url.includes("$('Listar nivel 1')") && porNombre('Listar nivel 3').parameters.url.includes("$('Listar nivel 2')"));
     const contar = porNombre('Contar archivos');
-    afirmar('Contar archivos: lee id, nombre, id de Drive, carpeta y estado de los archivos vivos, una vez, con Supabase y sin cortar el flujo si falla', contar.parameters.url.includes('/rest/v1/archivos?select=id,nombre,drive_file_id,carpeta_id,estado&eliminado_at=is.null') && contar.parameters.nodeCredentialType === 'supabaseApi' && contar.executeOnce === true && contar.alwaysOutputData === true && contar.onError === 'continueRegularOutput');
+    afirmar('Contar archivos: lee id, nombre, id de Drive, carpeta y estado de los archivos vivos, una vez, con Supabase y sin cortar el flujo si falla', contar.parameters.url.includes('/rest/v1/archivos?select=id,nombre,drive_file_id,carpeta_id,carpeta_destino,estado&eliminado_at=is.null') && contar.parameters.nodeCredentialType === 'supabaseApi' && contar.executeOnce === true && contar.alwaysOutputData === true && contar.onError === 'continueRegularOutput');
     const ifAnotar = porNombre('¿Anotar fallo?');
     afirmar('¿Anotar fallo?: IF sobre la anotación de Resultado; sí va a Anotar fallo y no directo a Entregar', ifAnotar.type === 'n8n-nodes-base.if' && JSON.stringify(ifAnotar.parameters).includes('$json.anotacion') && flujo.connections['Resultado'].main[0][0].node === '¿Anotar fallo?' && flujo.connections['¿Anotar fallo?'].main[0][0].node === 'Anotar fallo' && flujo.connections['¿Anotar fallo?'].main[1][0].node === 'Entregar' && flujo.connections['Anotar fallo'].main[0][0].node === 'Entregar');
     const anotar = porNombre('Anotar fallo');

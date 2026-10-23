@@ -98,7 +98,7 @@ function construirFlujoBase() {
         url: `={{ ${CFG}.supabase_url }}/rest/v1/archivos?select=id,drive_file_id,nombre,item_id,carpeta_id,carpeta_destino,updated_at,items(tipo)&drive_pendiente=eq.true&eliminado_at=is.null&order=updated_at.asc&limit={{ ${CFG}.lote }}`,
         ...supabase,
       },
-      { alwaysOutputData: true },
+      { alwaysOutputData: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 2000 },
     ),
     // Las carpetas que el usuario ha pedido crear sin mover archivos (tabla carpetas_pedidas)
     nodoHttp(
@@ -111,7 +111,7 @@ function construirFlujoBase() {
         ...supabase,
       },
       // Una sola vez: cuelga de «Leer pendientes», que da un item por archivo; sin esto se repetía por cada archivo pendiente y cada carpeta
-      // pedida salía varias veces (podía crearse duplicada en Drive). Revisión del 2026-10-19.
+      // pedida salía varias veces (podía crearse duplicada en Drive).
       { alwaysOutputData: true, executeOnce: true },
     ),
     nodoCode(5, 'Preparar', [PASO * 3, 0], 'preparar.js'),

@@ -37,6 +37,7 @@ CREATE TABLE public.items (
     recordar_en timestamp with time zone,
     recordatorio_avisos smallint[] DEFAULT '{}'::smallint[] NOT NULL,
     proyecto text,
+    quitado_en timestamp with time zone,
     CONSTRAINT items_aviso_enviado_implica_aviso CHECK (((aviso_whatsapp_enviado_at IS NULL) OR (aviso_whatsapp_en IS NOT NULL))),
     CONSTRAINT items_estado_check CHECK ((estado = ANY (ARRAY['pendiente'::text, 'hecho'::text, 'archivado'::text]))),
     CONSTRAINT items_tipo_check CHECK ((tipo = ANY (ARRAY['evento'::text, 'tarea'::text, 'lista'::text, 'nota'::text])))
@@ -368,6 +369,7 @@ CREATE TABLE public.archivos (
     respuesta_wa_id text,
     eliminado_at timestamp with time zone,
     vigilado_at timestamp with time zone,
+    confirmado_at timestamp with time zone,
     CONSTRAINT archivos_carpeta_destino_valida CHECK (((carpeta_destino IS NULL) OR ((carpeta_destino ~ '^[^/\\[:cntrl:]]{1,60}(/[^/\\[:cntrl:]]{1,60}){0,2}$'::text) AND (carpeta_destino !~ '(^|/)\.{1,2}(/|$)'::text) AND (carpeta_destino !~ '(^|/)\s'::text) AND (carpeta_destino !~ '\s(/|$)'::text)))),
     CONSTRAINT archivos_carpeta_implica_asignado CHECK (((carpeta_destino IS NULL) OR (estado = 'asignado'::text))),
     CONSTRAINT archivos_estado_check CHECK ((estado = ANY (ARRAY['pendiente'::text, 'asignado'::text]))),
@@ -477,7 +479,10 @@ CREATE TABLE public.mensajes (
     en_cola boolean DEFAULT false NOT NULL,
     agrupado_en uuid,
     contexto_wa_id text,
+    respuesta_wa_ids text[],
+    respuesta_texto text,
     CONSTRAINT mensajes_hilo_es_lista CHECK (((hilo IS NULL) OR (jsonb_typeof(hilo) = 'array'::text))),
+    CONSTRAINT mensajes_respuesta_texto_corto CHECK (((respuesta_texto IS NULL) OR (char_length(respuesta_texto) <= 1500))),
     CONSTRAINT mensajes_pregunta_pendiente_completa CHECK (((NOT pregunta_pendiente) OR ((pregunta IS NOT NULL) AND (hilo IS NOT NULL)))),
     CONSTRAINT mensajes_tipo_entrada_check CHECK ((tipo_entrada = ANY (ARRAY['texto'::text, 'audio'::text, 'imagen'::text, 'documento'::text])))
 );
@@ -1096,6 +1101,134 @@ grant execute on function public.reclamar_mensajes(uuid, integer, text[]) to ser
 grant execute on function public.turno_respuesta(text[], integer, text[]) to service_role;
 grant execute on function public.marcar_contestados(text[]) to service_role;
 
+-- Respuestas citadas, «deshaz», un solo aviso al guardar varios archivos y mover carpetas (columnas ya incluidas arriba; aquí sus
+-- comentarios, índices y funciones).
+comment on column public.mensajes.respuesta_wa_ids is 'Ids de WhatsApp de los mensajes con los que la secretaria contestó a este mensaje (para entender a qué se refiere el usuario cuando cita una respuesta).';
+comment on column public.mensajes.respuesta_texto is 'Lo que se le contestó al usuario (recortado), para dárselo al modelo cuando cita esa respuesta.';
+comment on column public.items.quitado_en is 'Cuándo lo quitó (o completó) el usuario por WhatsApp. Sirve para recuperarlo con «deshaz». Vacío si no lo quitó él o si ya se recuperó.';
+comment on column public.archivos.confirmado_at is 'Cuándo se le confirmó al usuario que el archivo se guardó (los avisos de varios archivos se juntan en un solo mensaje). Vacío = aún sin confirmar.';
+
+create index mensajes_respuesta_wa_ids_idx on public.mensajes using gin (respuesta_wa_ids) where respuesta_wa_ids is not null;
+create index items_quitado_en_idx on public.items (quitado_en desc) where quitado_en is not null;
+create index archivos_sin_confirmar_idx on public.archivos (created_at) where confirmado_at is null;
+
+create function public.reclamar_confirmacion_archivos(p_quieto_s integer default 3, p_ventana_min integer default 10)
+returns table (drive_file_id text, nombre text, wa_message_id text)
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if p_quieto_s is null or p_quieto_s < 0 or p_quieto_s > 60 then
+    raise exception 'p_quieto_s debe estar entre 0 y 60';
+  end if;
+  if p_ventana_min is null or p_ventana_min < 1 or p_ventana_min > 120 then
+    raise exception 'p_ventana_min debe estar entre 1 y 120';
+  end if;
+  -- Si se guardó otro archivo hace menos de p_quieto_s segundos, todavía están llegando más: lo reclamará el último en guardarse
+  if exists (
+    select 1 from public.archivos a
+     where a.confirmado_at is null and a.created_at > now() - make_interval(secs => p_quieto_s)
+  ) then
+    return;
+  end if;
+  -- Todos los sin confirmar de la ventana, de una sola vez: dos llamadas a la vez no se llevan el mismo archivo (la segunda espera al bloqueo
+  -- de fila y, al reevaluar «confirmado_at is null», ya no encuentra nada)
+  return query
+    with r as (
+      update public.archivos a
+         set confirmado_at = now()
+       where a.confirmado_at is null
+         and a.created_at > now() - make_interval(mins => p_ventana_min)
+      returning a.drive_file_id, a.nombre, a.mensaje_id, a.created_at
+    )
+    select r.drive_file_id, r.nombre, m.wa_message_id
+      from r
+      left join public.mensajes m on m.id = r.mensaje_id
+     order by r.created_at, r.nombre;
+end;
+$$;
+
+create function public.mover_carpeta_drive(p_id text, p_nuevo_padre_id text, p_ruta_origen text, p_ruta_destino text)
+returns jsonb
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_o text := p_ruta_origen;
+  v_d text := p_ruta_destino;
+  v_arbol integer := 0;
+  v_archivos integer := 0;
+  v_pedidas integer := 0;
+  v_omitidos integer := 0;
+begin
+  if p_id is null or btrim(p_id) = '' then
+    raise exception 'mover_carpeta_drive: falta el id de la carpeta';
+  end if;
+  if p_nuevo_padre_id is null or btrim(p_nuevo_padre_id) = '' then
+    raise exception 'mover_carpeta_drive: falta el id de la carpeta de destino';
+  end if;
+  if not public.ruta_carpeta_valida(v_o) or not public.ruta_carpeta_valida(v_d) then
+    raise exception 'mover_carpeta_drive: ruta no válida (de 1 a 3 niveles, sin barras invertidas ni "..")';
+  end if;
+  if lower(v_o) = lower(v_d) or starts_with(lower(v_d), lower(v_o) || '/') then
+    raise exception 'mover_carpeta_drive: una carpeta no se puede mover dentro de sí misma';
+  end if;
+  -- Entrada y Notas las usa la secretaria para ordenar: no se mueven
+  if lower(v_o) in ('entrada', 'notas') then
+    raise exception 'mover_carpeta_drive: Entrada y Notas no se mueven';
+  end if;
+
+  -- La foto del árbol: la carpeta (nueva ruta y nuevo padre) y todo lo que cuelga de ella (nueva ruta)
+  update public.drive_arbol d
+     set ruta = v_d || substr(d.ruta, length(v_o) + 1),
+         padre_id = case when d.drive_id = p_id then p_nuevo_padre_id else d.padre_id end,
+         updated_at = now()
+   where d.eliminado_at is null
+     and (d.drive_id = p_id or starts_with(d.ruta, v_o || '/'));
+  get diagnostics v_arbol = row_count;
+
+  -- Los archivos clasificados en esa carpeta o dentro. Si la nueva ruta no es válida (más de 3 niveles), se deja y se cuenta
+  update public.archivos a
+     set carpeta_destino = v_d || substr(a.carpeta_destino, length(v_o) + 1)
+   where a.carpeta_destino is not null
+     and (a.carpeta_destino = v_o or starts_with(a.carpeta_destino, v_o || '/'))
+     and public.ruta_carpeta_valida(v_d || substr(a.carpeta_destino, length(v_o) + 1));
+  get diagnostics v_archivos = row_count;
+  select v_omitidos + count(*) into v_omitidos
+    from public.archivos a
+   where a.carpeta_destino is not null
+     and (a.carpeta_destino = v_o or starts_with(a.carpeta_destino, v_o || '/'));
+
+  -- Las carpetas pedidas bajo la movida. Una fila eliminada que ya ocupa la ruta nueva se descarta; una viva que ya la ocupa deja a la antigua
+  -- como eliminada (la del destino ya representa esa carpeta)
+  delete from public.carpetas_pedidas q
+   where q.eliminada_at is not null
+     and exists (
+       select 1 from public.carpetas_pedidas p
+        where p.eliminada_at is null and (p.ruta = v_o or starts_with(p.ruta, v_o || '/'))
+          and q.ruta = v_d || substr(p.ruta, length(v_o) + 1)
+     );
+  update public.carpetas_pedidas p
+     set eliminada_at = now(), drive_pendiente = false
+   where p.eliminada_at is null
+     and (p.ruta = v_o or starts_with(p.ruta, v_o || '/'))
+     and exists (select 1 from public.carpetas_pedidas q where q.id <> p.id and q.ruta = v_d || substr(p.ruta, length(v_o) + 1));
+  update public.carpetas_pedidas p
+     set ruta = v_d || substr(p.ruta, length(v_o) + 1)
+   where p.eliminada_at is null
+     and (p.ruta = v_o or starts_with(p.ruta, v_o || '/'))
+     and public.ruta_carpeta_valida(v_d || substr(p.ruta, length(v_o) + 1));
+  get diagnostics v_pedidas = row_count;
+  select v_omitidos + count(*) into v_omitidos
+    from public.carpetas_pedidas p
+   where p.eliminada_at is null and (p.ruta = v_o or starts_with(p.ruta, v_o || '/'));
+
+  return jsonb_build_object('arbol', v_arbol, 'archivos', v_archivos, 'carpetas_pedidas', v_pedidas, 'omitidos', v_omitidos);
+end;
+$$;
+
+comment on function public.mover_carpeta_drive(text, text, text, text) is 'Tras mover una carpeta en Drive, reescribe sus rutas en drive_arbol, archivos.carpeta_destino y carpetas_pedidas. Atómica y sin fallar por rutas que no encajan (las cuenta en omitidos). Solo service_role.';
+
 -- ============================================================================================================
 -- Fila única del turno de la cola de mensajes (el flujo de WhatsApp la reclama y la suelta)
 insert into public.turno (id) values (1);
@@ -1132,5 +1265,9 @@ revoke all on function public.marcar_borrado_drive(text[]) from public, anon, au
 grant execute on function public.marcar_borrado_drive(text[]) to service_role;
 revoke all on function public.olvidar_memoria(uuid) from public, anon, authenticated;
 grant execute on function public.olvidar_memoria(uuid) to service_role;
+revoke all on function public.reclamar_confirmacion_archivos(integer, integer) from public, anon, authenticated;
+grant execute on function public.reclamar_confirmacion_archivos(integer, integer) to service_role;
+revoke all on function public.mover_carpeta_drive(text, text, text, text) from public, anon, authenticated;
+grant execute on function public.mover_carpeta_drive(text, text, text, text) to service_role;
 
 commit;

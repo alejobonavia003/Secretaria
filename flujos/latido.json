@@ -93,6 +93,9 @@
       ],
       "executeOnce": true,
       "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
       "credentials": {
         "supabaseApi": {
           "id": null,

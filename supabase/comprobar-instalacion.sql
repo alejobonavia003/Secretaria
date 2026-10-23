@@ -10,7 +10,8 @@ funciones_esperadas(nombre) as (
   values ('guardar_con_archivos'), ('salud_sistema'), ('resumen_proyectos'),
          ('reclamar_mensajes'), ('liberar_turno'), ('anadir_contenido'), ('contexto_avisos'),
          ('marcar_borrado_drive'), ('olvidar_memoria'), ('quitar_horario'),
-         ('registrar_llegadas'), ('turno_respuesta'), ('marcar_contestados'), ('llegada_perdida')
+         ('registrar_llegadas'), ('turno_respuesta'), ('marcar_contestados'), ('llegada_perdida'),
+         ('reclamar_confirmacion_archivos'), ('mover_carpeta_drive')
 ),
 tablas as (
   select c.relname as nombre, c.relrowsecurity as rls
@@ -44,8 +45,8 @@ select 4, 'service_role puede leer y escribir (lo usa n8n)',
        coalesce((select string_agg(nombre, ', ') from tablas t
                  where not has_table_privilege('service_role', 'public.' || t.nombre, 'select, insert, update, delete')), '')
 union all
-select 5, 'existen las 14 funciones que llama n8n',
-       (select count(*) from funciones_esperadas e where e.nombre in (select nombre from funciones)) = 14,
+select 5, 'existen las 16 funciones que llama n8n',
+       (select count(*) from funciones_esperadas e where e.nombre in (select nombre from funciones)) = 16,
        coalesce((select string_agg(e.nombre, ', ') from funciones_esperadas e where e.nombre not in (select nombre from funciones)), '')
 union all
 select 6, 'solo service_role ejecuta esas funciones',

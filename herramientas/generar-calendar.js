@@ -89,7 +89,7 @@ function construirFlujoBase() {
         url: `={{ ${CFG}.supabase_url }}/rest/v1/items?select=id,tipo,titulo,contenido,estado,fecha_inicio,fecha_fin,calendar_event_id,updated_at&calendar_pendiente=eq.true&order=updated_at.asc&limit={{ ${CFG}.lote }}`,
         ...supabase,
       },
-      { alwaysOutputData: true },
+      { alwaysOutputData: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 2000 },
     ),
 
     // Rama de Google

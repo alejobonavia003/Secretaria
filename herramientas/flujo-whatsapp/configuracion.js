@@ -30,14 +30,19 @@ const LIMITE_ADJUNTO_MB = 25;
 const MODELO_TRANSCRIPCION = 'gemini-3.8-flash';
 // Tamaño máximo de un audio, en MB. Gemini admite 20 MB por petición en total y el audio viaja en base64 (+33 %).
 const LIMITE_AUDIO_MB = 10;
-// Cola de mensajes. Segundos que se espera tras cada mensaje de texto o audio por si llegan más seguidos: los que lleguen
-// en ese rato se procesan JUNTOS, como un solo mensaje. Se paga en CADA respuesta: con 1 s se juntan los que llegan de golpe (varios a la
-// vez, un reenvío); uno escrito después llega más tarde y se procesa a continuación, en orden (el turno lo garantiza). Entre 1 y 30.
-const ESPERA_AGRUPAR_S = 1;
+// Cola de mensajes . Segundos que se espera tras cada mensaje de texto o audio por si llegan más seguidos: los que lleguen
+// en ese rato se procesan JUNTOS, como un solo mensaje. Se paga en CADA respuesta. Con 0 no se espera: el orden de llegada lo sigue
+// garantizando el turno (un mensaje que llega mientras se contesta otro espera su turno y se procesa a continuación), pero los que llegan
+// de golpe se procesan uno a uno en vez de juntos. Entre 0 y 30.
+const ESPERA_AGRUPAR_S = 0;
 // Minutos que vale el turno de una ejecución (procesar y mandar la respuesta); si muere sin soltarlo, caduca solo. Mientras, un mensaje
 // nuevo vuelve a pedir turno cada ESPERA_TURNO_S segundos. Debe cubrir lo que tarda el modelo en el peor caso (3 intentos).
 const TURNO_MIN = 10;
 const ESPERA_TURNO_S = 2;
+// Aviso de varios archivos (base de datos 1.4). Segundos que se espera tras guardar un archivo por si llegan más seguidos: la última
+// ejecución de la tanda manda UN solo mensaje con todos los nombres en vez de uno por archivo. Se paga en CADA archivo (con 1 solo, el aviso
+// tarda estos segundos más). 0 = un aviso por archivo, como antes (y no hace falta la base de datos 1.4). Entre 0 y 15.
+const ESPERA_ARCHIVOS_S = 0;
 // ==================================
 
 if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i.test(SUPABASE_URL) || SUPABASE_URL.includes('TU-PROYECTO')) {
@@ -61,14 +66,18 @@ if (!/^[a-z0-9][a-z0-9.-]{2,60}$/.test(MODELO_TRANSCRIPCION)) {
 if (!Number.isFinite(LIMITE_AUDIO_MB) || LIMITE_AUDIO_MB < 1 || LIMITE_AUDIO_MB > 14) {
   throw new Error('Configuración: LIMITE_AUDIO_MB debe estar entre 1 y 14');
 }
-if (!Number.isInteger(ESPERA_AGRUPAR_S) || ESPERA_AGRUPAR_S < 1 || ESPERA_AGRUPAR_S > 30) {
-  throw new Error('Configuración: ESPERA_AGRUPAR_S debe ser un número entero entre 1 y 30');
+if (!Number.isInteger(ESPERA_AGRUPAR_S) || ESPERA_AGRUPAR_S < 0 || ESPERA_AGRUPAR_S > 30) {
+  throw new Error('Configuración: ESPERA_AGRUPAR_S debe ser un número entero entre 0 y 30');
 }
 if (!Number.isInteger(TURNO_MIN) || TURNO_MIN < 1 || TURNO_MIN > 60) {
   throw new Error('Configuración: TURNO_MIN debe ser un número entero entre 1 y 60');
 }
 if (!Number.isInteger(ESPERA_TURNO_S) || ESPERA_TURNO_S < 2 || ESPERA_TURNO_S > 60) {
   throw new Error('Configuración: ESPERA_TURNO_S debe ser un número entero entre 2 y 60');
+}
+
+if (!Number.isInteger(ESPERA_ARCHIVOS_S) || ESPERA_ARCHIVOS_S < 0 || ESPERA_ARCHIVOS_S > 15) {
+  throw new Error('Configuración: ESPERA_ARCHIVOS_S debe ser un número entero entre 0 y 15');
 }
 
 return [
@@ -85,6 +94,9 @@ return [
         espera_agrupar_s: ESPERA_AGRUPAR_S,
         turno_min: TURNO_MIN,
         espera_turno_s: ESPERA_TURNO_S,
+        espera_archivos_s: ESPERA_ARCHIVOS_S,
+        // «Quieto»: si se guardó otro archivo hace menos que esto, aún están llegando más (siempre menos que la espera: el último de la tanda ve su propio archivo ya «quieto»)
+        quieto_archivos_s: Math.max(0, ESPERA_ARCHIVOS_S - 1),
         // Vueltas de espera antes de rendirse: algo más que lo que tarda en caducar el turno
         max_esperas_turno: Math.ceil((TURNO_MIN * 60) / ESPERA_TURNO_S) + 6,
       },

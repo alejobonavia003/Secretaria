@@ -147,13 +147,13 @@ function resolverNotificacion({ cuerpoBytes, cabeceraFirma, secreto, numeroPermi
 // Respuesta honesta a un tipo de mensaje que todavía no se entiende
 const textoNoSoportado = (tipo) =>
   ({ image: 'una imagen', audio: 'un audio', document: 'un documento', video: 'un vídeo', sticker: 'un sticker', location: 'una ubicación', contacts: 'un contacto' })[tipo] ?? 'ese tipo de mensaje';
-const MENSAJE_EXCESO_MENSAJES = (n) => `Me has mandado ${n} mensajes de golpe y no puedo procesar tantos a la vez (el máximo son ${MAX_MENSAJES_DE_GOLPE}). No he hecho nada con ellos: mándamelos en tandas más pequeñas.`;
-const MENSAJE_EXCESO_ADJUNTOS = (n) => `Solo puedo recibir ${MAX_ADJUNTOS_DE_GOLPE} imágenes o documentos de golpe. He guardado los primeros ${MAX_ADJUNTOS_DE_GOLPE}; ${n === 1 ? 'el otro no' : `los otros ${n} no`}: mánda${n === 1 ? 'lo' : 'los'} aparte.`;
-const MENSAJE_EXCESO_COLA = (n) => `Me has mandado ${n} mensajes seguidos y no puedo procesar tantos a la vez (el máximo son ${MAX_MENSAJES_DE_GOLPE}). No he hecho nada con ellos: mándamelos en tandas más pequeñas.`;
+const MENSAJE_EXCESO_MENSAJES = (n) => `Me has mandado ${n} mensajes de golpe y no puedo con tantos (máximo ${MAX_MENSAJES_DE_GOLPE}). No he hecho nada: mándalos en tandas más pequeñas.`;
+const MENSAJE_EXCESO_ADJUNTOS = (n) => `Solo guardo ${MAX_ADJUNTOS_DE_GOLPE} archivos de golpe. He guardado los primeros ${MAX_ADJUNTOS_DE_GOLPE}; ${n === 1 ? 'el otro no' : `los otros ${n} no`}: mánda${n === 1 ? 'lo' : 'los'} aparte.`;
+const MENSAJE_EXCESO_COLA = (n) => `Me has mandado ${n} mensajes seguidos y no puedo con tantos (máximo ${MAX_MENSAJES_DE_GOLPE}). No he hecho nada: mándalos en tandas más pequeñas.`;
 const MENSAJE_NO_SOPORTADO = (tipo, cantidad = 0) =>
   tipo === 'exceso_mensajes' ? MENSAJE_EXCESO_MENSAJES(cantidad)
     : tipo === 'exceso_adjuntos' ? MENSAJE_EXCESO_ADJUNTOS(cantidad)
-      : `De momento solo entiendo mensajes de texto. Me has mandado ${textoNoSoportado(tipo)} y todavía no sé tratarlo.`;
+      : `Eso todavía no lo entiendo (${textoNoSoportado(tipo)}). Mándame texto, un audio, una foto o un documento.`;
 const MENSAJE_FALLO_CANAL = 'No he podido procesar ese mensaje. Inténtalo de nuevo en un momento.';
 // Con el texto que falló (los mensajes seguidos juntados, uno por línea), dice cuál fue: «compra leche y pan para…»
 function mensajeFalloCanal(texto) {
@@ -164,7 +164,7 @@ function mensajeFalloCanal(texto) {
   return `No he podido procesar ${lineas.length > 1 ? 'estos mensajes' : 'este mensaje'}: ${cita}. Inténtalo de nuevo en un momento.`;
 }
 
-// --- Archivos adjuntos (fase 2, paso A): imágenes y documentos se guardan en Drive, en Entrada/, como pendientes ---
+// --- Archivos adjuntos (archivos): imágenes y documentos se guardan en Drive, en Entrada/, como pendientes ---
 
 // Tipos que se guardan (los que Meta admite en imágenes y documentos) y la extensión que se usa si falta el nombre
 const EXTENSION_POR_MIME = {
@@ -207,12 +207,22 @@ function nombreSeguro(nombre) {
 }
 
 const MENSAJE_ADJUNTO_FALLO = 'No he podido recoger ese archivo de WhatsApp. Vuelve a enviarlo en un momento.';
-const MENSAJE_ADJUNTO_TIPO = (mime) => `De momento no guardo archivos de tipo ${mime || 'desconocido'}. Acepto fotos JPEG o PNG, PDF, texto y documentos de Office.`;
-const MENSAJE_ADJUNTO_GRANDE = (bytes, limiteMb) => `Ese archivo pesa ${(bytes / 1048576).toFixed(1).replace('.', ',')} MB y el máximo que admito es ${limiteMb} MB.`;
+const MENSAJE_ADJUNTO_TIPO = (mime) => `No guardo archivos de tipo ${mime || 'desconocido'}. Sí fotos JPEG o PNG, PDF, texto y documentos de Office.`;
+const MENSAJE_ADJUNTO_GRANDE = (bytes, limiteMb) => `Ese archivo pesa ${(bytes / 1048576).toFixed(1).replace('.', ',')} MB y el máximo es ${limiteMb} MB.`;
 const MENSAJE_ARCHIVO_FALLO = 'No he podido guardar ese archivo. Vuelve a enviarlo en un momento.';
-const MENSAJE_ARCHIVO_SIN_REGISTRO = 'He subido el archivo a Entrada, pero no he podido registrarlo. Avísame si no lo ves donde toca.';
+const MENSAJE_ARCHIVO_SIN_REGISTRO = 'Lo he subido a Entrada, pero no he podido registrarlo.';
 const MENSAJE_ARCHIVO_GUARDADO = (nombre, conPie) =>
-  `Guardado en Entrada: «${nombre}». Queda pendiente de clasificar: respóndeme a este mensaje con lo que es (por ejemplo «es la factura de la luz») o con la carpeta donde guardarlo («guárdala en Fotos»).${conPie ? ' No uso los pies de foto para clasificar.' : ''}`;
+  `Guardado: «${nombre}». ¿Qué es o en qué carpeta lo guardo?`;
+// Varios archivos seguidos: un solo mensaje con todos los nombres. Uno solo, el de siempre.
+const MAX_NOMBRES_AVISO = 15;
+const MENSAJE_ARCHIVOS_GUARDADOS = (nombres) => {
+  const lista = (Array.isArray(nombres) ? nombres : []).filter((n) => typeof n === 'string' && n.trim() !== '');
+  if (lista.length === 0) return MENSAJE_ARCHIVO_SIN_REGISTRO;
+  if (lista.length === 1) return MENSAJE_ARCHIVO_GUARDADO(lista[0], false);
+  const visibles = lista.slice(0, MAX_NOMBRES_AVISO).map((n) => `• ${n}`);
+  const mas = lista.length > MAX_NOMBRES_AVISO ? `\n… y ${lista.length - MAX_NOMBRES_AVISO} más` : '';
+  return `Guardados ${lista.length} archivos:\n${visibles.join('\n')}${mas}\n¿Qué son o en qué carpeta los guardo?`;
+};
 
 // Decide qué hacer con un adjunto a partir de los datos que devuelve la API de Meta (GET /{media_id}).
 //   entrada    { tipo_entrada, filename, caption, mime_type, ... } del webhook
@@ -252,7 +262,7 @@ function registroDeSubida({ plan, subida }) {
   };
 }
 
-// --- Audio (fase 3): se transcribe con Gemini y el texto entra al flujo principal como un mensaje más ---
+// --- Audio (audio): se transcribe con Gemini y el texto entra al flujo principal como un mensaje más ---
 
 // Formatos que Gemini admite como audio (documentación oficial: WAV, MP3, AIFF, AAC, OGG, FLAC) y que WhatsApp puede mandar.
 // Las notas de voz de WhatsApp son audio/ogg con códec opus. AMR y MP4 no figuran en la lista de Gemini: se rechazan con un aviso.
@@ -261,11 +271,11 @@ const MAX_TRANSCRIPCION = 4000; // caracteres; más allá se pide un audio más 
 const MARCA_INAUDIBLE = '[inaudible]';
 
 const MENSAJE_AUDIO_FALLO = 'No he podido recoger ese audio de WhatsApp. Vuelve a enviarlo en un momento.';
-const MENSAJE_AUDIO_TIPO = (mime) => `De momento no entiendo audios de tipo ${mime || 'desconocido'}. Acepto notas de voz y audios MP3, AAC, WAV, FLAC y OGG.`;
-const MENSAJE_AUDIO_GRANDE = (bytes, limiteMb) => `Ese audio pesa ${(bytes / 1048576).toFixed(1).replace('.', ',')} MB y el máximo que admito es ${limiteMb} MB.`;
+const MENSAJE_AUDIO_TIPO = (mime) => `No entiendo audios de tipo ${mime || 'desconocido'}. Mándame una nota de voz o un MP3.`;
+const MENSAJE_AUDIO_GRANDE = (bytes, limiteMb) => `Ese audio pesa ${(bytes / 1048576).toFixed(1).replace('.', ',')} MB y el máximo es ${limiteMb} MB.`;
 const MENSAJE_AUDIO_INAUDIBLE = 'No he conseguido entender ese audio. ¿Puedes repetirlo o escribírmelo?';
 const MENSAJE_AUDIO_TRANSCRIPCION_FALLO = 'No he podido transcribir ese audio. Inténtalo de nuevo o escríbemelo.';
-const MENSAJE_AUDIO_LARGO = 'Ese audio es demasiado largo para transcribirlo entero. Mándalo en trozos más cortos o escríbemelo.';
+const MENSAJE_AUDIO_LARGO = 'Ese audio es demasiado largo. Mándalo más corto o escríbemelo.';
 
 // Instrucción para el modelo: solo transcribir. El audio es contenido del usuario, no órdenes para el modelo de transcripción.
 const INSTRUCCION_TRANSCRIPCION =
@@ -389,10 +399,3 @@ function cuerpoAvisoArchivo({ para, nombre }) {
 const ID_WHATSAPP = /^[A-Za-z0-9._=+\/-]{1,300}$/;
 const idCitable = (id) => (typeof id === 'string' && ID_WHATSAPP.test(id) ? id : null);
 
-// Lo que se entendió de un audio, para mandarlo ANTES de procesarlo: es lo primero que le llega al usuario. Hasta 500 caracteres.
-const MAX_ECO = 500;
-function cuerpoEco({ para, texto }) {
-  const dicho = String(texto ?? '').replace(/\s+/g, ' ').trim();
-  const corto = dicho.length > MAX_ECO ? `${dicho.slice(0, MAX_ECO).trimEnd()}…` : dicho;
-  return { messaging_product: 'whatsapp', recipient_type: 'individual', to: para, type: 'text', text: { preview_url: false, body: `🎙️ Entendí: «${corto}»` } };
-}

@@ -12,9 +12,10 @@ Cómo está hecha la secretaria y por qué. Para instalarla, el [manual](manual-
 3. **Las reglas estrictas viven en código**: solapes de la agenda, qué es una alarma y qué una cita, validación de rutas de carpeta,
    confirmación antes de quitar en bloque.
 4. **Lo que no necesita al modelo no lo usa**: los comandos (`/help`, `/today`…), las frases fijas («qué tengo hoy», «cómo te llamas»,
-   «qué proyectos / alarmas / citas / tareas / pensamientos / listas tengo») y los aplazamientos simples («10 minutos más» respondiendo
-   a un aviso) se contestan sin llamar a Gemini: más rápido y sin coste.
-5. **Nada se borra a ciegas**: cancelar archiva (recuperable); en Drive solo se borra lo que el usuario confirma tras ver la lista, y
+   «qué proyectos / alarmas / citas / tareas / pensamientos / listas tengo»), las órdenes de lectura con sinónimos («dame todo», «ver mis
+   ideas», «dame la jerarquía»), «deshaz», mover una carpeta, quitar varias secciones a la vez y los aplazamientos simples («10
+   minutos más» respondiendo a un aviso) se resuelven sin llamar a Gemini: más rápido y sin coste.
+5. **Nada se borra a ciegas**: cancelar archiva y se puede deshacer; en Drive solo se borra lo que el usuario confirma tras ver la lista, y
    siempre a la papelera (recuperable unos 30 días); los eventos se borran de Calendar solo si su elemento está archivado.
 6. **No adivinar**: si la respuesta del modelo no encaja o su confianza es baja (< 0,7), el código pregunta o contesta «no te he
    entendido» y no hace nada. Eso no es un fallo: el aviso de fallos queda para cuando falla de verdad el flujo, Supabase o Google.
@@ -48,10 +49,10 @@ ni `authenticated`: solo la clave secreta (`service_role`) que usa n8n puede lee
 
 | Tabla | Contenido |
 |---|---|
-| `mensajes` | Todo lo que llega, tal cual, con su estado (procesado, error, en cola) y la pregunta abierta si la hay. |
-| `items` | Lo clasificado: eventos, tareas, listas y notas, con su proyecto si lo tienen. |
-| `archivos` | Archivos recibidos: id de Drive, carpeta pedida, a qué elemento pertenecen. |
-| `memoria` | Términos que el usuario enseña («BBVA es mi banco»), datos duraderos que cuenta («Emma es mi hermana», «vivo en Granada»), cómo quiere que se le llame y el nombre de la secretaria. Hasta 50; `/memory` la enseña y `/forget` borra un dato. |
+| `mensajes` | Todo lo que llega, tal cual, con su estado (procesado, error, en cola), la pregunta abierta si la hay y lo que se contestó (ids de WhatsApp y texto, para entender a qué respuesta se contesta citándola). |
+| `items` | Lo clasificado: eventos, tareas, listas y notas, con su proyecto si lo tienen y, si se quitó, cuándo (`quitado_en`, para deshacerlo). |
+| `archivos` | Archivos recibidos: id de Drive, carpeta pedida, a qué elemento pertenecen y si ya se avisó de ellos (`confirmado_at`). |
+| `memoria` | Términos que el usuario enseña («IBI es el impuesto de la casa»), datos duraderos que cuenta («Emma es mi hermana», «vivo en Granada»), cómo quiere que se le llame y el nombre de la secretaria. Hasta 50; `/memory` la enseña y `/forget` borra un dato. |
 | `proyectos`, `carpetas_pedidas` | Proyectos (activo/cerrado) y carpetas que se piden crear. |
 | `drive_arbol`, `registro_drive`, `vigilantes_estado`, `registro_calendar` | Estado y registro de los vigilantes. |
 | `avisos_enviados` | Qué alarmas y citas iban en cada aviso enviado (para entender las respuestas a un aviso). |
@@ -64,9 +65,10 @@ ni `authenticated`: solo la clave secreta (`service_role`) que usa n8n puede lee
 puede parar sin tocar el flujo principal. Las escrituras de vuelta comprueban `updated_at` para no pisar un cambio hecho mientras tanto,
 y el id del evento de Calendar se deriva del id del elemento (sin duplicados).
 
-**Cola de mensajes:** varios mensajes seguidos se procesan juntos y nunca dos a la vez. Cada texto entra en cola; tras una espera breve,
+**Cola de mensajes:** nunca se procesan dos a la vez y los que llegan juntos se procesan juntos. Cada texto entra en cola;
 `reclamar_mensajes()` decide si esta ejecución procesa (toma el turno y se lleva todos los encolados), espera (otra tiene el turno) o no
-hace nada (llegó otro después, que los juntará). El turno caduca solo si una ejecución muere.
+hace nada (llegó otro después, que los juntará). Sin espera fija por defecto (`ESPERA_AGRUPAR_S = 0` en la configuración del flujo de
+WhatsApp; subirla junta más mensajes seguidos a cambio de contestar más tarde). El turno caduca solo si una ejecución muere.
 
 **Orden de llegada:** cada mensaje, sea del tipo que sea, se registra al llegar con la hora que da Meta (`registrar_llegadas()`).
 La cola no junta mensajes por encima de uno anterior sin contestar (una foto que aún se sube, un audio que aún se transcribe), y antes
@@ -85,23 +87,24 @@ suyo. Un mensaje que no llegó a guardarse deja de hacer esperar al cabo de 1 mi
   con la fila que devolvió la base de datos: si no quedó como se pidió, lo dice. Una cita que deja de serlo se borra de Calendar.
 - **Ambigüedad de tipo:** «mañana coger la cartera» no dice si es alarma, cita o tarea: se pregunta, salvo que se deduzca («tengo que»,
   un plazo, «recuérdame», una reunión…).
-- **Nombres repetidos:** una alarma o cita nueva con un nombre igual o muy parecido a otra pendiente pregunta «¿La cambio o añado otra?»
-  («¿cuáles hay?» enseña las parecidas). Las tareas no preguntan.
-- **Agenda:** un evento no puede solaparse con otro (se pregunta otra hora); en un día con cosas, se enseñan y se pide confirmación.
-  Sin duración, se asume una hora y se dice en la respuesta.
+- **Nombres repetidos:** una alarma o cita con el mismo nombre que otra pendiente se añade sin preguntar (si quieres cambiar la que
+  hay, dilo: «cámbiala al viernes»).
+- **Agenda:** un evento no puede solaparse con otro (se pregunta otra hora); un día con otras cosas no pregunta. Sin duración, se
+  asume una hora.
 - **Horario fijo:** el modelo convierte «trabajo los viernes de 16 a 20» en bloques (uno por día); si no da horas exactas, pregunta.
   Una cita que cae dentro de un bloque se pregunta antes de apuntarla («¿La apunto igualmente?»), y el «sí» vale para ese bloque ese
   día. Las alarmas no se comprueban. `/horario` y `/horario quitar N` se resuelven sin el modelo.
-- **La compra:** una tarea «Comprar pan y huevos» pasa a la lista de la compra por código, un elemento por cosa. Si el mensaje dice
-  un día, pregunta si avisa ese día para ir a comprar; la respuesta («a las 18», «no») se entiende sin el modelo y crea una alarma
-  «Ir a comprar».
+- **La compra:** una tarea «Comprar pan y huevos» pasa a la lista de la compra por código, un elemento por cosa, con día o sin él. No
+  pregunta si avisa: si quieres un aviso, pídelo como alarma.
 - **Listas sin repetidos:** un elemento que ya está pendiente en la misma lista no se vuelve a guardar (sin distinguir mayúsculas,
   tildes, artículos ni plural simple); la respuesta dice cuáles ya estaban.
 - **Listados:** solo el título (el prompt pide titulares de 2 a 6 palabras); si hay más contexto se marca con « …» y se ve con
   «completo». Nunca se repite el mensaje original del usuario.
 - **Errores:** si un mensaje falla, el aviso cita hasta 3 líneas suyas (50 caracteres cada una) para que se sepa cuál fue.
 - **Preguntas:** si falta un dato (el motivo de una cita, la hora de un evento), la secretaria pregunta. La pregunta y el hilo se
-  guardan 30 minutos: la respuesta siguiente se entiende en ese contexto. Puede haber **hasta tres preguntas abiertas** a la vez (el
+  guardan 30 minutos: la respuesta siguiente se entiende en ese contexto. Si respondes **citando** una respuesta de la secretaria
+  (también con un audio), se contesta a la pregunta que dejó esa respuesta, si sigue vigente; si no, el modelo recibe la cita para
+  saber a qué te refieres. Puede haber **hasta tres preguntas abiertas** a la vez (el
   usuario escribe antes de que le llegue la respuesta): el código decide a cuál contesta cada mensaje por su contenido (sí/no, una hora,
   alarma/cita/tarea, cambiar/añadir) y una orden nueva («borra…», «dame…», «qué…») no contesta a ninguna. Un «sí» o un «no» sueltos
   sin pregunta abierta no llaman al modelo.
@@ -117,22 +120,33 @@ suyo. Un mensaje que no llegó a guardarse deja de hacer esperar al cabo de 1 mi
   notificación se guardan como mucho 10 archivos. Los límites son `MAX_MENSAJES_DE_GOLPE` y `MAX_ADJUNTOS_DE_GOLPE`, al principio de
   `herramientas/flujo-whatsapp/comun.js`.
 - **Archivos:** todo llega a `Secretaria/Entrada/` (los enlaces de Meta caducan en minutos) y se clasifica a mano, respondiendo a la foto
-  o con órdenes («guárdala en Fotos/Viajes», «las tres últimas son facturas de la luz»).
+  o con órdenes («guárdala en Fotos/Viajes», «las tres últimas son facturas de la luz»). Una foto o documento con la ruta como pie de
+  texto (o una respuesta que es solo la ruta, «Fotos/Viajes») se archiva por código, sin modelo y sin preguntar. Si llegan varios
+  archivos seguidos, `ESPERA_ARCHIVOS_S` (0 por defecto = un aviso por archivo) permite agruparlos en un solo aviso: espera esos
+  segundos y `reclamar_confirmacion_archivos()` entrega todos los archivos sin avisar a una sola ejecución.
+- **Mover carpetas:** «mete la carpeta Viajes dentro de Fotos» (por texto o por voz, una o varias a la vez, creando el destino si no
+  existe) se reconoce por código. «Revisar Drive» busca las carpetas en el árbol real y decide qué se puede mover (no `Entrada` ni
+  `Notas`, ni una dentro de sí misma, ni a más de 3 niveles, ni si en el destino ya hay otra con ese nombre); la secretaria mueve la
+  carpeta con todo lo de dentro y `mover_carpeta_drive()` deja la base de datos al día.
 - **Proyectos y carpetas:** no hay listas fijas. Un proyecto se crea al usarlo (si se parece a uno que ya existe, se pregunta antes);
   las carpetas de Drive se crean al pedirlas. Los archivos de un elemento van a `Notas/` salvo que se pida otra carpeta.
 - **Quitar una cosa:** «borra la cita», «quita la alarma de la ropa»: si de ese tipo (y con esas palabras) hay exactamente una, se
   quita por código, sin el modelo; si hay varias, decide el modelo y pregunta cuál.
 - **Borrar:** «borra todo» nunca borra todo: se reconoce por código y pregunta qué sección (alarmas, tareas, citas, pensamientos,
-  cada lista y cada proyecto, con cuántos elementos tiene cada una). Borrar una sección entera o más de un elemento a la vez se
-  confirma **siempre**, enseñando la lista de lo que se quitaría; con esa pregunta abierta, el nombre de una sección es esa sección
-  (no su listado) y un «sí» corto quita exactamente lo que se enseñó. Quitar una sola cosa por su nombre no pregunta; marcar como
-  hecho pregunta a partir de cuatro.
+  cada lista y cada proyecto, con cuántos elementos tiene cada una); con esa pregunta abierta, el nombre de una sección es esa
+  sección. Quitar una o varias secciones («borra las alarmas y las tareas»), varios elementos o una cosa concreta se hace sin
+  preguntar y la respuesta dice lo que se quitó.
+- **Deshacer:** quitar o completar anota cuándo (`items.quitado_en`). «Deshaz» recupera el último lote quitado (lo de la última orden,
+  hasta 24 horas atrás) y «recupera la tarea del banco» lo que encaje con esas palabras; si el elemento era de un proyecto cerrado,
+  lo reabre. Sin modelo.
 - **Memoria:** solo se guarda lo que el usuario enseña o cuenta como estable sobre sí mismo (horarios fijos, quién es quién); nunca lo
   que el modelo deduce, ni una tarea o una cita de un día concreto. Un dato sobre lo mismo sustituye al anterior. `/memory` enseña la
   lista numerada y `/forget N` borra ese dato; «olvida lo del trabajo» enseña los que encajan y pregunta antes. El nombre de la
   secretaria no se olvida, se cambia.
 - **Charla:** a un saludo o un comentario contesta el modelo en una o dos frases, pero el código descarta cualquier respuesta que diga
-  haber guardado o cambiado algo: con charla no se escribe nada.
+  haber guardado o cambiado algo: con charla no se escribe nada. Si la respuesta acaba ofreciendo apuntar algo («¿quieres que lo
+  apunte como tarea?»), el código deja esa oferta abierta con el hilo: un «sí», «apúntalo» o «no» posterior se entiende sin perder de
+  qué hablabais. Si escribes otra cosa, la oferta se cierra en silencio.
 - **Borrar en Drive:** el modelo solo dice qué carpeta o qué archivos; el código busca la carpeta en el árbol (si el nombre está en dos
   sitios, pregunta cuál), enseña todo lo que se borraría y guarda en la pregunta los ids exactos. Con el «sí», vuelve a comprobar cada id
   contra el árbol actual (que cuelgue de `Secretaria/` y no sea `Entrada` ni `Notas`, que no se borran enteras), lo manda a la papelera

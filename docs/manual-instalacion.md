@@ -561,7 +561,8 @@ sale en rojo, ábrela: el nodo rojo y su mensaje dicen qué pasa.
 - [ ] `tengo que llamar al banco` y después `ponla como alarma mañana a las 9` → confirma que ahora es una alarma, con sus avisos.
       `qué alarmas tengo` → solo las alarmas, con el título corto (responde en segundos: no pasa por el modelo).
 - [ ] `mañana coger la cartera` → pregunta si es alarma, cita o tarea.
-- [ ] `borra todo` → pregunta qué sección; contesta `tareas` → enseña la lista y pregunta; `no` → no borra nada.
+- [ ] `borra todo` → pregunta qué sección; contesta `tareas` → quita las tareas y te dice cuáles. Después `deshaz` → las recupera.
+      `borra las alarmas y las tareas` quita las dos secciones de una vez, sin preguntar.
 - [ ] `para que lo sepas: Emma es mi hermana` → lo guarda; `/memory` lo enseña numerado y `/forget 1` lo olvida.
 - [ ] `trabajo los viernes de 16 a 20` → lo guarda en tu horario fijo (`/horario` lo enseña). Después, `médico el viernes a las 17`
       → pregunta si lo apunta igualmente.
@@ -571,10 +572,11 @@ sale en rojo, ábrela: el nodo rojo y su mensaje dicen qué pasa.
 - [ ] Manda seguidos un texto, una foto y otro texto → las tres respuestas llegan en ese orden, cada una citando su mensaje.
 - [ ] `crea la carpeta Pruebas` y, cuando exista, `borra la carpeta Pruebas` → enseña lo que se borraría; `sí` → va a la papelera de
       Drive (compruébalo en drive.google.com → Papelera).
-- [ ] Una **foto** → «Guardado en Entrada…» y aparece en `Secretaria/Entrada` de Drive. **Respóndele** (desliza el mensaje) con
+- [ ] Una **foto** → «Guardado: …» y aparece en `Secretaria/Entrada` de Drive. **Respóndele** (desliza el mensaje) con
       `guárdala en Fotos` → en 1–2 minutos pasa a `Secretaria/Fotos`.
-- [ ] Una **nota de voz** → primero «🎙️ Entendí: …» (una sola vez) y después la respuesta.
-- [ ] `dame las fotos` → te las manda agrupadas por carpeta.
+- [ ] Una **nota de voz** (`qué tengo hoy`) → la respuesta, como si lo hubieras escrito. Un audio que no se entiende da un aviso.
+- [ ] `dame las fotos` → te las manda agrupadas por carpeta. `dame todo` y `dame la jerarquía` responden al momento (sin modelo).
+- [ ] `crea la carpeta Pruebas` y `crea la carpeta Cosas`; después `mete la carpeta Pruebas dentro de Cosas` → mueve la carpeta en Drive.
 - [ ] **Al día siguiente**, sin tocar nada: llega el **resumen de las 7:00** (si escribiste en las 23 h anteriores; ver la nota sobre la
       ventana de 24 h en [Problemas frecuentes](#16-problemas-frecuentes)).
 
@@ -669,6 +671,7 @@ Consultas útiles en Supabase (SQL Editor), en [`supabase/consultas/`](../supaba
 | `ver-version.sql` | Solo lee: qué versión de la base de datos tienes instalada (úsala antes de actualizar). |
 | `ver-errores.sql` | Solo lee: los últimos mensajes, si se procesaron y el error si lo hubo. |
 | `ver-eventos.sql` | Solo lee: los eventos pendientes con su hora de Madrid. |
+| `ver-tiempos.sql` | Solo lee: cuánto tarda en contestar cada mensaje (versión 1.2 o posterior). |
 | `ver-recordatorios.sql` | Solo lee: las alarmas y qué avisos han salido ya. |
 | `ver-avisos.sql` | Solo lee: los últimos eventos y el estado de su aviso por WhatsApp. |
 | `ver-archivos.sql` | Solo lee: los últimos archivos recibidos, su estado y su carpeta. |

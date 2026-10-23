@@ -7,6 +7,10 @@
 //     una carpeta que cuelgue de Secretaria (hasta 3 niveles) y no sea Entrada ni Notas, y un archivo que esté registrado. Devuelve
 //     un item { papelera } por cada cosa que sí se puede mandar (el nodo siguiente las manda una a una) o, si no queda ninguna, un item
 //     { nada: true }. Los rechazados viajan en cada item para que «Resultado» los cuente.
+//   - Al MOVER carpetas dentro de otra (meta.mover_carpeta, sección 69): busca las carpetas y la de destino en el árbol real y decide. Devuelve UN item
+//     { mover_plan } con la carpeta de destino que haya que crear antes (si se pidió y no existe), los movimientos que sí se pueden hacer (ids, rutas y
+//     cuántas cosas viajan) y, por cada carpeta que no se puede mover, su motivo (no existe, es ambigua, Entrada/Notas, dentro de sí misma, ya está ahí,
+//     ya hay otra con ese nombre, quedaría a más de 3 niveles). No toca nada.
 //   - Con cualquier otra intención (la lista de carpetas): un item vacío.
 // Si el árbol no se puede leer entero, no se manda nada (con el árbol incompleto no se sabe qué cuelga de qué).
 
@@ -127,13 +131,119 @@ function comprobar(papelera, arbol, archivos) {
   return { validos: finales, rechazados };
 }
 
+// --- Mover carpetas dentro de otra: qué hay que hacer, o por qué no se puede ---
+// Una carpeta se busca por su ruta completa, por su nombre si solo hay una con él y, si no, por las palabras que lleva su nombre («el tren de hierro»
+// encuentra «Viaje Tren de Hierro») siempre que solo encaje una. Con varias que encajan no elige: pide la ruta.
+const RELLENO_NOMBRE = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'y']);
+const palabrasDe = (s) => clave(s).split(/[^a-z0-9ñ]+/).filter(Boolean);
+function buscarCarpeta(arbol, texto, parcial) {
+  let c = arbol.carpetas.filter((x) => clave(x.ruta) === clave(texto));
+  if (c.length === 0 && !texto.includes('/')) c = arbol.carpetas.filter((x) => clave(x.nombre) === clave(texto));
+  if (c.length === 0 && parcial && !texto.includes('/')) {
+    const q = palabrasDe(texto).filter((w) => !RELLENO_NOMBRE.has(w));
+    if (q.length > 0) c = arbol.carpetas.filter((x) => { const n = new Set(palabrasDe(x.nombre)); return q.every((w) => n.has(w)); });
+  }
+  return c;
+}
+
+// Devuelve el plan: { crear, movimientos, rechazos, error_global }. «crear» es la carpeta de destino que hay que crear antes (su id real se
+// pone en «Preparar movimientos»); cada movimiento es { id, nuevo_padre_id, viejo_padre_id, nombre, ruta_origen, ruta_destino, archivos, subcarpetas };
+// cada rechazo es { origen, error, … } (no se puede mover esa carpeta, las demás sí); error_global es un fallo que afecta a todo el pedido.
+function decidirMover(pedido, arbol, archivos, raizId) {
+  const plan = { crear: null, movimientos: [], rechazos: [], error_global: null };
+  const origenes = Array.isArray(pedido.origenes) ? pedido.origenes : typeof pedido.origen === 'string' ? [pedido.origen] : [];
+  const destinoTexto = pedido.destino;
+  if (origenes.length === 0 || origenes.some((o) => typeof o !== 'string' || o === '') || typeof destinoTexto !== 'string' || destinoTexto === '') {
+    plan.error_global = { error: 'pedido', detalle: 'falta el origen o el destino' };
+    return plan;
+  }
+  const crear = pedido.crear === true;
+
+  // El destino: una carpeta que existe o, si se pidió crearla, una nueva (en la raíz o dentro de una que exista)
+  let destino = null;
+  const d = buscarCarpeta(arbol, destinoTexto, !crear);
+  if (d.length > 1) {
+    plan.error_global = { error: 'destino_ambiguo', rutas: d.map((c) => c.ruta).sort() };
+    return plan;
+  }
+  if (d.length === 1) destino = d[0];
+  else if (!crear) {
+    plan.error_global = { error: 'destino_no_encontrado', nombre: destinoTexto };
+    return plan;
+  } else {
+    const segs = destinoTexto.split('/');
+    const nombre = segs.at(-1);
+    let padre = { id: raizId, nivel: 0, ruta: '' };
+    if (segs.length > 1) {
+      const p = buscarCarpeta(arbol, segs.slice(0, -1).join('/'), false);
+      if (p.length !== 1) {
+        plan.error_global = p.length === 0 ? { error: 'destino_no_encontrado', nombre: segs.slice(0, -1).join('/') } : { error: 'destino_ambiguo', rutas: p.map((c) => c.ruta).sort() };
+        return plan;
+      }
+      padre = p[0];
+    }
+    const ruta = padre.ruta ? `${padre.ruta}/${nombre}` : nombre;
+    if (padre.nivel + 1 > NIVELES) {
+      plan.error_global = { error: 'profundidad', ruta };
+      return plan;
+    }
+    destino = { id: '@nueva', nivel: padre.nivel + 1, ruta, nombre, nueva: true };
+    plan.crear = { nombre, padre_id: padre.id, ruta };
+  }
+
+  const yaElegidas = [];
+  const nombresDentro = new Set();
+  for (const texto of origenes) {
+    const rechazar = (error) => plan.rechazos.push({ origen: texto, ...error });
+    const o = buscarCarpeta(arbol, texto, true);
+    if (o.length === 0) { rechazar({ error: 'origen_no_encontrado', nombre: texto }); continue; }
+    if (o.length > 1) { rechazar({ error: 'origen_ambiguo', rutas: o.map((c) => c.ruta).sort() }); continue; }
+    const origen = o[0];
+    // Entrada y Notas no se mueven
+    if (esProtegida(origen)) { rechazar({ error: 'protegida', ruta: origen.ruta }); continue; }
+    if (yaElegidas.some((x) => x.id === origen.id)) continue; // la misma carpeta dicha dos veces
+    const desc = descendientes(origen, arbol.carpetas);
+    if (destino.id === origen.id || desc.some((x) => x.id === destino.id)) { rechazar({ error: 'dentro_de_si', ruta: origen.ruta }); continue; }
+    // Dos de las que se mueven, una dentro de la otra: se mueve la de fuera y la de dentro va con ella
+    if (yaElegidas.some((x) => clave(origen.ruta).startsWith(`${clave(x.ruta)}/`) || clave(x.ruta).startsWith(`${clave(origen.ruta)}/`))) { rechazar({ error: 'anidada', ruta: origen.ruta }); continue; }
+    if (!destino.nueva && origen.padre === destino.id) { rechazar({ error: 'ya_esta', origen: origen.nombre, destino: destino.ruta }); continue; }
+    if ((!destino.nueva && arbol.carpetas.some((x) => x.padre === destino.id && clave(x.nombre) === clave(origen.nombre))) || nombresDentro.has(clave(origen.nombre))) {
+      rechazar({ error: 'choque', nombre: origen.nombre, destino: destino.ruta });
+      continue;
+    }
+    // Hasta 3 niveles: cuenta lo más hondo que cuelga de la carpeta (en Drive y entre los archivos ya clasificados dentro de ella)
+    const bajoOrigen = (ruta) => typeof ruta === 'string' && ruta !== '' && (clave(ruta) === clave(origen.ruta) || clave(ruta).startsWith(`${clave(origen.ruta)}/`));
+    const hondoDrive = Math.max(0, ...desc.map((x) => x.nivel - origen.nivel));
+    const hondoArchivos = Math.max(0, ...archivos.filter((f) => bajoOrigen(f.carpeta_destino)).map((f) => String(f.carpeta_destino).split('/').length - origen.nivel));
+    if (destino.nivel + 1 + Math.max(hondoDrive, hondoArchivos) > NIVELES) { rechazar({ error: 'profundidad', ruta: `${destino.ruta}/${origen.nombre}` }); continue; }
+    const ids = new Set([origen.id, ...desc.map((x) => x.id)]);
+    yaElegidas.push(origen);
+    nombresDentro.add(clave(origen.nombre));
+    plan.movimientos.push({
+      id: origen.id,
+      nuevo_padre_id: destino.id,
+      viejo_padre_id: origen.padre,
+      nombre: origen.nombre,
+      ruta_origen: origen.ruta,
+      ruta_destino: `${destino.ruta}/${origen.nombre}`,
+      archivos: dentroDe(archivos, ids).length,
+      subcarpetas: desc.length,
+    });
+  }
+  // Una carpeta nueva solo se crea si hay algo que meter dentro
+  if (plan.movimientos.length === 0) plan.crear = null;
+  return plan;
+}
+
 function revisar({ meta, niveles, raizId, filas }) {
+  const mueve = meta && meta.mover_carpeta && typeof meta.mover_carpeta === 'object';
   const pide = meta && meta.borrar_drive && typeof meta.borrar_drive === 'object';
   const confirma = meta && Array.isArray(meta.papelera);
-  if (!pide && !confirma) return [{}];
+  if (!pide && !confirma && !mueve) return [{}];
   const arbol = leerArbol(niveles, raizId);
-  if (arbol.error) return [{ nada: true, error: arbol.error, rechazados: [] }];
+  if (arbol.error) return mueve ? [{ mover_plan: { crear: null, movimientos: [], rechazos: [], error_global: { error: 'arbol', detalle: arbol.error } } }] : [{ nada: true, error: arbol.error, rechazados: [] }];
   const archivos = conRuta(filas, arbol);
+  if (mueve) return [{ mover_plan: decidirMover(meta.mover_carpeta, arbol, archivos, raizId) }];
   if (pide) return [{ propuesta: proponer(meta.borrar_drive, arbol, archivos) }];
   const { validos, rechazados } = comprobar(meta.papelera, arbol, archivos);
   if (validos.length === 0) return [{ nada: true, rechazados }];
